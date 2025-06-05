@@ -179,8 +179,8 @@ It **MUST** be one of the following:
 For conveying plain textual content.
 
 
-| Field Name | Type                  | Required | Description                                   |
-| :--------- | :-------------------- | :------- | :-------------------------------------------- |
+| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
+| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
 | `kind`     | `"text"` (literal)    | Yes      | Identifies this part as textual content.      |
 | `text`     | `string`              | Yes      | The textual content of the part.              |
 | `metadata` | `Record<string, any>` | No       | Optional metadata specific to this text part. |
@@ -433,8 +433,8 @@ This method should be used after the agent's input is extracted from the trigger
 | `trigger` | [`AgentTrigger`](#36-agenttrigger-object) | Yes       | The trigger that activated the agent.                        |
 
 
-#### 4.1.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSSuccessResponse-object).
-#### 4.1.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.1.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.1.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 
 ### 4.2. steps/knowledgeRetrieval
@@ -453,8 +453,8 @@ There are many retrieval techniques including semantic search (embedding-based s
 | `reasoning`       | `string`                               | No      | Agent's reasoning. |
 
 
-#### 4.2.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.2.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.2.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.2.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 ### 4.3. steps/memoryStore
 This step refers to the process of memorizing and store memory to the memory store for additional context for future or current agent interactions.<br>
@@ -469,8 +469,8 @@ Mostly, interaction history or a summary is stored to the memory store.
 | `reasoning`       | `string`                               | No      | Agent's reasoning. |
 
 
-#### 4.3.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.3.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.3.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.3.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 
 ### 4.4. steps/memoryContextRetrieval
@@ -487,8 +487,8 @@ This context is passed alongside with the agent's instructions(system prompt), u
 | `reasoning`       | `string`                               | No      | Agent's reasoning. |
 
 
-#### 4.4.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.4.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.4.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.4.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 
 ### 4.5. steps/message
@@ -508,8 +508,8 @@ A message with `system` role represents a message from the system, such as guard
 | `reasoning`       | `string`                               | No      | Agent's reasoning. Should be used with `agent` or `system` message. |
 
 
-#### 4.5.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.5.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 
 ### 4.6. steps/toolCallRequest
@@ -527,8 +527,8 @@ This method should be used after tool inputs are inferred by the LLM and before 
 
 
 
-#### 4.5.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.5.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 ### 4.6. steps/toolCallResult
 This method should be used after tool is completed and before the result goes back into the LLM for further processing.
@@ -550,8 +550,8 @@ This method should be used after tool is completed and before the result goes ba
 | `isError` |`boolean`| Yes       | Whether tool completed successfully or resulted in an error.                       |
 
 
-#### 4.6.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.6.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.6.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.6.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 
 ### 4.7. protocols/A2A
@@ -569,8 +569,8 @@ Read more about A2A support in [extend_a2a](../instrument/extend_a2a.md).
 | `message`       | `object`                               | Yes      | A2A-compliant message. |
 | `reasoning`       | `string`                               | No      | Agent's reasoning. |
 
-#### 4.7.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.7.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.7.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.7.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 ### 4.8. protocols/MCP
 This method should be used to wrap all [MCP](https://modelcontextprotocol.io/introduction) communications and messages.<br>
@@ -587,8 +587,8 @@ Read more about MCP support in [extend_mcp](../instrument/extend_mcp.md).
 | `message`       | `object`                               | Yes      | MCP-compliant message. |
 | `reasoning`       | `string`                               | No      | Agent's reasoning. |
 
-#### 4.8.2. **Response on success**: [`AOSSuccessResponse`](#51-AOSsuccessresponse-object).
-#### 4.8.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.8.2. **Response on success**: [`AOSSuccessResponse`](#51-aossuccessresponse-object).
+#### 4.8.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 ### 4.9. ping
 This method is used by the agent to ensure that guardian agent is alive.
@@ -604,7 +604,7 @@ This method is used by the agent to ensure that guardian agent is alive.
 | `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the agent. |
 
 #### 4.9.2. **Response on success**: [`PingRequestSuccessResponse`](#53-pingrequestsuccessresponse-object).
-#### 4.9.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
+#### 4.9.3. **Response on failure**: [`JSONRPCErrorResponse`](#52-jsonrpcerrorresonse-object).
 
 ## 5. Responses
 
@@ -613,7 +613,7 @@ This method is used by the agent to ensure that guardian agent is alive.
 | :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
 | `id`                   | `string` \| `integer`  | Yes       | Same id as the id in the correlated request. |
 | `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-| `result`                   |[`AOSSuccessResult`](#511-AOSsuccessresult-object)| Yes       | Success result. |
+| `result`                   |[`AOSSuccessResult`](#511-aossuccessresult-object)| Yes       | Success result. |
 
 #### 5.1.1. `AOSSuccessResult` Object
 
