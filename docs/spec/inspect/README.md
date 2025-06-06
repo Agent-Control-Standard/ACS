@@ -21,8 +21,8 @@ To support industry-wide adoption and interoperability, AgBOM supports output in
 | BOM standard | AgBOM Spec | Status |
 |--|--|--|
 | [CycloneDX](https://cyclonedx.org/) | [AgBOM with CycloneDX](./extend_cyclonedx.md) | Working draft |
-| [SPDX](https://spdx.dev/) | [AgBOM with SPDX](./extend_spdx.md) | [Help wanted](https://github.com/zenitysec/AOS/issues/20) |
-| [SWID](https://csrc.nist.gov/Projects/Software-Identification-SWID) | [AgBOM with SWID](./extend_swid.md) | [Help wanted](https://github.com/zenitysec/AOS/issues/21) |
+| [SPDX](https://spdx.dev/) | [AgBOM with SPDX](./extend_spdx.md) | [Help wanted](https://github.com/trustworthyagents/AOS/issues/20) |
+| [SWID](https://csrc.nist.gov/Projects/Software-Identification-SWID) | [AgBOM with SWID](./extend_swid.md) | [Help wanted](https://github.com/trustworthyagents/AOS/issues/21) |
 
 ### AgBOM entities and parameters:
 

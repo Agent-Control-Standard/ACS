@@ -90,7 +90,7 @@ The documentation follows this hierarchy:
 This is a documentation-focused project built with:
 - **UV** for Python dependency management (replaces pip)
 - **MkDocs Material** for documentation generation
-- **GitHub Pages** for hosting at zenitysec.github.io/AOS/
+- **GitHub Pages** for hosting at trustworthyagents.github.io/AOS/
 
 ### Roadmap Context
 - **v0.1** (Current): Documentation, schemas, and requirements

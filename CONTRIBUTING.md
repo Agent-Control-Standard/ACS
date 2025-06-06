@@ -39,7 +39,7 @@ All submissions require review via GitHub pull requests. Consult [GitHub Help](h
 ## What We Need
 
 **High Priority:**
-Look for unassigned [Open Issues](https://github.com/zenitysec/AOS/issues).
+Look for unassigned [Open Issues](https://github.com/trustworthyagents/AOS/issues).
 
 **Always Welcome:**
 - Documentation improvements
@@ -76,7 +76,7 @@ This guide is based on [github-contributing](https://raw.githubusercontent.com/s
 
 ## Community
 
-- **[GitHub Discussions](https://github.com/zenitysec/AOS/discussions)**: Ask questions, share ideas
-- **[Issues](https://github.com/zenitysec/AOS/issues)**: Report bugs, request features
+- **[GitHub Discussions](https://github.com/trustworthyagents/AOS/discussions)**: Ask questions, share ideas
+- **[Issues](https://github.com/trustworthyagents/AOS/issues)**: Report bugs, request features
 
 We're building the future of AI agent observability. Join us.
