@@ -530,7 +530,7 @@ AOS makes agents trustworthy.
 
     **Description**: Specifies properties that capture tools, models and capabilities of an AI agent. Extends SBOM standard specs with these properties – AgBOM. Goes further to add dynamic updates to AgBOM to account for dynamic agent capability discovery.
 
-    **Standards**: [AOS Inspect](./inspect/trace/README.md). Extends [CycloneDX](./spec/inspect/extend_cyclonedx.md), [SPDX](./spec/inspect/extend_spdx.md), [SWID](./spec/inspect/extend_swid.md).
+    **Standards**: [AOS Inspect](./spec/inspect/README.md). Extends [CycloneDX](./spec/inspect/extend_cyclonedx.md), [SPDX](./spec/inspect/extend_spdx.md), [SWID](./spec/inspect/extend_swid.md).
 
     === "LangChain (Python)"
 
@@ -771,6 +771,6 @@ AOS makes agents trustworthy.
 ## Read Next
 
 - [Core concepts](./topics/core_concepts.md)
-- [Instrument](../spec/instrument/README.md)
-- [Trace](../spec/trace/README.md)
-- [Inspect](../spec/inspect/README.md)
+- [Instrument](./spec/instrument/README.md)
+- [Trace](./spec/trace/README.md)
+- [Inspect](./spec/inspect/README.md)
