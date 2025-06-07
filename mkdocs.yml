@@ -7,6 +7,7 @@ site_description: >-
 # Repository
 repo_name: trustworthyagents/aos
 repo_url: https://github.com/trustworthyagents/aos
+edit_uri: edit/dev/docs/
 
 # Copyright
 copyright: Copyright &copy; 2025 AOS
@@ -19,6 +20,8 @@ theme:
     - search.suggest
     # edit this page for each doc page
     - content.action.edit
+    # enable synchronized tabs
+    - content.tabs.link
   palette:
     - media: "(prefers-color-scheme)"
       toggle:
@@ -60,6 +63,7 @@ extra:
 
 nav:
   - Trustworthy Agents: README.md
+  - AOS: aos.md
   - Topics:
     - Core concepts: topics/core_concepts.md
     - AOS in Action: topics/AOS_in_action_example.md
@@ -100,3 +104,6 @@ markdown_extensions:
   # Callouts
   - admonition
   - pymdownx.details
+  # Tabs
+  - pymdownx.tabbed:
+      alternate_style: true
