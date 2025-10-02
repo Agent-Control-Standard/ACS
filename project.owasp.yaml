@@ -1,0 +1,31 @@
+audience:
+  - builder
+community:
+  - name: project-aos
+    platform: slack
+    url: https://owasp.slack.com/archives/C090W3A7K60
+    description: <https://aos.owasp.org>
+leaders:
+  - name: Michael Bargury
+    email: michael.bargury@owasp.org
+    github: mbrg
+  - name: Ory Segal
+    github: oorryy
+level: 2
+license:
+  - Apache-2.0
+name: OWASP Agent Observability Standard
+pitch: A very brief, one-line description of your project
+repositories:
+  - name: www-project-agent-observability-standard
+    url: https://github.com/OWASP/www-project-agent-observability-standard
+    description: Agent Observability Standard
+  - name: www-project-agent-observability-standard-2
+    url: https://github.com/OWASP/www-project-agent-observability-standard-2
+    description: OWASP Foundation web repository
+tags:
+  - custom-tag
+  - custom-tag-1
+  - custom-tag-2
+type: documentation
+website: https://owasp.org/www-project-agent-observability-standard
