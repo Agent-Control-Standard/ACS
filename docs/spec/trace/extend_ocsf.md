@@ -1,41 +1,46 @@
-# ACS tracing with OCSF
+# Extending OCSF
 
-The Open Cybersecurity Schema Framework (OCSF) integration enables standardized security event logging for AI agent activities, making them compatible with existing SIEM and security monitoring tools.
+The Open Cybersecurity Schema Framework (OCSF) integration enables standardized security-event logging for AI agent activity. ACS-shaped events drop directly into existing SIEM pipelines without bespoke parsers.
 
-## Overview
+ACS events map to OCSF 1.5+ event classes. The normative class assignments and the disposition → `severity_id` mapping live on the [Trace Events](./events.md) page; the machine-readable mapping is at [`trace/ocsf-mapping.json`](../../../specification/v0.1.0/trace/ocsf-mapping.json). This page describes how to assemble the events themselves and provides representative wire examples.
 
-ACS maps agent activities to OCSF event classes, providing:
+## Class assignments at a glance
 
-- Standardized security event format
-- MCP & A2A Support out of the box
-- Unified view of agent and traditional security events
-- Compliance-ready trace trails
+| ACS step | OCSF class | Class UID |
+|---|---|---|
+| `steps/sessionStart`, `steps/sessionEnd`, `steps/subagentStart`, `steps/subagentStop` | Authentication | 3002 |
+| `steps/userMessage`, `steps/agentResponse`, `steps/turnStart`, `steps/turnEnd` | Application Activity | 6002 |
+| `steps/toolCallRequest`, `steps/toolCallResult` | Process Activity | 1007 |
+| `steps/knowledgeRetrieval`, `steps/memoryStore`, `steps/memoryContextRetrieval`, `steps/preCompact`, `steps/postCompact` | Datastore Activity | 6005 |
+| Decision (deny/modify/ask/defer) | Detection Finding | 2004 |
+| `agbom/snapshot`, `agbom/changed` | Inventory Info | 5001 |
 
-## Event Mapping
+## Severity mapping
 
-### Agent Activity Events
+| Disposition | `severity_id` |
+|---|---|
+| `allow` | 1 (Informational) |
+| `modify` | 2 (Low) |
+| `ask` | 3 (Medium) |
+| `defer` | 3 (Medium) |
+| `deny` | 4 (High) |
 
-ACS extends OCSF's API Activity class (6003) for agent-specific events.
-
-Here's a basic example:
+## Example: tool call as Process Activity (1007)
 
 ```json
 {
-  "category_uid": 6,
-  "category_name": "Application Activity",
-  "class_uid": 6003,
-  "class_name": "API Activity",
+  "category_uid": 1,
+  "category_name": "System Activity",
+  "class_uid": 1007,
+  "class_name": "Process Activity",
   "activity_id": 1,
-  "activity_name": "Agent Tool Use",
+  "activity_name": "Launch",
   "time": 1706550000000,
-  "type_uid": 600301,
+  "type_uid": 100701,
   "severity_id": 1,
   "metadata": {
-    "version": "1.0.0",
-    "product": {
-      "name": "ACS Security Layer",
-      "vendor_name": "ACS"
-    }
+    "version": "1.5.0",
+    "product": { "name": "ACS Guardian", "vendor_name": "ACS" }
   },
   "actor": {
     "user": {
@@ -43,291 +48,99 @@ Here's a basic example:
       "name": "CustomerServiceAgent",
       "type_id": 99,
       "type": "AI Agent"
-    }
-  },
-  "api": {
-    "service": {
-      "name": "database_mcp_server",
-      "version": "1.0.0"
     },
-    "operation": "tools/call"
+    "session": { "uid": "session-789" }
   },
-  "src_endpoint": {
-    "type_id": 99,
-    "name": "AI Agent Endpoint",
-    "hostname": "agent-service.internal"
+  "process": {
+    "name": "database_query",
+    "uid": "exec-123",
+    "cmd_line": "tools/call:database_query"
   },
-  "osint": [],
   "unmapped": {
     "acs": {
-      "tool_call": {
-        "name": "database_query",
-        "arguments": {
-          "query": "SELECT * FROM customers WHERE id = ?"
-        }
-      },
-      "context": {
-        "agent": {
-          "id": "agent-123",
-          "name": "CustomerServiceAgent",
-          "version": "1.0.0",
-          "provider": {
-            "name": "ACS",
-            "url": "https://example.acs"
-          }
-        },
-        "session": {
-          "id": "session-789"
-        },
-        "model": {
-          "id": "gpt-4",
-          "provider": {
-            "name": "OpenAI"
-          }
-        }
-      },
-      "step": {
-        "id": "step-abc",
-        "type": "toolCall",
-        "turn_id": "turn-456",
-        "reasoning": "User requested customer information"
-      }
+      "step": { "id": "step-abc", "type": "toolCallRequest", "turn_id": "turn-456" },
+      "tool": { "id": "database_query", "execution_id": "exec-123", "capability": "datastore.read" },
+      "provenance": [
+        { "provenance_id": "p1", "origin": "user_input", "source_id": "user-12345" }
+      ]
     }
   }
 }
 ```
 
-#### Agent with Tool Execution Example:
+## Example: deny decision as Detection Finding (2004)
 
 ```json
 {
-  "category_uid": 6,
-  "category_name": "Application Activity",
-  "class_uid": 6003,
-  "class_name": "API Activity",
+  "category_uid": 2,
+  "category_name": "Findings",
+  "class_uid": 2004,
+  "class_name": "Detection Finding",
   "activity_id": 1,
-  "activity_name": "Tool Execution",
-  "time": 1706550000000,
-  "type_uid": 600301,
-  "severity_id": 1,
+  "activity_name": "Create",
+  "time": 1706550000050,
+  "severity_id": 4,
   "status_id": 1,
-  "status": "Success",
-  "metadata": {
-    "version": "1.0.0",
-    "product": {
-      "name": "ACS Security Layer",
-      "vendor_name": "ACS"
-    },
-    "correlation_uid": "exec-123"
+  "metadata": { "version": "1.5.0", "product": { "name": "ACS Guardian", "vendor_name": "ACS" } },
+  "finding_info": {
+    "uid": "decision-001",
+    "title": "Tool call denied: outside committed Intent",
+    "desc": "email.send to recipient outside Intent.parsed; IBAC P-I check failed."
   },
-  "actor": {
-    "user": {
-      "uid": "agent-123",
-      "name": "CustomerServiceAgent",
-      "type_id": 99,
-      "type": "AI Agent"
-    },
-    "session": {
-      "uid": "session-789"
-    }
-  },
-  "api": {
-    "service": {
-      "name": "database_mcp_server",
-      "version": "1.0.0"
-    },
-    "operation": "database_query",
-    "response": {
-      "code": 200,
-      "message": "Query executed successfully"
-    }
-  },
-  "src_endpoint": {
-    "type_id": 99,
-    "name": "AI Agent Endpoint",
-    "hostname": "agent-service.internal",
-    "ip": "10.0.1.50"
-  },
-  "dst_endpoint": {
-    "type_id": 1,
-    "name": "Database Server",
-    "hostname": "db.internal",
-    "port": 5432
-  },
-  "osint": [],
   "unmapped": {
     "acs": {
-      "step": {
-        "id": "step-abc",
-        "type": "toolCall",
-        "turn_id": "turn-456",
-        "reasoning": "User requested customer information",
-        "operation": {
-          "type": "tool_execution",
-          "tool": {
-            "id": "database_query",
-            "execution_id": "exec-123",
-            "inputs": [
-              {
-                "name": "query",
-                "value": "SELECT * FROM customers WHERE id = ?"
-              }
-            ],
-            "outputs": [
-              {
-                "kind": "text",
-                "text": "Query executed successfully"
-              }
-            ],
-            "is_error": false
-          }
-        }
-      },
-      "context": {
-        "agent": {
-          "id": "agent-123",
-          "name": "CustomerServiceAgent",
-          "version": "1.0.0",
-          "provider": {
-            "name": "ACS",
-            "url": "https://example.acs"
-          }
-        },
-        "model": {
-          "id": "gpt-4",
-          "provider": {
-            "name": "OpenAI"
-          }
-        }
-      }
+      "decision": "deny",
+      "evaluator": "deterministic",
+      "policy_references": [
+        { "policy_id": "acme-ibac-v1", "rule_id": "email-send-recipient-not-in-intent" }
+      ],
+      "reason_codes": ["ibac_capability_mismatch"],
+      "cited_provenance_ids": ["p1"],
+      "session_id": "session-789",
+      "step_id": "step-abc"
     }
   }
 }
 ```
 
-#### Multi-Agent Workflow Example
+## Example: AgBOM snapshot as Inventory Info (5001)
 
 ```json
 {
-  "category_uid": 6,
-  "class_uid": 6003,
+  "category_uid": 5,
+  "category_name": "Discovery",
+  "class_uid": 5001,
+  "class_name": "Inventory Info",
   "activity_id": 1,
-  "activity_name": "Agent Request",
-  "time": 1706550000000,
-  "type_uid": 600301,
+  "activity_name": "Log",
+  "time": 1706549900000,
   "severity_id": 1,
-  "metadata": {
-    "version": "1.0.0",
-    "product": {
-      "name": "ACS Security Layer",
-      "vendor_name": "ACS"
-    },
-    "correlation_uid": "4bf92f3577b34da6a3ce929d0e0e4736"
-  },
-  "actor": {
-    "user": {
-      "uid": "planner-123",
-      "name": "PlannerAgent",
-      "type_id": 99,
-      "type": "AI Agent"
-    }
-  },
-  "api": {
-    "operation": "task_delegation",
-    "service": {
-      "name": "agent_orchestrator",
-      "version": "1.0.0"
-    }
-  },
-  "src_endpoint": {
-    "type_id": 99,
-    "name": "PlannerAgent",
-    "hostname": "planner.agents.internal"
-  },
-  "dst_endpoint": {
-    "type_id": 99,
-    "name": "ExecutorAgent",
-    "hostname": "executor.agents.internal"
-  },
-  "osint": [],
-  "trace": {
-    "uid": "4bf92f3577b34da6a3ce929d0e0e4736",
-    "span": {
-      "uid": "00f067aa0ba902b7",
-      "start_time": 1706550000000,
-      "end_time": 1706550001000
-    }
+  "metadata": { "version": "1.5.0" },
+  "device": {
+    "uid": "agent-123",
+    "name": "CustomerServiceAgent",
+    "type": "AI Agent"
   },
   "unmapped": {
     "acs": {
-      "agent_context": {
-        "agent": {
-          "id": "planner-123",
-          "name": "PlannerAgent",
-          "version": "1.0.0",
-          "provider": {
-            "name": "ACS",
-            "url": "https://example.acs"
-          }
-        },
-        "session": {
-          "id": "collab-789"
-        },
-        "turn": {
-          "id": "turn-456"
-        },
-        "step": {
-          "id": "step-abc",
-          "type": "protocolMessage"
-        },
-        "model": {
-          "id": "gpt-4",
-          "provider": {
-            "name": "OpenAI"
-          }
-        },
-        "reasoning": "Task requires specialized database access"
+      "agbom": {
+        "format": "canonical",
+        "component_count": 7,
+        "components": [
+          { "type": "model", "id": "gpt-4o", "provider": "OpenAI" },
+          { "type": "mcp_server", "id": "db-mcp", "endpoint": "https://mcp.internal/db" },
+          { "type": "tool", "id": "database_query", "capability": "datastore.read" }
+        ]
       }
     }
   }
 }
 ```
 
+## Implementation notes
 
-## Key Features
+- **`actor.user.type_id: 99`** is the OCSF "Other" sentinel; pair with `actor.user.type: "AI Agent"` so SIEM filters can distinguish agent identities from human ones.
+- **`unmapped.acs`** carries ACS-specific facts that don't have direct OCSF equivalents in v1.5. The structure mirrors the request envelope's `payload` plus the decision envelope's `policy_data` / `reason_codes`. Backends that index `unmapped` keep this fully searchable.
+- **Provenance** flows onto OCSF events under `unmapped.acs.provenance`. Trust classification is omitted on the wire for v0.1; backends that compute trust apply it as an enrichment step.
 
-### 1. Standardized Event Format
-- Consistent structure across all agent activities
-- Compatible with existing security tools
-- Extensible for custom agent attributes
-
-### 2. Agent Tool Use Support
-- Enables AI agent tool use monitoring
-- Extends tool use trace and explainability
-- Support MCP tool and resource access tracing
-
-### 3. Compliance Support
-- Trace-ready event logging
-- Traceable agent activities
-- Policy violation tracking
-
-### 4. Multi-Agent Support
-- Correlation across agent interactions
-- Distributed tracing support
-- Hierarchical event relationships
-
-## Read Next
-
-For detailed implementation examples, including:
-- Code samples
-- Advanced usage patterns
-- SIEM integration examples
-- Custom field documentation
-- Multi-agent workflows
-- Validation and error handling
-
-Please refer to the [Implementation Examples](./OCSF/implementation_examples.md) document.
-
-- [OCSF Schema Documentation](https://schema.ocsf.io/)
-- [py-ocsf-models Repository](https://github.com/prowler-cloud/py-ocsf-models)
-- [OCSF Examples](https://github.com/ocsf/examples)
+For more worked examples — including A2A and MCP wrapped events — see [Implementation examples](./OCSF/implementation_examples.md).
