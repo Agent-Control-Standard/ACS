@@ -1,784 +1,351 @@
-# ACS Specification
+# ACS v0.1.0 — Instrument Specification
 
 **Version:** `0.1.0`
 
-## 1. Core concepts
-- **Guardian Agent**: An agent that monitors other agents behavior for anomalous and risky decisions.
-- **Agent**: An agent that implements ACS-compliant HTTP endpoints, sending data and providing visibility into its plans, reasoning and context. Also understands ACS responses and enforces results.
-- **Session**: A session is a scoped unit of interaction, starting when an agent is activated (by user or environment) and ending when the task or interaction is complete. The session consists of turns, where turn is a single end to end loop between user and agent.
-- **Step**: A step is a single unit of action or decision taken by the agent as part of its reasoning or execution process. It can be a user message,  tool/function call, memory operation (retrieve or store context), knowledge retrieval etc. 
-- **A2A Message**: A2A-protocol message captured between agents communication.
-- **MCP Message**: MCP-protocol message captured between mcp client and mcp server communication.
-- **User**: The user involved in agent/user interaction.
+The Instrument pillar covers real-time interception, evaluation, and enforcement of agent behavior. It defines the wire format, the capability-negotiation handshake, the hook taxonomy, the disposition vocabulary, the SessionContext and Intent model, replay protection, and signature semantics. Trace (event emission) and Inspect (AgBOM) are co-equal v0.1.0 pillars covered in their own pages.
+
+A deployment that implements **ACS-Core** (this section's mandatory baseline) is v0.1.0-conformant. Additional capabilities — Trace event emission, AgBOM serialization, field-level provenance, cryptographic signatures, strengthened audit chains — are organized as **conformance profiles** (see [Conformance](../conformance.md)).
+
+## 1. Design Principles
+
+1. **Opinionated on contract, permissive on implementation.** The wire format and semantics are locked. Engines, crypto suites, OS, and transport are deployment-owned.
+2. **The agent MUST NOT have knowledge of hooks.** Provenance fields, when emitted, MUST be populated outside the LLM's output path.
+3. **Facts on the wire; classification in policy.** Provenance fields (`origin`, `source_id`, `derived_from`) are populated by deterministic framework code at channel boundaries, never by the LLM. v0.1 keeps trust *classification* off the mandatory wire surface: Guardians derive trust from `origin` + `source_id` against local policy. The wire format reserves an OPTIONAL `trust` enum for vendor implementations that elect to carry the classification in the envelope; when populated, the monotonicity rule applies (§7).
+4. **Three pillars, tiered conformance.** Instrument, Trace, and Inspect are all defined in v0.1.0. None is deferred. ACS-Core is the mandatory baseline; Trace, Inspect, Provenance, Crypto, and Audit are normative profiles deployments advertise via handshake negotiation.
 
-## 2. Transport and Format
+## 2. Architecture
 
-### 2.1. Transport Protocol
+Two parties on the wire:
 
-- ACS communication **MUST** occur over **HTTP(S)**.
+- **Observed Agent** — the LLM-backed system being monitored. Implements ACS endpoints (or the stdio analog) and sends hook traffic to the Guardian.
+- **Guardian Agent** — the policy enforcement point. Two internal layers:
+    - **Deterministic layer** (Cedar/Rego): always runs first.
+    - **Agent layer** (LLM): invoked only when the deterministic layer's chain config delegates (`*`, `on_ask`, or pattern-based).
+
+### 2.1 End-to-end flow
+
+```
+Observed Agent                                Guardian Agent
+══════════════                                ══════════════
+     │                                              │
+     │ 1. Hook fires; framework builds JSON-RPC      │
+     │ 2. Send (HTTP POST or stdio write)            │
+     ├──────────────────────────────────────────────>│
+     │                                              │ 3. Validate envelope, signature, replay
+     │                                              │ 4. Load SessionContext, Intent
+     │                                              │ 5. Deterministic layer evaluates
+     │                                              │ 6. If delegated, agent layer reasons
+     │                                              │ 7. Build decision envelope
+     │ 8. Receive response                           │
+     │<──────────────────────────────────────────────┤
+     │ 9. Enforce decision (allow/deny/modify/ask/defer)
+     │ 10. Audit entry written to SessionContext
+```
 
-### 2.2. Data Format
+A worked example appears in [ACS in Action](../../topics/ACS_in_action_example.md).
 
-ACS uses **[JSON-RPC 2.0](https://www.jsonrpc.org/specification)** as the payload format for all requests and responses
+## 3. Wire Format
 
-- Agent requests and guardian agent responses **MUST** adhere to the JSON-RPC 2.0 specification.
-- The `Content-Type` header for HTTP requests and responses containing JSON-RPC payloads **MUST** be `application/json`.
+| Element | Choice |
+|---|---|
+| Envelope | JSON-RPC 2.0, with top-level `acs_version` |
+| Transports | HTTP(S) and stdio (Content-Length framing, UTF-8) |
+| Method namespaces | `steps/*`, `protocols/A2A/*`, `protocols/MCP/*`, `agbom/*`, `system/*`, `handshake/*`, `trace/*` (reserved) |
+| Wrapped methods | `protocols/MCP/*` is the canonical v0.1 namespace for MCP wrapping (e.g. `protocols/MCP/tools/call`). The `wrapped:` prefix is an alternative explicit-version form for deployments that pin a specific protocol version on the wire (e.g. `wrapped:mcp-2025-06-18/tools/call`). Both are valid; `protocols/*` is preferred. A2A wrapping deferred to v0.2. |
+| Error code range | `-32000` to `-32099` reserved for ACS |
+| Response shape | Discriminated union: `{ "type": "final", ... }` |
+| Forward compat | Accept `X.Y.Z` matching major version; ignore unknown fields |
 
+Streaming and notifications are not supported in v0.1.0. Batching is permitted as standard JSON-RPC 2.0 — Guardians SHOULD accept array-shaped requests and return an array of correlated responses — but ACS does not add atomicity, ordering, or cross-request dependency semantics in v0.1. Each request in a batch is evaluated independently, in declared order, with each carrying its own `request_id` and (if signed) its own signature. A Guardian that does not support batching MUST return `-32600 Invalid Request` for array-shaped inputs so the Observed Agent can fall back to sequential requests.
 
-## 3. Standard Data Objects
-These objects define the structure of data exchanged within the JSON-RPC methods of ACS.
+The full envelope schemas are [`request-envelope.json`](../../../specification/v0.1.0/request-envelope.json) and [`response-envelope.json`](../../../specification/v0.1.0/response-envelope.json).
 
+## 4. Capability Negotiation Handshake
 
-### 3.1. `Agent` Object
+Required at session start, before any hook traffic. Wire method: `handshake/hello`. Schema: [`handshake.json`](../../../specification/v0.1.0/handshake.json) (`$defs/ClientHello` and `$defs/ServerHello`).
 
+**Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Human-readable name of the agent.                                                                                                           |
-| `id`                              | `string`                                                           | Yes      | Id of the agent.                                                                                                           |
-| `description`                       | `string`                                                           | No      | Human-readable description.                                                             |
-| `instructions`                       | `string`                                                           | Yes      | Agent internal instrucions, known as system prompt.                                                             |
-| `version`                           | `string`                                                           | Yes      | Agent version string.                                                                                                 |
-| `provider`                          | [`AgentProvider`](#311-agentprovider-object)                       | Yes       | Information about the agent's provider.                                                                                                     |
-| `identity`                   | [`AgentIdentity`](#318-agentidentity-object) | Yes       | Identity of the agent. |
-| `model`                           | [`Model`](#312-model-object)                                                           | No      | Agent's underlying LLM.                                                                                                 |
-| `tools`                  | [`ToolDefinition`](#32-tooldefinition-object)[]                                                         | No       | Available tools.                                                                                          |
-| `mcpServers`                      | [`MCPServer`](#314-mcpserver-object)[]               | No      | Available MCP servers.                                                   |
-| `resources`                      | [`Resource`](#315-resource-object)[]               | No      | Available resources.                                                   |
-| `organization`                   | [`Organization`](#311-organization-object) | No       | Organization / entity that agent belongs to. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the agent. |
+**Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
+Version mismatch terminates with `UNSUPPORTED_VERSION`. Unknown fields MUST be ignored. If the client declares `provenance_producer: "none"` and the Guardian's `policy_requires_provenance` is true, the Guardian MUST refuse the session at handshake time rather than silently degrading enforcement.
 
+## 5. Hook Taxonomy
 
-#### 3.1.1. `AgentProvider` Object
+Hook details, payloads, and per-hook examples are catalogued on the [Hooks](./hooks.md) page. The native `steps/*` set is:
 
-Information about the organization or entity providing the agent.
+| # | Method | Trigger |
+|---|---|---|
+| 1 | `sessionStart` | Session initiation, before any other `steps/*` hook for the `session_id` |
+| 2 | `agentTrigger` | Agent activation |
+| 3 | `turnStart` | Beginning of an agent turn |
+| 4 | `userMessage` | User input received |
+| 5 | `agentResponse` | Agent output before reaching the user |
+| 6 | `knowledgeRetrieval` | RAG / knowledge lookup |
+| 7 | `memoryContextRetrieval` | Memory read |
+| 8 | `memoryStore` | Memory write |
+| 9 | `toolCallRequest` | Before tool execution |
+| 10 | `toolCallResult` | After tool execution, before agent ingestion |
+| 11 | `preCompact` | Before context-window compaction; decision-eligible |
+| 12 | `postCompact` | After compaction; carries the new summary's payload and provenance |
+| 13 | `subagentStart` | A subagent is spawned (in-process delegation) |
+| 14 | `subagentStop` | A subagent has terminated |
+| 15 | `turnEnd` | End of an agent turn |
+| 16 | `sessionEnd` | Session termination, audit finalization |
 
+Wrapped: `protocols/MCP/*` (specified in v0.1; see [Extending MCP](./extend_mcp.md)). The `protocols/A2A/*` namespace is reserved; wrapping specification deferred to v0.2.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Human-readable name of the agent provider.                                                                                                           |
-| `url`                   | `string` | Yes       | URL for the provider's website/contact. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the agent provider. |
+Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [Inspect](../inspect/README.md)). System methods (`system/*`): `system/ping` (§13). These are not Instrument hooks — they're the wire surface for Inspect and transport-control — but they share the request-envelope shape, and `agbom/*` participates in the SessionContext audit chain.
 
-#### 3.1.2. `Model` Object
+## 6. Disposition Vocabulary
 
-Information about LLM associated with the agent.
+| Disposition | Meaning | Required fields |
+|---|---|---|
+| `ALLOW` | Proceed | none (`reasoning` RECOMMENDED when user-visible audit trails are expected) |
+| `DENY` | Block | `reasoning` |
+| `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`) | `reasoning`, `modifications` |
+| `ASK` | Pause and request approval | `reasoning`, `ask_details` |
+| `DEFER` | Verdict not yet reachable | `reasoning`, `defer_details` |
 
+DEFER reasons: `insufficient_context`, `conflicting_policies`, `low_confidence`, `pending_dependency`. DEFER MUST include `resolution_method`, `resolution_timeout_ms`, and `timeout_decision` (default `deny`). Cascading deferrals MUST be bounded per session.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Human-readable name of the model (LLM).                                                                                                           |
-| `id`                              | `string`                                                           | Yes      | Id of the model (LLM).                                                                                                           |
-| `provider`                   | [`LlmProvider`](#313-llmprovider-object) | Yes       | The LLM provider. |
-| `maxTokens`                   | `integer` | No       | Maximum number of tokens the model is allowed to generate in the response. |
-| `contextWindow`                   | `integer` | No       | Total number of tokens (input + output) the model can handle in one request. |
-| `stopSequences`                   | `string`[] | No       | 	List of tokens that will stop the generation early (e.g., ["User:", "Agent:"]). |
-| `defaultParams`                   | `object` | No       | Default model parameters, such as `temperature`, `topK`, etc. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the model. |
+### 6.1 Decision result fields
 
+The decision envelope ([`response-envelope.json`](../../../specification/v0.1.0/response-envelope.json)) carries a fixed set of fields that compose to support audit, observability, and cross-paradigm enforcement:
 
-#### 3.1.3. `LlmProvider` Object
+| Field | Required | Purpose |
+|---|---|---|
+| `decision` | yes | The verdict, one of the five dispositions above. |
+| `reasoning` | conditional | Single human-renderable explanation. Serves both end-user display and audit/agent-internal consumption; deployments wanting different text per audience SHOULD compose them client-side from `reasoning` + `policy_data` + `reason_codes`. |
+| `policy_references` | no | Array of `{policy_id, policy_name, rule_id}` — the rules that fired. A single decision MAY cite multiple entries when several paradigms reject the same action; audit replay walks the list to reconstruct contributions. |
+| `reason_codes` | no | Array of machine-readable categorization strings. Free vocabulary in v0.1. UIs and meta-policies SHOULD switch on these rather than parsing reasoning text or rule IDs. |
+| `policy_data` | no | Free-form structured payload for paradigm- or policy-specific facts. When multiple paradigms fire, conventionally keyed by paradigm name (`{ "ibac": {...}, "fides": {...}, "aarm": {...} }`). |
+| `cited_provenance_ids` | no | Array of `provenance_id`s whose facts drove this decision. Standard top-level surface for "which provenance objects mattered". |
+| `modifications` / `ask_details` / `defer_details` | conditional | Disposition-specific payloads. |
+| `metadata` | no | ACS-defined evaluator/observability metadata: `evaluator` (`deterministic`/`agent`/`composite`), `evaluator_version`, `evaluation_duration_ms`, `model_id` (required when `evaluator` is `agent` or `composite`), `confidence`. NOT for policy-emitted facts — those go in `policy_data`. |
 
-Information about the organization or entity providing the LLM.
+### 6.2 Paradigm composition
 
+These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulative-context, IBAC) without per-paradigm wire extensions. A FIDES P-T denial cites the violating lineage in `cited_provenance_ids` and exposes the violating-argument path in `policy_data`. An IBAC intent-mismatch DEFER routes through `defer_details` while exposing the requested capability and closest `Intent.parsed` match in `policy_data`. An AARM cumulative-context denial cites `earliest_untrusted_step_id` in `cited_provenance_ids` and reproduces the relevant lookback state in `policy_data`. When a deployment composes paradigms — e.g., IBAC outer + FIDES inner across an A2A boundary — a single decision MAY cite all of them: `policy_references` with one entry per paradigm, `reason_codes` with one or more codes per paradigm, `policy_data` keyed by paradigm.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Human-readable name of the LLM provider.                                                                                                           |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the LLM provider. |
+## 7. Provenance
 
-#### 3.1.4. `MCPServer` Object
+MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL — paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](../../../specification/v0.1.0/provenance.json).
 
-Information about the available MCP servers.
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `provenance_id` | yes | string | Unique within session |
+| `origin` | yes | enum | `user_input`, `system`, `tool_output`, `retrieved`, `agent_generated`, `a2a_inbound`, `external` |
+| `source_id` | no | string | Identifier within origin |
+| `derived_from` | no | string[] | Lineage: array of `provenance_id`s |
 
+### 7.1 Optional `trust` enum
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Name of the MCP server.                                                                                                           |
-| `version`                   |  `string`  | Yes       | Version of the MCP server. |
-| `url`                   |  `string`  | Yes       | URL of the MCP server. |
+The wire format reserves an OPTIONAL `trust` enum (`trusted`, `untrusted`, `unknown`) so vendor Guardian implementations can carry channel classification in the envelope rather than derive it in policy. v0.1 does not require Guardians to populate it. The expected v0.1 default is for Guardians to derive trust from `origin` + `source_id` against local policy: it keeps the wire format minimal, avoids creating labeled-trusted regions that downstream code stops scrutinizing, and prevents optional-field defaults from ossifying into a de-facto security model. Reserving the field on the wire preserves the option to populate it in a future version (or in a vendor extension today) without a wire-format break.
 
-#### 3.1.5. `Resource` Object
+When a deployment **does** populate `trust`:
 
-Information about the available resources.
+- The framework — not the LLM — MUST attach the label, deterministically, based on which channel data crossed. `trust` is never a content judgment and never a producer claim.
+- For data with `origin: agent_generated`, the framework MUST compute `trust` as the minimum trust of the entries in `derived_from` (monotonicity rule). No amount of LLM processing launders untrusted data into trusted data.
+- Receivers (especially across A2A or multi-Guardian boundaries) MUST treat the field as a hint and re-derive trust against local policy keyed off `origin` + `source_id` rather than honor a remote-asserted label at face value.
 
+### 7.2 Default channel-to-trust mapping
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Name of the resource.                                                                                                           |
-| `id`                              | `string`                                                           | Yes      | Id of the resource.                                                                                                           |
-| `description`                              | `string`                                                           | No      | Resource description.                                                                                                           |
-| `content`                              | `string`                                                           | Yes      | Resource content.                                                                                                           |
-| `mimeType`                              | `string`                                                            | No      | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., text/plain, image/png). Strongly recommended.                                                                                                           |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the resource. |
+Used both by Guardians that derive trust in policy and by vendor implementations that populate `trust` on the wire. Deployments MAY override in policy but SHOULD record overrides in audit metadata.
 
-### 3.2. `ToolDefinition` Object
+| Origin | Default trust |
+|---|---|
+| `user_input` | `trusted` |
+| `system` | `trusted` |
+| `tool_output` | `untrusted` |
+| `retrieved` | `untrusted` |
+| `a2a_inbound` | `untrusted` |
+| `external` | `untrusted` |
+| `agent_generated` | minimum trust of `derived_from` lineage |
 
-Describes the tool schema used by the agent.
+Provenance MUST be populated by deterministic code outside the LLM's output path. Implementations MUST NOT instruct the LLM to produce it. The agent declares `provenance_producer: "framework" | "llm" | "none"` in the handshake; a `none` producer emits no Provenance objects, and Guardians whose policies require Provenance MUST refuse the session at handshake time rather than silently degrading enforcement.
 
+## 8. SessionContext and Intent
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Tool name.                                                                                                           |
-| `id`                              | `string`                                                           | Yes      | Tool Id.                                                                                                           |
-| `description`                              | `string`                                                           | No      | Tool description. Usually used by the LLM to determine on the tool call request.                                                                                                           |
-| `type`                              | `string`                                                           | Yes      | The type of the tool. Such as function_call, api_request etc.                                                                                                           |
-| `arguments`                              | [`ToolArgumentDefinition`](#321-toolargumentdefinition-object)[] \| `null`                                                            | Yes      | Array of tool arguments. Can be null if the tool has no arguments.                                                                                                           |
-| `outputs`                              | [`ToolOutputDefinition`](#322-tooloutputdefinition-object)[] \| `null`                                                           | Yes      | Array of tool outputs. Can be null if the tool has no outputs.                                                                                                           |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the LLM provider. |
+State the Guardian Agent maintains across a session. Lives only on the Guardian Agent. The Observed Agent sends only `session_id` and an optional `chain_hash` for verification.
 
+The chain root is established by the first ContextEntry the Guardian writes for a `session_id`, with `previous_hash: null`. This entry is normally produced by `sessionStart`; deployments that do not emit `sessionStart` MAY allow the Guardian to implicitly initialize the chain at the first content-bearing hook, but this is discouraged because it leaves no place to attach session-level identity, policy, or Intent before content enters.
 
-#### 3.2.1. `ToolArgumentDefinition` Object
+**SessionContext:** `session_id`, `chain_hash` (rolling SHA-256), `entries` (append-only `ContextEntry`), `provenance_summary`, `intent` (optional).
 
-Describes the tool argument schema.
+The SessionContext container is intentionally not schematized in v0.1. The wire-visible commitment (`chain_hash`) and the structurally-interesting children (`ContextEntry`, `ProvenanceSummary`, `Intent`) are each defined as portable schemas with normative computation rules; the container that holds them is server-side state and remains implementation-defined. Cross-Guardian interoperability is achieved through the standardized wire artifacts, not through a standardized container format.
 
+### 8.1 ContextEntry
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Argument name.                                                                                                           |
-| `id`                              | `string`                                                           | No      | Argument Id. This should be used when tool argument can be defined and accessed by Id.                                                                                                          |
-| `description`                              | `string`                                                           | No      | Argument description. Usually used by the LLM to determine on argument value.                                                                                                           |
-| `type`                              | `string`                                                           | No      | The type of the argument. Allowed values are: `string`, `number`, `boolean`, `object`, `array`, `null`.                                                                                                            |
-| `mimeType`                              | `string` \| `null`                                                            | No      | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., text/plain, image/png). Strongly recommended.                                                                                                           |
-| `required`                              | `boolean`                                                           | Yes      | Whether the tool argument is required.                                                                                                           |
+Schema: [`context-entry.json`](../../../specification/v0.1.0/context-entry.json). Append-only entry in the audit chain.
 
-#### 3.2.2. `ToolOutputDefinition` Object
+- **Required:** `entry_id`, `step_id`, `step_type`, `entry_hash`.
+- **SHOULD:** `request_hash` (lowercase-hex SHA-256 of the JCS-canonicalized request envelope params; without this the chain commits only to step metadata, not to request content — deployments claiming the **ACS-Audit** profile MUST populate `request_hash`), `timestamp`, `provenance_summary`, `previous_hash` (required for every entry except the first).
 
-Describes the tool output schema.
+Storage representation is implementation-defined; this spec constrains the canonical form used for hashing, not how Guardians store entries internally.
 
+### 8.2 Chain hashing (normative)
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                              | `string`                                                           | Yes      | Output name. This should be used when tool output can be defined and accessed by Id.                                                                                                           |
-| `id`                              | `string`                                                           | No      | Output Id. This should be used when tool output can be defined and accessed by Id.                                                                                                          |
-| `description`                              | `string`                                                           | No      | Output description. Usually used by the LLM to determine on output value.                                                                                                           |
-| `type`                              | `string`                                                           | No      | The type of the argument. Allowed values are: `string`, `number`, `boolean`, `object`, `array`, `null`.                                                                                                            |
-| `mimeType`                              | `string` \| `null`                                                            | No      | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., text/plain, image/png). Strongly recommended.                                                                                                           |
+`entry_hash = lowercase-hex(SHA-256(content_bytes || prev_hash_bytes))` where:
 
+1. `content_bytes` is the UTF-8 encoding of the RFC 8785 (JCS) canonicalization of the ContextEntry object with `entry_hash` and `previous_hash` fields REMOVED;
+2. `prev_hash_bytes` is the raw 32-byte decoding of `previous_hash`, or the empty byte string if `previous_hash` is null/absent (first entry in the session);
+3. `||` denotes byte concatenation.
 
-### 3.3. `Message` Object
+Conformant Guardians MUST compute `entry_hash` this way; otherwise chains computed by different implementations will not match and cross-Guardian audit comparison breaks. Alternative canonicalization schemes are not permitted in v0.1.
 
-Represents a single communication turn or a piece of contextual information between a user and an agent.
+### 8.3 ProvenanceSummary
 
+Schema: [`provenance-summary.json`](../../../specification/v0.1.0/provenance-summary.json). Optional. Condensed view of provenance facts at the entry level (what entered at this step) and at the session level (cumulative across the session). All fields are OPTIONAL — Guardians populate only what their policies consume. Available v0.1 fields: `origins_seen`, `entry_count`, `entry_count_by_origin`, `earliest_step_id_by_origin`, `max_lineage_depth`. v0.1 carries origin-derived aggregates only; trust-derived aggregates are computed Guardian-internally because v0.1 keeps trust classification in policy. The session-level summary is the monotonic aggregation of entry-level summaries.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                              | `string`                                                           | Yes      | Message Id. A unique identifier must be provided for messages in the same session.                                                                                                           |
-| `role`                              | `string`                                                           | Yes      | Indicates the sender:  `user`, `agent` or `system`.                                                                                                      |
-| `content`            | [`Part[]`](#34-part-union-type) | Yes      | Array of content parts. Must contain at least one part.                          |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the message. |
+### 8.4 Intent
 
+Optional. `raw`, `parsed` (capability list), `parser_provenance` (REQUIRED if `parsed` present; `origin` MUST be `user_input`), `scope_mode`.
 
-### 3.4. `Part` Union Type
+**Intent immutability (normative).** Once an Intent is established (via `sessionStart` or the first `agentTrigger` for the session), `Intent.parsed` MUST NOT be modifiable by the runtime LLM, by tool outputs, or by any data crossing an `untrusted` channel. The framework enforces immutability; any modification attempt MUST be ignored or rejected, and SHOULD be recorded as an audit event. The only conformant mechanism for extending `Intent.parsed` within a session is an approver's `intent_extension` returned via the ASK flow (§9). This rule is load-bearing for IBAC's central security claim: the capability set is fixed before untrusted data enters and can grow only through explicit, audited approver action.
 
-Represents a distinct piece of content within a `Message`. A `Part` is a union type representing exportable content as either `TextPart`, `FilePart`, or `DataPart`. All `Part` types also include an optional `metadata` field (`Record<string, any>`) for part-specific metadata.
+### 8.5 Size-based archival (optional)
 
+Guardian Agents MAY archive entries when SessionContext exceeds a configurable byte threshold (suggested 64 KB). Archival MUST preserve `chain_hash`, `provenance_summary`, and `intent`. A mismatched `chain_hash` SHOULD trigger an audit event.
 
-It **MUST** be one of the following:
+## 9. Escalation / Approver Model
 
-#### 3.4.1. `TextPart` Object
+ASK approvers MAY be human, agent, or service. `ask_details.approver = { type, id, endpoint }`. The Approver receives an ACS-shaped request and returns an ACS-shaped decision. Approver authentication is REQUIRED. Guardian MUST verify approver identity against policy.
 
-For conveying plain textual content.
+Single-hop only in v0.1. Approvers MUST NOT return ASK. Quorum and recursive ASK deferred to v0.2.
 
+### 9.1 Intent extension via ASK (normative)
 
-| Field Name | Type                  | Required | Description                                   |
-| :--------- | :-------------------- | :------- | :-------------------------------------------- |
-| `kind`     | `"text"` (literal)    | Yes      | Identifies this part as textual content.      |
-| `text`     | `string`              | Yes      | The textual content of the part.              |
-| `metadata` | `Record<string, any>` | No       | Optional metadata specific to this text part. |
+When a Guardian raises ASK because a request is outside `Intent.parsed`, the approver's grant MAY include an `intent_extension` field (see [`ask-details.json`](../../../specification/v0.1.0/ask-details.json)) containing capabilities to add to `Intent.parsed`. The extension's `scope` selects between `this_request` (capabilities apply only to the in-flight request) and `session` (capabilities are appended to `Intent.parsed` for the remainder of the session).
 
-#### 3.4.2. `FilePart` Object
+On `scope: session`, the Guardian MUST:
 
-For conveying file-based content.
+1. Append the capabilities to `Intent.parsed`.
+2. Write a ContextEntry with `step_type: "intent_extension"` recording the approver identity, the granted capabilities, and the originating ASK's `step_id`.
+3. Carry the extension's `provenance` forward distinct from the original `parser_provenance` so audits can distinguish parser-derived capabilities from approver-extended ones.
 
+Intent extensions are subject to the session's `scope_mode`: a Guardian operating under `scope_mode: strict` MUST NOT honor extensions that would add capabilities the deployment policy forbids in strict mode. This mechanism is the only conformant path to mutate `Intent.parsed` after Intent is committed.
 
-| Field Name | Type                  | Required    | Description                                   |
-| :--------- | :-------------------- | :---------- | :-------------------------------------------- |
-| `kind`     | `"file"` (literal)    | Yes         | Identifies this part as file content.         |
-| `file`     | `FileWithBytes` \| `FileWithUri` | Yes  | Contains the file details and data/reference. |
-| `metadata` | `Record<string, any>` | No          | Optional metadata specific to this file part. |
+## 10. Cryptographic Signatures
 
-#### 3.4.3. `DataPart` Object
+Optional at the field level; when signatures are negotiated, the envelope is `{ algorithm, value, key_id }` with the algorithm chosen from the registry below. Supported algorithms are declared per-direction in the handshake.
 
-For conveying structured JSON data. Useful for forms, parameters, or any machine-readable information.
+### 10.1 Algorithm registry
 
+The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope supports any registered algorithm, and the handshake declares which algorithms each side supports. v0.1 prioritizes adoption breadth over cryptographic maximalism — signatures are already field-optional, and a spec that ships without PQC mandates protects more deployments than a spec that mandates PQC and doesn't ship. PQC algorithms from NIST FIPS 203–205 (2024) are registered and available; a future version is expected to promote PQC to RECOMMENDED once ecosystem support matures.
 
-| Field Name | Type                  | Required | Description                                                                 |
-| :--------- | :-------------------- | :------- | :-------------------------------------------------------------------------- |
-| `kind`     | `"data"` (literal)    | Yes      | Identifies this part as structured data.                                    |
-| `data`     | `Record<string, any>` | Yes      | The structured JSON data payload (an object or an array).                   |
-| `metadata` | `Record<string, any>` | No       | Optional metadata specific to this data part (e.g., reference to a schema). |
+| Algorithm | Class | v0.1.0 status |
+|---|---|---|
+| `HMAC-SHA256` | Symmetric MAC | RECOMMENDED — shared-secret integrity; simplest deployment path. Sufficient for same-host and trusted-network topologies where the threat is accidental tampering or replay. |
+| `ECDSA-P256` | Classical asymmetric | OPTIONAL — strongest current ecosystem support across Java, Node, .NET, HSMs, and major cloud KMS providers. |
+| `RSA-PSS-SHA256` | Classical asymmetric | OPTIONAL — legacy interop; deployments with existing RSA PKI. |
+| `ML-DSA-65` | PQC, lattice (FIPS 204) | OPTIONAL — ~128-bit post-quantum security; ~3.3 KB signatures. Recommended for deployments shipping PQC libraries today. |
+| `ML-DSA-44` | PQC, lattice | OPTIONAL — low-bandwidth profile. |
+| `ML-DSA-87` | PQC, lattice | OPTIONAL — high-security profile. |
+| `SLH-DSA-128s` | PQC, hash (FIPS 205) | OPTIONAL — algorithmic diversity vs. ML-DSA's lattice assumption. Caution: ~7.8 KB signatures, signing takes hundreds of milliseconds — unsuitable for hot-path Guardian responses without careful latency budgeting. |
+| `SLH-DSA-128f` | PQC, hash | OPTIONAL — faster signing; larger signatures. |
+| `ML-DSA-65+ECDSA-P256` | Hybrid | OPTIONAL — transitional composite for PQC forward-resistance with classical co-signature. |
+| `ML-DSA-65+RSA-PSS-SHA256` | Hybrid | OPTIONAL — transitional composite. |
 
-### 3.5.1. `FileWithBytes` Object
+**PQC migration intent.** The long-term direction is PQC-primary. A future ACS version is expected to promote `ML-DSA-65` to RECOMMENDED and eventually deprecate classical-only algorithms, but the timeline depends on ecosystem readiness — library maturity across Java/Node/.NET, HSM/KMS support breadth, and operational experience at scale. The crypto-agile envelope ensures that migration requires no wire-format changes; only the handshake-negotiated algorithm set shifts.
 
-Represents the data for a file, used within a `FilePart`.
+### 10.2 Hybrid signature value encoding
 
+For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the concatenation `len(pqc_sig) || pqc_sig || len(classical_sig) || classical_sig`, where each `len` is a 4-byte big-endian unsigned integer and the whole blob is base64-encoded for wire transit. Verifiers MUST verify both component signatures over the same canonical input; failure of either component is a signature failure. The same `key_id` resolves to a hybrid key descriptor that pins both component public keys.
 
-| Field Name | Type     | Required | Description                                                                                                                         |
-| :--------- | :------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------- |
-| `name`     | `string` | No       | Original filename (e.g., "report.pdf").                                                                                             |
-| `mimeType` | `string` | No       | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., `image/png`). Strongly recommended. |
-| `bytes`    | `string` | Yes      | Base64 encoded file content.                                                                                                        |
+### 10.3 Replay protection
 
-### 3.5.2. `FileWithUri` Object
+`request_id` (UUID), `timestamp` (ISO 8601), and optional `nonce` (16–64 bytes). Guardians MUST reject requests whose `timestamp` is more than the handshake-negotiated skew window in the past or future, MUST reject duplicate `request_id` values within the session, and SHOULD reject duplicate `nonce` values within a sliding window the deployment configures.
 
-Represents the URI for a file, used within a `FilePart`.
+## 11. Platform / OS Independence
 
+ACS MUST be deployable across IDE, SaaS, on-prem on Linux/Windows/macOS/mobile/browser. Normative:
 
-| Field Name | Type     | Required | Description                                                                                                                         |
-| :--------- | :------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------- |
-| `name`     | `string` | No       | Original filename (e.g., "report.pdf").                                                                                             |
-| `mimeType` | `string` | No       | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., `image/png`). Strongly recommended. |
-| `uri`      | `string` | Yes      | URI (absolute URL strongly recommended) to file content. Accessibility is context-dependent.                                        |
+- Resource identifiers MUST use URI form (`file:///C:/...`, `posix:///etc/...`, `https://...`).
+- Capability vocabulary uses abstract names (`filesystem.delete`, `network.egress`, `process.execute`).
+- Identity descriptors carry a `type` discriminator (`posix_uid`, `windows_sid`, `oauth_subject`, `cert_subject`, …). Schema owned by the Identity workstream.
+- Authentication mechanism declared in handshake; spec mandates none.
 
+## 12. Policy Engine and Agent Layers
 
-### 3.6. `AgentTrigger` Object
+### 12.1 Policy engine interface
 
-Represents the trigger that resulted in agent activation.It can be a recurring trigger or responding to an event. <br>
-User prompt is not included and it is included in `Message`. 
+Spec defines the **interface** to the deterministic-layer engine, not the engine.
 
+**Input:** request envelope + SessionContext + Intent + provenance. **Output:** decision envelope, plus optional `delegate_to: "agent"`.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `type`                              | `string`                                                           | Yes      | Type of the trigger. Allowed values: `autonomous`.                                                                                                          |
-| `event`                              | [`AgentTriggerEvent`](#361-agenttriggerevent-object)                                                           | Yes      | The triggering event.                                                                                                  |
-| `content`            | [`Part[]`](#34-part-union-type) | Yes      | Array of content parts. Must contain at least one part.                          |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the trigger. |
+| Engine | Status |
+|---|---|
+| OPA / Rego | v0.1 starting reference |
+| Cedar | v0.2 fast-follow |
 
-#### 3.6.1. `AgentTriggerEvent` Object
+Custom engines plug in by respecting the interface. ACS layers conventions on top: modification format, reasoning format, no external HTTP calls in canonical policies, bundle layout, baseline policy bundle.
 
+### 12.2 Agent layer
 
-Info about triggering event.   
+Invoked by the deterministic layer's chain config. Receives the same input plus the deterministic layer's intermediate output. Returns a decision envelope.
 
+- Prompt MUST treat untrusted data as data, not instructions. Untrusted fields MUST be wrapped/quoted.
+- MUST NOT have access to deterministic-layer policy code.
+- Decisions MUST be logged with reasoning, model identifier, confidence (when available).
+- Timeouts follow the handshake's `timeout_config`.
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `type`                              | `string`                                                           | Yes      | Type of the event. Examples: email, recurring.                                                                                                           |
-| `id`                              | `string`                                                           | Yes      | The Id of the triggering event.                                                                                                  |
+OPTIONAL for v0.1.0. Deterministic-only deployments are fully conformant.
 
+## 13. Liveness / System Methods
 
-### 3.7. `Source` Union Type
+A liveness method is required for connection-health checks, transport-debugging, and timeout tuning. It carries no enforcement semantics and is not part of the audit chain.
 
-Represents a source that is used as a reference or citation in the Agent response (`Message`) to justify or explain the output.<br>
-A `Source` is a union type representing the cited source as either `FileSource` or `SiteSource`.
+**Method:** `system/ping`. Schema: [`hooks/system-ping.json`](../../../specification/v0.1.0/hooks/system-ping.json).
 
+**Request payload.** Standard ACS envelope with `method: "system/ping"` and `payload: { "echo": "<optional string>" }`.
 
-It **MUST** be one of the following:
+**Response.** Standard ACS decision envelope with `decision: "allow"` and a `payload` object carrying `{ "status": "ok", "echo": "<request.echo>", "server_timestamp": "<iso-8601>" }`.
 
-#### 3.7.1. `FileSource` Object
-For conveying file source.
+**Normative rules:**
 
+- Guardians MUST always return `decision: "allow"` for `system/ping` regardless of policy, signature, or session state. The method does not represent a controllable agent action.
+- `system/ping` MUST NOT be written into SessionContext as a ContextEntry; it does not participate in the chain hash.
+- `system/ping` MUST NOT require a signature even if the session otherwise requires signatures, so that liveness probing remains possible during signature-rotation or key-resolution failures.
+- Connection failure or response timeout for `system/ping` is a transport-level signal that the Observed Agent MAY use to renegotiate transport, re-handshake, or fail over; it MUST NOT be interpreted as an enforcement event.
+- `system/ping` is the only method in the `system/*` namespace defined in v0.1.0. The namespace is reserved for future low-level transport/control methods (e.g. `system/handshake_renegotiate` in v0.2).
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kind`                              | `"file"` (literal)                                                            | Yes      |  Identifies this source as file source.                                                                                                         |
-| `id`                              | `string`                                                           | Yes      | The Id of the file. The Id is identical to the `Resource` id in the list of agent's available resources (`resources`) if found.                                                                                                |
-| `name`                              | `string`                                                           | Yes      | The name of the file (e.g., report.pdf).                                                                                                  |
-| `url`                              | `string`                                                           | No      | The url of the file if the file is available remotely to the agent. For example url to Sharepoint or GoogleDrive.                                                                                                   |
+## 14. Multi-Tenancy
 
+`tenant_id` reserved as an optional envelope field. No isolation rules in v0.1. Per-tenant policy scoping, SessionContext isolation, audit boundaries, and cross-tenant A2A rules deferred to v0.2.
 
-#### 3.7.2. `SiteSource` Object
-For conveying site source.
+## 15. Out of Scope (Deferred)
 
+| Feature | Deferred to | Reason |
+|---|---|---|
+| Streaming + wrapped streaming methods | v0.2 | SSE, interruption, chunk-level policy is too much surface |
+| Batching atomicity, ordering, cross-request dependencies | v0.2 | Standard JSON-RPC 2.0 batching is permitted in v0.1; ACS-specific atomicity / ordering / dependency rules wait for the streaming spec |
+| Sensitivity / four-level timeout model | v0.2 | Categorization-from-facts is non-trivial; v0.1 uses a single handshake-negotiated default timeout |
+| Recursive ASK + quorum | v0.2 | Bounded delegation and tie-breaking need careful spec |
+| Multi-tenant isolation rules | v0.2 | Touches policy, SessionContext, audit, A2A |
+| `protocols/A2A/*` wrapping specification | v0.2 | A2A hook wrapping is reserved (namespace exists); detailed method mapping waits |
+| AgBOM federation across A2A peers | v0.2 | Single-agent AgBOM is in v0.1; federated views need an A2A-side discovery method first |
+| gRPC, unix_socket transports | v0.2+ | HTTP + stdio cover IDE/SaaS/on-prem in v0.1 |
+| PQC as RECOMMENDED default | Future | Promote `ML-DSA-65` once ecosystem readiness justifies it |
+| Classical-only signature deprecation | Future | Deprecate classical algorithms once PQC-only is universal |
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kind`                              | `"site"` (literal)                                                            | Yes      |  Identifies this source as file source.                                                                                                         |
-| `url`                              | `string`                                                           | Yes      | The url of the referenced site.                                                                                                  |
+## 16. Roadmap
 
-### 3.8. `StepContext` Object
+| Version | Theme | Highlights |
+|---|---|---|
+| **v0.1.0** | Baseline + profiles | ACS-Core (mandatory), ACS-Trace, ACS-Inspect/Inspect-Dynamic, ACS-Provenance, ACS-Crypto, ACS-Audit profiles |
+| **v0.2.0** | Async + composition | Streaming, wrapped streaming, batching atomicity / ordering / dependency semantics, recursive ASK, quorum, multi-tenant isolation, Cedar binding, connection reuse, sensitivity-tier timeout model, AgBOM federation across A2A peers |
+| **v0.3.0+** | Reach + transport | gRPC and unix_socket transports, A2A/MCP `deny`/`modify` extensions, classical-only signature deprecation, full deployment-mode taxonomy |
 
-Holds information about the context of agent step
+## 17. Error Handling
 
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `agent`                              | [`Agent`](#31-agent-object)                                                           | Yes      | Holds information about the agent.                                                                                                         |
-| `session`                              | [`Session`](#39-session-object)                                                           | Yes      | Holds information about the current conversation / interaction with the agent.                                                                                                  |
-| `turnId`            | `string` | Yes      | A unique turn Id in the current session.                          |
-| `stepId`                   | `string` | Yes       | A unique step Id in the current turn. |
-| `timestamp`                   | `string` (ISO 8601) | Yes       | Timestamp (UTC recommended) when this step was recorded. |
-| `identity`                   | [`Identity`](#317-identity-object) | Yes       | The identity interacting or triggering the agent. |
+ACS uses standard [JSON-RPC 2.0 error codes](https://www.jsonrpc.org/specification#error_object). The `-32000` to `-32099` range is reserved for ACS-specific errors.
 
-
-### 3.9. `Session` Object
-
-Holds information about the session.
-
-
-
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                              | `string`                                                           | Yes      | A unique identifier of the session.                                                                                                         |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the session. |
-
-### 3.10. `User` Object
-
-Holds information about the user involved in the interaction with the agent. Used when the agent is triggered by a user prompt.
-
-
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                              | `string`                                                           | Yes      | User Id.                                                                                                         |
-| `name`                              | `string`                                                           | No      | User name.                                                                                                         |
-| `email`                              | `string`                                                           | No      | User email.                                                                                                         |
-| `organization`                              | [`Organization`](#311-organization-object)                                                           | Yes      | The organization that the user belong to.                                                                                                         |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the user. |
-
-### 3.11. `Organization` Object
-
-Represents an organization. Used in: `Agent` as the owning organization of the agent, `User` as the organization the user belongs to.
-
-
-| Field Name                          | Type                                                               | Required | Description                                                                                                                                 |
-| :---------------------------------- | :----------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                              | `string`                                                           | Yes      | Organization Id.                                                                                                         |
-| `name`                              | `string`                                                           | No      | Human-readable name of the organization.                                                                                                         |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the organization. |
-
-### 3.12. JSON-RPC Structures
-
-ACS adheres to the standard [JSON-RPC 2.0](https://www.jsonrpc.org/specification) structures for requests and responses.
-
-#### 3.12.1. `JSONRPCRequest` Object
-
-All ACS method calls are encapsulated in a JSON-RPC Request object.
-
-- `jsonrpc`: A String specifying the version of the JSON-RPC protocol. **MUST** be exactly `"2.0"`.
-- `method`: A String containing the name of the method to be invoked (e.g., `"steps/knowledge"`, `"messages/mcp"`).
-- `params`: A Structured value that holds the parameter values to be used during the invocation of the method. This member **MAY** be omitted if the method expects no parameters. ACS methods typically use an `object` for `params`.
-- `id`: An identifier established by the Client that **MUST** contain a String or Number(Integer) value. The Guardian Agent **MUST** reply with the same value in the Response object. This member is used to correlate the context between the two request and response objects.
-
-#### 3.12.2. `JSONRPCResponse` Object
-
-Responses from the Guardian Agent are encapsulated in a JSON-RPC Response object.
-
-- `jsonrpc`: A String specifying the version of the JSON-RPC protocol. **MUST** be exactly `"2.0"`.
-- `id`: This member is **REQUIRED**. It **MUST** be the same as the value of the `id` member in the Request Object. If there was an error in detecting the `id` in the Request object (e.g. Parse error/Invalid Request), it **MUST** be `null`.
-- **EITHER** `result`: This member is **REQUIRED** on success. This member **MUST NOT** exist if there was an error invoking the method. The value of this member is determined by the method invoked on the Guardian Agent.
-- **OR** `error`: This member is **REQUIRED** on failure. This member **MUST NOT** exist if there was no error triggered during invocation. The value of this member **MUST** be an [`JSONRPCError`](#313-jsonrpcerror-object) object.
-- The members `result` and `error` are mutually exclusive: one **MUST** be present, and the other **MUST NOT**.
-
-### 3.13. `JSONRPCError` Object
-
-When a JSON-RPC call encounters an error, the Response Object will contain an `error` member with a value of this structure.
-
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `code`     | `integer` | Yes      | Integer error code. See [Section 6 (Error Handling)](#6-error-handling) for error codes. |
-| `message`  | `string`  | Yes      | Short, human-readable summary of the error.                                                                  |
-| `data`     | `any`     | No       | Optional additional structured information about the error.                                                  |
-
-
-### 3.14. `KnowledgeRetrievalStepParams` Object
-Holds the parameters for the knowledge retrieval step. See `steps/knowledgeRetrieval` for more info.
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `query`     | `string` | No      | The query extracted from agent's input and used to fetch data / knowledge. |
-| `keywords`  | `string[]`  | No      | Keywords used to fetch data / knowledge. Usually used with word matching search.                                                                  |
-| `results`     | [`KnowledgeRetrievalResult`](#3141-knowledgeretrievalresult-object)[]     | Yes       | Array of retrieved knowledge.                                                  |
-
-
-#### 3.14.1. `KnowledgeRetrievalResult` Object
-Represents a result of knowledge retrieval process.
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `id`     | `string` | Yes      | The Id of the source. The Id is identical to the `Resource` id in the list of agent's available resources (`resources`) if found. |
-| `content`  | `string`  | Yes      | The retrieved content from the source.                                                                  |
-| `mimeType`                              | `string`                                                            | No      | [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types) (e.g., text/plain, image/png). Strongly recommended.                                                                                                           | 
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the retrieved result. |
-
-
-### 3.15. `ToolCallRequest` Object
-Information about the tool call request.<br>
-Agents use tools to complete tasks and fulfill user's requests. Available tools might be listed in [`Agent`](#31-agent-object) object under `tools`.<br>
-Using descriptions from [`ToolDefinition`](#32-tooldefinition-object), the agent decide on which tool to call and on arguments to provide.<br>
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `executionId`     | `string` | Yes      | Execution id of the tool provided by the orchestrator/planner. This id is used later on by the agent and LLM to correlate between tool call request and result. |
-| `toolId`  | `string`  | Yes      | The Id of the tool as specified in [`ToolDefinition`](#32-tooldefinition-object) if exists in `Agent`'s tools.                                                                   |
-| `inputs`     | [`ToolArgumentValue`](#3151-toolargumentvalue-object)[]     | Yes       | Array of inputs for the tool.                                                  |
-
-
-#### 3.15.1. `ToolArgumentValue` Object
-Defines a single argument / input for the tool.
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `name`     | `string` | Yes      | The name of the argument. This is correlated with argument's name as specified in [`ToolArgumentDefinition`](#321-toolargumentdefinition-object) |
-| `id`  | `string`  | No      | The id of the argument. It is correlated with argument's id as specified in [`ToolArgumentDefinition`](#321-toolargumentdefinition-object)                                                                   |
-| `value`                              | `string`\| `number` \| `boolean` \| `object` \| `array` \| `null`                                                           | Yes      | The argument's value.                                                                                                           |
-
-
-### 3.16.  `A2AContext` Object
-Context for A2A requests and responses
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `from`     | [`A2AFullAgentContext`](#3161-a2adullagentcontext-object) \| [`A2APartialAgentContext`](#3162-a2apartialagentcontext-object) | Yes      | Details of the agent that is sending the A2A message (request or response). `A2AFullAgentContext` when observed agent is the client, `A2APartialAgentContext` when observed agent is the server.  |
-| `to`  | [`A2AFullAgentContext`](#3161-a2afullagentcontext-object) \| [`A2APartialAgentContext`](#3162-a2apartialagentcontext-object)  | Yes      | Details of the agent that is receiving the A2A message (request or response). `A2AFullAgentContext` when observed agent is the server, `A2APartialAgentContext` when observed agent is the client.                                                                    |
-
-
-#### 3.16.1.  `A2AFullAgentContext` Object
-Object representing the sender agent in the A2A protocol communication
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `agent`     | [`Agent`](#31-agent-object) | Yes      | Details of the agent that is sending the A2A message (either request or response).  |
-| `role`  | `"client"` \| `"server"` (literal)  | Yes      | Role of the agent as defined in A2A protocol terminology. `"client"` for agent that initializes tasks and requests, `"server"` for agent that fulfills tasks and requests.   
-
-
-#### 3.16.2.  `A2APartialAgentContext` Object
-Object representing the receiver agent in the A2A protocol communication
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `agent`     | [`A2APartialAgentDetails`](#3163-a2apartialagentdetails-object) | Yes      | Details of the agent that is receiving the A2A message (either request or response).  |
-| `role`  | `"client"` \| `"server"` (literal)  | Yes      | Role of the agent as defined in A2A protocol terminology. `"client"` for agent that initializes tasks and requests, `"server"` for agent that fulfills tasks and requests.   
-
-
-#### 3.16.3. `A2APartialAgentDetails` Object
-Object representing the receiver agent in the A2A protocol communication
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `url`     | `string` | Yes      | A URL to the address the receiving agent is hosted at as it appears in its [AgentCard](https://google-a2a.github.io/A2A/latest/specification/#55-agentcard-object-structure).  |
-| `name`  | `string` | Yes      | The name of the receiving agent as it appears in its AgentCard.   
-| `version`  |  `string`  | Yes      | The version of the receiving agent as it appeard in its AgentCard. 
-| `identity`                   | [`AgentIdentity`](#318-agentidentity-object) | Yes       | Identity of the agent.
-
-
-### 3.17. `Identity` Object
-Object representing identity in the context. This is a union object that can be one of the following:
-- [`User`](#310-user-object)
-- [`MachineIdentity`]()
-- [`AgentIdentity`](#318-agentidentity-object)
-
-
-#### 3.17.1 `MachineIdentity` Object
-Object representing a machine identity
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `id`     | `striung` | Yes      | The unique identifier of the application or service. |
-| `name`     | `string`| Yes      | The name of the application or service. |
-| `organization`     | [`Organization`](#311-organization-object)[] | Yes      | The owning organization of the application or service. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the identity. |
-
-
-### 3.18. `AgentIdentity` Object
-Object representing an agent identity
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `signatures`     | [`AgentSignature`](#3181-agentsignature-object)[] | Yes      | Array of JSON Web Signatures computed for the agent. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the identity. |
-
-
-
-#### 3.18.1.  `AgentSignature` Object
-Object representing an agent signature as an agent identifier
-
-| Field Name | Type      | Required | Description                                                                                                  |
-| :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `header`     | `string` | Yes      | The unprotected JWS header values. |
-| `protected`     | `string` | Yes      | The protected JWS header for the signature. This is a Base64url-encoded\nJSON object, as per RFC 7515. |
-| `signature`     | `string` | Yes      | The computed signature, Base64url-encoded. |
-
-
-## 4. Protocol RPC Methods
-All ACS RPC methods are invoked by the agent by sending an HTTP POST request to the guardian agent. The body of the HTTP POST request **MUST** be a `JSONRPCRequest` object, and the `Content-Type` header **MUST** be `application/json`.
-
-The guardian's agent HTTP response body **MUST** be a `JSONRPCResponse` object. The `Content-Type` for JSON-RPC responses is `application/json`.<br>
-
-Most of the protocol methods refer to steps within the agent's workflow: tool call, knowledge, memory etc.<br>
-ACS also supports industial standards for Agent to Agent communication (A2A protocol) and tool call and context (MCP protocol).
-
-### 4.1. steps/agentTrigger
-This is the first step that activates or triggers the agent as a result or a response to an event.<br>
-This method should be used after the agent's input is extracted from the trigger and before it gets to the agent.
-
-
-#### 4.1.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `trigger` | [`AgentTrigger`](#36-agenttrigger-object) | Yes       | The trigger that activated the agent.                        |
-
-
-#### 4.1.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSSuccessResponse-object).
-#### 4.1.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-### 4.2. steps/knowledgeRetrieval
-This step refers to the process of fetching relevant information from an external source (like document store, vector databse, API etc.) to ground agent's response in facts, context and data.<br>
-Result can be a chunk or multiple chunks of data from a source.<br>
-There are many retrieval techniques including semantic search (embedding-based similarity) and keyword search (exact/partial matching), or any combination.
-
-
-#### 4.2.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `knowledgeStep` | [`KnowledgeRetrievalStepParams`](#314-knowledgeretrievalstepparams-object) | Yes       | Knowledge retrieval step parameters.                        |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-
-#### 4.2.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.2.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-### 4.3. steps/memoryStore
-This step refers to the process of memorizing and store memory to the memory store for additional context for future or current agent interactions.<br>
-Mostly, interaction history or a summary is stored to the memory store.
-
-#### 4.3.1. **Request `params` Object**
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `memory` | `string`[]| Yes       | Array of retrieved memory contents. For JSON structured memory (for example chat history), a stringified JSON should be provided.                       |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-
-#### 4.3.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.3.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-### 4.4. steps/memoryContextRetrieval
-This step refers to the process of retrieving memory to add to the context of the current agent interactions.<br>
-This context is passed alongside with the agent's instructions(system prompt), user prompt and additional information such as retrieved knowledge to the LLM.
-
-#### 4.4.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `memory` | `string`[]| Yes       | Array of retrieved memory contents. For JSON structured memory (for example chat history), a stringified JSON should be provided.                       |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-
-#### 4.4.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.4.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-### 4.5. steps/message
-Message step refers to the agent's input or output - depends on the `role`.<br>
-A message with `user` role represents the user prompt / agent's input from the user. The method with `user` message **must** be used before the extracted input gets into the agent.<br>
-A message with `agent` role represents the agent's output (AI response).The method with `agent` message **must** be used after the agent's response is ready and before it is sent back to the user.<br>
-A message with `system` role represents a message from the system, such as guardrails controls etc. The method with `system` message **must** be used a before it is sent back to the user.
-
-#### 4.5.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `message` |[`Message`](#33-message-object)| Yes       | The message.                       |
-| `citation` | [`Source`](#37-source-union-type)[]| Yes       | Array of referenced sources. Relevant mostly with `agent` message.                       |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. Should be used with `agent` or `system` message. |
-
-
-#### 4.5.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-### 4.6. steps/toolCallRequest
-Agents use tools to complete tasks and fulfill user's requests.<br>
-This method should be used after tool inputs are inferred by the LLM and before calling the tool.
-
-#### 4.6.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `toolCallRequest` |[`ToolCallRequest`](#315-toolcallrequest-object)| Yes       | Tool call request details.                       |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-
-
-#### 4.5.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.5.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-### 4.6. steps/toolCallResult
-This method should be used after tool is completed and before the result goes back into the LLM for further processing.
-
-#### 4.6.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `context`       | [`StepContext`](#38-stepcontext-object)                                 | Yes      | The context of the current step. |
-| `executionId` |`string`| Yes       | Execution id, correlated with executionId in [`ToolCallRequest`](#315-toolcallrequest-object) that was previously provided in `steps/toolCallRequest`.                       |
-| `result` |[`ToolCallResult`](#4611-toolcallresult-object)| Yes       | Result.                       |
-
-
-##### 4.6.1.1. `ToolCallResult` Object
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `outputs`       | [`TextPart`](#341-textpart-object)[]                                 | Yes      | Array of `TextPart`. Can be empty if tool does not have output. |
-| `isError` |`boolean`| Yes       | Whether tool completed successfully or resulted in an error.                       |
-
-
-#### 4.6.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.6.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-### 4.7. ping
-This method is used by the agent to ensure that guardian agent is alive.
-
-
-#### 4.7.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `timestamp`                   | `string` (ISO 8601) | Yes       | Timestamp (UTC recommended). |
-| `timeout`                   | `integer`| No       | Timeout in milliseconds after which the communication with guardian agent is considered to be lost. |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the agent. |
-
-#### 4.7.2. **Response on success**: [`PingRequestSuccessResponse`](#53-pingrequestsuccessresponse-object).
-#### 4.7.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-### 4.8. A2A Requests
-Every [A2A](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/) protocol method (request) has its corresponding method in ACS. The structure of these methods are similar and comply with JRPC request structure.<br>
-For client agent, these methods should be used before sending A2A request to a server (remote) agent to monitor outbound communications.<br>
-For server agent, these methods should be used before processing A2A request from client agent to monitor inbound communications.<br>
-Read more about A2A support in [extend_a2a](../instrument/a2a/extend_a2a.md).
-
-
-#### 4.8.1. A2A `Request` Object structure
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `id`                   | `string` \| `integer`  | Yes       | Unique id of the request. |
-| `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-| `method`                   | `string` | Yes       | Method name. Same method name as found in `method` field in the A2A message. See [A2A supported methods](#482-a2a-supported-methods) for the full list. |
-| `payload`       | `object`                               | Yes      | A2A raw JSON message. |
-| `context`       | [`A2AContext`](#316-a2acontext-object)                                 | Yes      | The context of the current A2A message. |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-#### 4.8.2. A2A supported methods
-- `message/send`
-- `message/stream`
-- `tasks/pushNotificationConfig/set`
-- `tasks/pushNotificationConfig/get`
-- `tasks/resubscribe`
-- `tasks/cancel`
-- `tasks/get`
-
-
-#### 4.8.3. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.8.4. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-### 4.9. A2A Responses
-Every response of [A2A supported methods](#482-a2a-supported-methods) from server agent has its corresponding ACS request.<br>
-
-For client agents, these methods should be used before the response from the server agent is processed by the client observed agent to monitor inbound communications.<br>
-For server agents, these methods should be used before the response the response is sent back to the client agent to monitor outbound communications.<br>
-Read more about A2A support in [extend_a2a](../instrument/a2a/extend_a2a.md).
-
-#### 4.9.1. A2A `Request` Object structure
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `id`                   | `string` \| `integer`  | Yes       | Unique id of the request. |
-| `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-| `method`                   | `string` | Yes       | Method name. Same method name as found in `method` field in the A2A original corresponding request message. See [A2A supported methods](#482-a2a-supported-methods) for the full list. |
-| `context`       | [`A2AContext`](#316-a2acontext-object)                                 | Yes      | The context of the current A2A message. |
-| `payload`       | `object`                               | Yes      | A2A raw JSON message (response). |
-
-
-#### 4.9.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.9.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-### 4.10. protocols/MCP
-This method should be used to wrap all [MCP](https://modelcontextprotocol.io/introduction) communications and messages.<br>
-This method should be used before sending MCP message to MCP server to monitor outbound communications.<br>
-This method should be used after receiving MCP message (response) from a MCP server to monitor inbound communications.<br>
-Read more about MCP support in [extend_mcp](../instrument/extend_mcp.md).
-
-
-#### 4.10.1. **Request `params` Object**
-
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `message`       | `object`                               | Yes      | MCP-compliant message. |
-| `reasoning`       | `string`                               | No      | Agent's reasoning. |
-
-#### 4.10.2. **Response on success**: [`ACSSuccessResponse`](#51-ACSsuccessresponse-object).
-#### 4.10.3. **Response on failure**: [`JSONRPCErrorResponse`](#313-jsonrpcerrorresonse-object).
-
-
-## 5. Responses
-
-### 5.1. `ACSSuccessResponse` Object
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `id`                   | `string` \| `integer`  | Yes       | Same id as the id in the correlated request. |
-| `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-| `result`                   |[`ACSSuccessResult`](#511-ACSsuccessresult-object)| Yes       | Success result. |
-
-#### 5.1.1. `ACSSuccessResult` Object
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `decision`                   | `string`  | Yes       | Guardian agent's de. One of `allow`, `deny`, `modify`. |
-| `reasoning`                   | `string`| No       | Guardian agent's reasoning/thought explaining the decision. |
-| `reasonCode`                   | `string`[] | No       | Timestamp (UTC recommended). |
-| `message`                   | `string`| Yes       | Human readable message explaining the decision. |
-| `data`                   | `Record<string, any>` | No       | Additional key-value data. |
-| `modifiedRequest`                   | `ACSRequest` | No       | Modified request. This is relevant when decision is `modify`. |
-
-### 5.2.`JSONRPCErrorResponse` Object
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `id`                   | `string`  | Yes       | Response id. This should be the same as the request id. |
-| `error`                   | `string`| Yes       | One of `JSONRPCError`, `JSONParseError`, `InvalidRequestError`, `MethodNotFoundError`, `InvalidParamsError`, `InternalError`. |
-| `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-
-
-
-### 5.3. `PingRequestSuccessResponse` Object
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `id`                   | `string` \| `integer`  | Yes       | Same id as the id in the correlated ping request. |
-| `result`                   |[`PingRequestResult`](#531-pingrequestresult-object)| Yes       | Ping result. |
-| `jsonrpc`                   |`"2.0"` (literal)| Yes       | JSON-RPC version string. |
-
-
-#### 5.3.1. `PingRequestResult` Object
-
-| Field Name      | Type                                                            | Required | Description                                                        |
-| :-------------- | :-------------------------------------------------------------- | :------- | :----------------------------------------------------------------- |
-| `status`                   | `string`  | Yes       | Guardian agent's status. One of `connected`, `error`. |
-| `version`                   | `string`| Yes       | Guardian agent's version. |
-| `timestamp`                   | `string` (ISO 8601) | Yes       | Timestamp (UTC recommended). |
-| `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the agent. |
-
-## 6. Error Handling
-
-ACS uses standard [JSON-RPC 2.0 error codes and structure](https://www.jsonrpc.org/specification#error_object) for reporting errors. Errors are returned in the `error` member of the `JSONRPCErrorResponse` object. See [`JSONRPCError` Object definition](#313-jsonrpcerror-object).
-
-### 6.1. Standard JSON-RPC Errors
-
-These are standard codes defined by the JSON-RPC 2.0 specification.
-
-| Code                 | JSON-RPC Spec Meaning | Typical ACS `message`     | Description                                                                                  |
-| :------------------- | :-------------------- | :------------------------ | :------------------------------------------------------------------------------------------- |
-| `-32700`             | Parse error (JSONParseError)          | Invalid JSON payload      | Server received JSON that was not well-formed.                                               |
-| `-32600`             | Invalid Request (InvalidRequestError)      | Invalid JSON-RPC Request  | The JSON payload was valid JSON, but not a valid JSON-RPC Request object.                    |
-| `-32601`             | Method not found (MethodNotFoundError)      | Method not found          | The requested ACS RPC `method` (e.g., `"steps/foo"`) does not exist or is not supported.     |
-| `-32602`             | Invalid params (InvalidParamsError)        | Invalid method parameters | The `params` provided for the method are invalid (e.g., wrong type, missing required field). |
-| `-32603`             | Internal error (InternalError)       | Internal server error     | An unexpected error occurred on the server during processing.                                |
-| `-32000` to `-32099` | Server error          | _(Server-defined)_        | Reserved for implementation-defined server-errors. ACS-specific errors use this range.       |
+| Code | Meaning | Typical use |
+|---|---|---|
+| `-32700` | Parse error | Invalid JSON payload |
+| `-32600` | Invalid Request | Not a valid JSON-RPC Request, or array-shaped input to a Guardian that does not support batching |
+| `-32601` | Method not found | The requested ACS method does not exist or is not supported |
+| `-32602` | Invalid params | `params` are invalid (wrong type, missing required field) |
+| `-32603` | Internal error | Unexpected server error |
+| `-32000` to `-32099` | Server error | Reserved for ACS-specific errors (e.g. `UNSUPPORTED_VERSION`, `SESSION_REFUSED`, `REPLAY_DETECTED`) |
