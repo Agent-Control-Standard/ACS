@@ -67,6 +67,7 @@ nav:
     - Core concepts: topics/core_concepts.md
     - ACS in Action: topics/ACS_in_action_example.md
   - Specification:
+    - Conformance Profiles: spec/conformance.md
     - Instrument:
       - Overview: spec/instrument/README.md
       - Supported Hooks: spec/instrument/hooks.md
@@ -84,6 +85,10 @@ nav:
       - AgBOM with CycloneDX: spec/inspect/extend_cyclonedx.md
       - AgBOM with SPDX: spec/inspect/extend_spdx.md
       - AgBOM with SWID: spec/inspect/extend_swid.md
+  - References:
+    - Overview: references/README.md
+    - Hook surfaces across agents: references/hook_surfaces.md
+    - Standards compatibility: references/standards_compatibility.md
   - About: about.md
 
 extra_css:
