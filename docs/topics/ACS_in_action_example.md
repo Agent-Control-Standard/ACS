@@ -1,146 +1,165 @@
-# Illustrating ACS in Action
+# ACS in Action
 
-Please read [Core Concepts](./core_concepts.md) if you haven't already.
+A worked example of an Observed Agent calling the `email.send` tool, with a Guardian Agent enforcing IBAC + FIDES policies, emitting a Trace event, and updating the AgBOM. Read [Core Concepts](./core_concepts.md) first if you haven't.
 
-## Overall process
+## Sequence
 
-The following sequence diagram describes an example of MCP tool call request by an Observed Agent.
-Instrumented with ACS the Observed Agent communicates with a Guardian Agent.
-
-![Sequence Diagram](../assets/sequence_diagram.png "Sequence Diagram")
-
-The Guardian Agent has 3 roles:
-
-1. It should permit, deny or modify the request and send back its verdict by ACS
-2. Sending a trace of the request for observability purpose using OpenTelemetry or OCSF
-3. Update it's bill-of-material with the new tool using CycloneDX, SWID or SPDX
-
-## The Step by Step process
-
-### Step 1: Agent MCP Tool Call
-```python
-# add here the MCP tool call format
 ```
-### Step 2: Agent ACS Request sending
-```python
-# add here the ACS Request with the MCP tool call
+Observed Agent          Guardian Agent          Trace sink (OTLP/SIEM)
+══════════════          ══════════════          ══════════════════════
+  │                          │                          │
+  │ 1. handshake/hello       │                          │
+  ├─────────────────────────>│                          │
+  │ 2. ServerHello           │                          │
+  │<─────────────────────────┤                          │
+  │ 3. agbom/snapshot        │                          │
+  ├─────────────────────────>│                          │
+  │                          │ 4. Trace: acs.agbom      │
+  │                          ├─────────────────────────>│
+  │ 5. allow                 │                          │
+  │<─────────────────────────┤                          │
+  │ 6. steps/sessionStart    │                          │
+  ├─────────────────────────>│ 7. Open chain root       │
+  │ 8. allow                 │                          │
+  │<─────────────────────────┤                          │
+  │ 9. steps/userMessage     │                          │
+  ├─────────────────────────>│                          │
+  │ 10. allow                │                          │
+  │<─────────────────────────┤                          │
+  │ 11. steps/toolCallRequest│                          │
+  ├─────────────────────────>│ 12. Evaluate IBAC + FIDES│
+  │                          │ 13. Trace: acs.decision  │
+  │                          ├─────────────────────────>│
+  │ 14. allow                │                          │
+  │<─────────────────────────┤                          │
+  │ 15. Execute tool         │                          │
+  │ 16. steps/toolCallResult │                          │
+  ├─────────────────────────>│                          │
+  │ 17. allow                │                          │
+  │<─────────────────────────┤                          │
 ```
-### Step 3: Guardian Agent sending a trace of the MCP Tool Call
-```python
-# add here the OpenTelemetry message example
-```
-### Step 4: Guardian Agent Applying Policy Enforcement
-```python
 
-# This is a code snippet example for security policy that allows only MCP servers from a given list
+## The decision point: `steps/toolCallRequest`
 
-def is_known_mcp_server(ip):
-    """
-    Check if the provided IP address belongs to a known MCP CIDR block.
-    """
-    try:
-        ip_obj = ipaddress.ip_address(ip)
-        return any(ip_obj in ipaddress.ip_network(cidr) for cidr in KNOWN_MCP_SERVERS)
-    except ValueError:
-        return False
+The Observed Agent has been asked by a user to "summarize Project X status and email it to my manager." The agent has retrieved the status (untrusted, from a knowledge base), composed a body via the LLM (agent_generated, derived from the retrieval), and is about to call `email.send`. The Guardian must decide.
 
-@app.before_request
-def restrict_to_mcp_servers():
-    """
-    Middleware to restrict incoming requests to only those originating from known MCP servers.
-    """
-    client_ip = request.remote_addr
-    if not is_known_mcp_server(client_ip):
-        abort(403, description="Access denied: IP not in known MCP server list")
-```
-### Step 5: Guardian Agent Sending a "Permitted" Response
-```python
-# add here the ACS Response
-```
-### Step 6: Guardian Agent Sending an updated BOM
+This example shows a deployment that elects to populate the OPTIONAL `trust` field on the wire. An equally-conformant v0.1 deployment would omit `trust` from the Provenance objects and have the Guardian derive the same classification from `origin` + `source_id` against local policy.
 
-The Guardian Agent update its BOM and send an updated file in CycloneDx format
+### Request
 
-```python
+```json
 {
-  "bomFormat": "CycloneDX",
-  "specVersion": "1.6",
-  "version": 1,
-  "metadata": {
-    "timestamp": "2025-05-19T12:00:00Z",
-    "tools": [
-      { "name": "cyclonedx-python-lib", "version": "6.2.1" }
-    ],
-    "authors": [
-      { "name": "AgentOps Team", "email": "agentops@example.com" }
-    ]
-  },
-  "components": [
-    {
-      "type": "service",
-      "name": "finance-summary-agent",
-      "version": "1.2.3",
-      "bom-ref": "urn:agent:finance-summary-agent",
-      "properties": [
-        { "name": "a2aCardUrl", "value": "https://agent.example.com/.well-known/agent.json" },
-        { "name": "languageRuntime", "value": "Python 3.10.9" },
-        { "name": "environment.os", "value": "Ubuntu 22.04" },
-        { "name": "environment.architecture", "value": "x86_64" },
-        { "name": "model", "value": "gpt-4-32k" },
-        { "name": "modelContextWindow", "value": "32768" },
-        { "name": "memoryBackend", "value": "Pinecone" },
-        { "name": "memoryLimitMB", "value": "2048" },
-        { "name": "compliance", "value": "SOC2, GDPR" }
-      ]
+  "jsonrpc": "2.0",
+  "method": "steps/toolCallRequest",
+  "id": "req-001",
+  "params": {
+    "acs_version": "0.1.0",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "timestamp": "2026-04-30T10:30:00Z",
+    "tenant_id": "acme-corp",
+    "metadata": {
+      "agent_id": "cursor-agent-01",
+      "session_id": "abc-123",
+      "turn_id": "t-7",
+      "platform": "cursor"
     },
-    {
-      "type": "tool",
-      "name": "WebSearchAPI",
-      "version": "v1",
-      "bom-ref": "urn:tool:websearchapi",
-      "properties": [
-        { "name": "description", "value": "External web search via Bing API" },
-        { "name": "endpoint", "value": "https://api.bing.microsoft.com/v7.0/search" },
-        { "name": "auth", "value": "API key" },
-        { "name": "scope", "value": "read-only" },
-        { "name": "timeoutMs", "value": "3000" }
-      ]
-    },
-    {
-      "type": "tool",
-      "name": "PythonREPL",
-      "bom-ref": "urn:tool:pythonrepl",
-      "properties": [
-        { "name": "description", "value": "Sandboxed Python evaluator" },
-        { "name": "sandbox", "value": "true" },
-        { "name": "memoryLimitMB", "value": "128" }
-      ]
+    "payload": {
+      "tool": "email.send",
+      "arguments": {
+        "recipient": {
+          "value": "manager@company.com",
+          "provenance": {
+            "provenance_id": "p1",
+            "origin": "user_input",
+            "trust": "trusted",
+            "source_id": "user-12345",
+            "derived_from": []
+          }
+        },
+        "body": {
+          "value": "Project X summary: ...",
+          "provenance": {
+            "provenance_id": "p3",
+            "origin": "agent_generated",
+            "trust": "untrusted",
+            "source_id": "llm-gpt-4",
+            "derived_from": ["p2"]
+          }
+        }
+      }
     }
-  ],
-  "dependencies": [
-    {
-      "ref": "urn:agent:finance-summary-agent",
-      "dependsOn": [
-        "urn:tool:websearchapi",
-        "urn:tool:pythonrepl"
-      ]
-    }
-  ],
-  "signatures": [
-    {
-      "value": "<base64-encoded-signature>",
-      "keyId": "agent-signing-key"
-    }
-  ]
+  }
 }
 ```
-### Step 7: Agent Sending the Tool Call Request to the MCP server
-```python
-## add here the MCP standard tool call
+
+### Decision
+
+The Guardian's deterministic layer evaluates against IBAC (does `email.send` to `manager@company.com` fall inside `Intent.parsed`?) and FIDES (does the trusted-recipient + possibly-tainted-body combination satisfy the P-F flow check?). Both pass.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-001",
+  "result": {
+    "type": "final",
+    "acs_version": "0.1.0",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "decision": "allow",
+    "reasoning": "Recipient is trusted (user_input); body lineage is untrusted but the trusted recipient + possibly-tainted body combination is permitted by FIDES P-F under acme-baseline-v1.",
+    "reason_codes": ["fides_p_f_check_passed", "ibac_capability_match"],
+    "policy_references": [
+      { "policy_id": "acme-baseline-v1", "rule_id": "allow-trusted-recipients" },
+      { "policy_id": "acme-ibac-v1", "rule_id": "email-send-in-intent" }
+    ],
+    "policy_data": {
+      "fides": { "recipient_trust": "trusted", "body_trust": "untrusted", "p_f_passed": true },
+      "ibac": { "matched_capability": { "tool": "email.send", "resource": "manager@company.com" } }
+    },
+    "cited_provenance_ids": ["p1", "p3"],
+    "metadata": {
+      "evaluator": "deterministic",
+      "evaluator_version": "opa-0.65",
+      "evaluation_duration_ms": 12
+    }
+  }
+}
 ```
+
+## What the Guardian also does
+
+The decision above is one of three concurrent obligations:
+
+1. **Permit/deny/modify** — return the decision envelope to the Observed Agent (above).
+2. **Trace** — emit an OTel span event `acs.decision` on the parent `gen_ai.tool.call` span, plus an OCSF Detection Finding (2004) when the decision is non-`allow`. See [Trace Events](../spec/trace/events.md).
+3. **AgBOM** — `agbom/snapshot` was emitted earlier in the session; if the agent has registered new components since, `agbom/changed` is emitted before any content-bearing hook continues. See [Inspect](../spec/inspect/README.md).
+
+## A denial would look almost identical
+
+If the user's intent had been "summarize Project X" without the "email it" clause, IBAC would have denied — `email.send` is not in `Intent.parsed`. The decision envelope changes only its shape:
+
+```json
+{
+  "decision": "deny",
+  "reasoning": "Tool call email.send falls outside Intent.parsed for session abc-123.",
+  "reason_codes": ["ibac_capability_mismatch"],
+  "policy_references": [
+    { "policy_id": "acme-ibac-v1", "rule_id": "tool-call-must-be-in-intent" }
+  ],
+  "policy_data": {
+    "ibac": {
+      "requested_capability": { "tool": "email.send", "resource": "manager@company.com" },
+      "closest_match_in_intent": null
+    }
+  },
+  "cited_provenance_ids": ["p1"]
+}
+```
+
+The Observed Agent receives this verdict, blocks the tool call, and surfaces the reasoning to the user — who can request an [intent extension via ASK](../spec/instrument/specification.md#91-intent-extension-via-ask-normative) if the deployment policy permits.
 
 ## Read Next
 
 - [Instrument](../spec/instrument/README.md)
 - [Trace](../spec/trace/README.md)
 - [Inspect](../spec/inspect/README.md)
+- [Conformance Profiles](../spec/conformance.md)
