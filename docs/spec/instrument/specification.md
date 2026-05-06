@@ -58,11 +58,11 @@ A worked example appears in [ACS in Action](../../topics/ACS_in_action_example.m
 
 Streaming and notifications are not supported in v0.1.0. Batching is permitted as standard JSON-RPC 2.0 — Guardians SHOULD accept array-shaped requests and return an array of correlated responses — but ACS does not add atomicity, ordering, or cross-request dependency semantics in v0.1. Each request in a batch is evaluated independently, in declared order, with each carrying its own `request_id` and (if signed) its own signature. A Guardian that does not support batching MUST return `-32600 Invalid Request` for array-shaped inputs so the Observed Agent can fall back to sequential requests.
 
-The full envelope schemas are [`request-envelope.json`](../../../specification/v0.1.0/request-envelope.json) and [`response-envelope.json`](../../../specification/v0.1.0/response-envelope.json).
+The full envelope schemas are [`request-envelope.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/request-envelope.json) and [`response-envelope.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/response-envelope.json).
 
 ## 4. Capability Negotiation Handshake
 
-Required at session start, before any hook traffic. Wire method: `handshake/hello`. Schema: [`handshake.json`](../../../specification/v0.1.0/handshake.json) (`$defs/ClientHello` and `$defs/ServerHello`).
+Required at session start, before any hook traffic. Wire method: `handshake/hello`. Schema: [`handshake.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/handshake.json) (`$defs/ClientHello` and `$defs/ServerHello`).
 
 **Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
 
@@ -111,7 +111,7 @@ DEFER reasons: `insufficient_context`, `conflicting_policies`, `low_confidence`,
 
 ### 6.1 Decision result fields
 
-The decision envelope ([`response-envelope.json`](../../../specification/v0.1.0/response-envelope.json)) carries a fixed set of fields that compose to support audit, observability, and cross-paradigm enforcement:
+The decision envelope ([`response-envelope.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/response-envelope.json)) carries a fixed set of fields that compose to support audit, observability, and cross-paradigm enforcement:
 
 | Field | Required | Purpose |
 |---|---|---|
@@ -130,7 +130,7 @@ These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulat
 
 ## 7. Provenance
 
-MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL — paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](../../../specification/v0.1.0/provenance.json).
+MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL — paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/provenance.json).
 
 | Field | Required | Type | Notes |
 |---|---|---|---|
@@ -177,7 +177,7 @@ The SessionContext container is intentionally not schematized in v0.1. The wire-
 
 ### 8.1 ContextEntry
 
-Schema: [`context-entry.json`](../../../specification/v0.1.0/context-entry.json). Append-only entry in the audit chain.
+Schema: [`context-entry.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/context-entry.json). Append-only entry in the audit chain.
 
 - **Required:** `entry_id`, `step_id`, `step_type`, `entry_hash`.
 - **SHOULD:** `request_hash` (lowercase-hex SHA-256 of the JCS-canonicalized request envelope params; without this the chain commits only to step metadata, not to request content — deployments claiming the **ACS-Audit** profile MUST populate `request_hash`), `timestamp`, `provenance_summary`, `previous_hash` (required for every entry except the first).
@@ -196,7 +196,7 @@ Conformant Guardians MUST compute `entry_hash` this way; otherwise chains comput
 
 ### 8.3 ProvenanceSummary
 
-Schema: [`provenance-summary.json`](../../../specification/v0.1.0/provenance-summary.json). Optional. Condensed view of provenance facts at the entry level (what entered at this step) and at the session level (cumulative across the session). All fields are OPTIONAL — Guardians populate only what their policies consume. Available v0.1 fields: `origins_seen`, `entry_count`, `entry_count_by_origin`, `earliest_step_id_by_origin`, `max_lineage_depth`. v0.1 carries origin-derived aggregates only; trust-derived aggregates are computed Guardian-internally because v0.1 keeps trust classification in policy. The session-level summary is the monotonic aggregation of entry-level summaries.
+Schema: [`provenance-summary.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/provenance-summary.json). Optional. Condensed view of provenance facts at the entry level (what entered at this step) and at the session level (cumulative across the session). All fields are OPTIONAL — Guardians populate only what their policies consume. Available v0.1 fields: `origins_seen`, `entry_count`, `entry_count_by_origin`, `earliest_step_id_by_origin`, `max_lineage_depth`. v0.1 carries origin-derived aggregates only; trust-derived aggregates are computed Guardian-internally because v0.1 keeps trust classification in policy. The session-level summary is the monotonic aggregation of entry-level summaries.
 
 ### 8.4 Intent
 
@@ -216,7 +216,7 @@ Single-hop only in v0.1. Approvers MUST NOT return ASK. Quorum and recursive ASK
 
 ### 9.1 Intent extension via ASK (normative)
 
-When a Guardian raises ASK because a request is outside `Intent.parsed`, the approver's grant MAY include an `intent_extension` field (see [`ask-details.json`](../../../specification/v0.1.0/ask-details.json)) containing capabilities to add to `Intent.parsed`. The extension's `scope` selects between `this_request` (capabilities apply only to the in-flight request) and `session` (capabilities are appended to `Intent.parsed` for the remainder of the session).
+When a Guardian raises ASK because a request is outside `Intent.parsed`, the approver's grant MAY include an `intent_extension` field (see [`ask-details.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/ask-details.json)) containing capabilities to add to `Intent.parsed`. The extension's `scope` selects between `this_request` (capabilities apply only to the in-flight request) and `session` (capabilities are appended to `Intent.parsed` for the remainder of the session).
 
 On `scope: session`, the Guardian MUST:
 
@@ -296,7 +296,7 @@ OPTIONAL for v0.1.0. Deterministic-only deployments are fully conformant.
 
 A liveness method is required for connection-health checks, transport-debugging, and timeout tuning. It carries no enforcement semantics and is not part of the audit chain.
 
-**Method:** `system/ping`. Schema: [`hooks/system-ping.json`](../../../specification/v0.1.0/hooks/system-ping.json).
+**Method:** `system/ping`. Schema: [`hooks/system-ping.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/hooks/system-ping.json).
 
 **Request payload.** Standard ACS envelope with `method: "system/ping"` and `payload: { "echo": "<optional string>" }`.
 

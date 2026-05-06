@@ -24,7 +24,7 @@ Both methods follow the standard ACS request envelope and are written into the S
 
 ## Canonical schema
 
-Every component graph is expressed in the canonical AgBOM document ([`agbom/document.json`](../../../specification/v0.1.0/agbom/document.json)). Components are typed; the type set in v0.1.0 is:
+Every component graph is expressed in the canonical AgBOM document ([`agbom/document.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/agbom/document.json)). Components are typed; the type set in v0.1.0 is:
 
 | Type | Required fields | Optional fields |
 |---|---|---|
@@ -36,13 +36,13 @@ Every component graph is expressed in the canonical AgBOM document ([`agbom/docu
 | `memory_store` | `id`, `name`, `scope` (`session`/`user`/`tenant`/`global`), `store_type` | `path` (URI), `window_size` |
 | `agent_capability` | `id`, `name`, `description` | `tools[]`, `mcp_servers[]`, `a2a_peers[]` |
 
-The full per-component schema is [`agbom/component.json`](../../../specification/v0.1.0/agbom/component.json).
+The full per-component schema is [`agbom/component.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/agbom/component.json).
 
 Every component SHOULD carry `registration_provenance` (who declared it — framework / configuration / runtime discovery) so AgBOM mutations are traceable in the same lineage system as data flow. Deployments claiming **ACS-Provenance** MUST populate `registration_provenance` on every component.
 
 ## Output format mappings
 
-The canonical document is the source of truth; serialized output is a deterministic derivation. The mapping rules live in [`inspect/format-mapping.json`](../../../specification/v0.1.0/inspect/format-mapping.json).
+The canonical document is the source of truth; serialized output is a deterministic derivation. The mapping rules live in [`inspect/format-mapping.json`](https://github.com/Agent-Control-Standard/ACS/blob/dev/specification/v0.1.0/inspect/format-mapping.json).
 
 | Standard | ACS extension | Status |
 |---|---|---|

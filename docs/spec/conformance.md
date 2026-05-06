@@ -20,7 +20,7 @@ A v0.1.0-conformant deployment MUST implement ACS-Core. ACS-Core comprises:
 - **Dispositions** — All five (ALLOW, DENY, MODIFY, ASK, DEFER) with required fields per [§6](./instrument/specification.md#6-disposition-vocabulary).
 - **SessionContext and Intent** — `session_id`, `chain_hash` (rolling SHA-256), append-only ContextEntry chain ([§8](./instrument/specification.md#8-sessioncontext-and-intent)). Intent is optional but normative when IBAC is the enforcement paradigm.
 - **Replay protection** — `request_id` (UUID) and `timestamp` on every request; Guardians MUST reject replays per [§10.3](./instrument/specification.md#103-replay-protection).
-- **Liveness** — `system/ping` ([§13](./instrument/specification.md#13-liveness--system-methods)).
+- **Liveness** — `system/ping` ([§13](./instrument/specification.md#13-liveness-system-methods)).
 - **Wrapped MCP** — `protocols/MCP/*` ([Hooks](./instrument/hooks.md#protocolsmcp)).
 
 ACS-Core does NOT require: field-level Provenance objects, Trace event emission, AgBOM, cryptographic signatures, or `request_hash` on ContextEntry (`request_hash` remains SHOULD).
