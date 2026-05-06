@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acs.org/schema/v0.1.0/hooks/user-message.json",
+  "title": "steps/userMessage payload",
+  "description": "Payload for the userMessage hook. Fires when user input arrives, before LLM ingestion.",
+  "type": "object",
+  "required": ["content"],
+  "properties": {
+    "content": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "value", "provenance"],
+        "properties": {
+          "type": { "type": "string", "enum": ["text", "image", "audio", "file"] },
+          "value": {},
+          "provenance": { "$ref": "../provenance.json" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acs.org/schema/v0.1.0/hooks/tool-call-request.json",
+  "title": "steps/toolCallRequest payload",
+  "description": "Payload for the toolCallRequest hook. Fires before tool execution. Primary enforcement gate.",
+  "type": "object",
+  "required": ["tool", "arguments"],
+  "properties": {
+    "tool": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "provider": { "type": "string" }
+      }
+    },
+    "operation": {
+      "type": "string",
+      "description": "Optional sub-operation when the tool exposes multiple verbs"
+    },
+    "capability": {
+      "type": "string",
+      "description": "Abstract capability identifier (e.g., filesystem.delete, network.egress, process.execute)"
+    },
+    "arguments": {
+      "type": "object",
+      "description": "Tool arguments. Each argument value MUST carry its own provenance.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["value", "provenance"],
+        "properties": {
+          "value": {},
+          "provenance": { "$ref": "../provenance.json" }
+        }
+      }
+    },
+    "raw_command": {
+      "type": "string",
+      "description": "Optional shell-style command string for tools that accept one"
+    },
+    "intent": {
+      "type": "object",
+      "description": "Optional natural-language framing of why the tool is being called",
+      "properties": {
+        "description": { "type": "string" },
+        "goal": { "type": "string" }
+      }
+    }
+  }
+}

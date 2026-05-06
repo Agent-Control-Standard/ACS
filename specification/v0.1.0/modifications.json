@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acs.org/schema/v0.1.0/modifications.json",
+  "title": "ACS Modifications",
+  "description": "Modifications applied when decision is 'modify'. Includes redactions (decision was 'redact' in earlier drafts).",
+  "type": "object",
+  "minProperties": 1,
+  "properties": {
+    "modified_content": {
+      "type": "string",
+      "description": "Replacement content for the original payload"
+    },
+    "redactions": {
+      "type": "array",
+      "description": "Targeted redactions applied to specific fields",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "description": "JSON pointer to the field" },
+          "replacement": { "type": "string", "description": "Replacement text (default '[REDACTED]')" }
+        }
+      }
+    },
+    "parameter_overrides": {
+      "type": "object",
+      "description": "Replacement values for tool call arguments",
+      "additionalProperties": true
+    }
+  }
+}
