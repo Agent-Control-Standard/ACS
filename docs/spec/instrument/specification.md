@@ -64,7 +64,7 @@ The full envelope schemas are [`request-envelope.json`](https://github.com/afoge
 
 Required at session start, before any hook traffic. Wire method: `handshake/hello`. Schema: [`handshake.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/handshake.json) (`$defs/ClientHello` and `$defs/ServerHello`).
 
-**Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
+**Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)), `approver_types_supported` (which approver types the client can route an `ASK` disposition to; absent/empty declares no `ASK` handling — see [§9.2](#92-approver-incapable-clients-normative)).
 
 **Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
@@ -104,7 +104,7 @@ Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [I
 | `ALLOW` | Proceed | none (`reasoning` RECOMMENDED when user-visible audit trails are expected) |
 | `DENY` | Block | `reasoning` |
 | `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`) | `reasoning`, `modifications` |
-| `ASK` | Pause and request approval | `reasoning`, `ask_details` |
+| `ASK` | Pause and request approval (substituted with `DEFER` or `DENY` for approver-incapable clients — see [§9.2](#92-approver-incapable-clients-normative)) | `reasoning`, `ask_details` |
 | `DEFER` | Verdict not yet reachable | `reasoning`, `defer_details` |
 
 DEFER reasons: `insufficient_context`, `conflicting_policies`, `low_confidence`, `pending_dependency`. DEFER MUST include `resolution_method`, `resolution_timeout_ms`, and `timeout_decision` (default `deny`). Cascading deferrals MUST be bounded per session.
@@ -225,6 +225,19 @@ On `scope: session`, the Guardian MUST:
 3. Carry the extension's `provenance` forward distinct from the original `parser_provenance` so audits can distinguish parser-derived capabilities from approver-extended ones.
 
 Intent extensions are subject to the session's `scope_mode`: a Guardian operating under `scope_mode: strict` MUST NOT honor extensions that would add capabilities the deployment policy forbids in strict mode. This mechanism is the only conformant path to mutate `Intent.parsed` after Intent is committed.
+
+### 9.2 Approver-incapable clients (normative)
+
+Some Observed Agents — IDE plugins, headless automation, runtimes whose enforcement model is allow/deny only — have no way to route an `ASK` disposition. ClientHello carries an optional `approver_types_supported` array (`human` / `agent` / `service`) declaring which approver types the client can resolve. ServerHello carries the same field declaring which the Guardian can route to.
+
+If the intersection of `ClientHello.approver_types_supported` and `ServerHello.approver_types_supported` is empty (including the case where either side declares no support), the Guardian MUST NOT return `ASK`. The Guardian MUST instead substitute one of:
+
+1. `DEFER` with `timeout_decision: "deny"` — when the underlying issue might resolve through retry, an out-of-band escalation, or a later state change. The deferred verdict still counts toward cascading-deferral limits (§6).
+2. `DENY` with `reason_codes: ["approver_unavailable"]` and `reasoning` that names the missing capability — when no recovery path exists.
+
+The choice is policy-driven: deployments SHOULD prefer `DEFER` when the request is potentially recoverable through a different surface, and `DENY` when the action is unconditionally outside the client's reachable authority.
+
+This rule preserves the security guarantee — actions that would have been `ASK`'d in an approver-capable deployment are not silently allowed — while letting clients without approver UX participate in ACS sessions as fully conformant ACS-Core deployments.
 
 ## 10. Cryptographic Signatures
 

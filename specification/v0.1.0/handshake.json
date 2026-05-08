@@ -62,6 +62,11 @@
             "enum": ["acs-core", "acs-trace", "acs-inspect", "acs-inspect-dynamic", "acs-provenance", "acs-crypto", "acs-audit"]
           },
           "description": "Conformance profiles this Observed Agent implements. 'acs-core' is the mandatory baseline and SHOULD always be included. Other profiles are optional and independently claimable. See Section 4 (Conformance Profiles) for definitions."
+        },
+        "approver_types_supported": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["human", "agent", "service"] },
+          "description": "Approver types this Observed Agent can route an ASK disposition to (e.g., 'human' = the harness can surface an approver UI to a logged-in user; 'service' = the harness can invoke an approver endpoint declared by the Guardian). Absent or empty array declares the client cannot handle ASK at all (typical for headless automation, IDE plugins without approver UX, or runtimes whose policy model is allow/deny only). See Section 9.2 for the Guardian's normative fallback rule when the client's set does not intersect the Guardian's approver_types_supported."
         }
       }
     },
