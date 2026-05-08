@@ -7,8 +7,6 @@ They are an open book
 
 They have a dynamic bill-of-material, a clear audit trail and hard inline-controls.
 
-<!-- TODO: add diagram -->
-
 Trustworthiness of agents builds upon the foundation of existing standards (MCP and A2A), but provides value regardless. 
 It build upon cybersecurity and observability standards including OpenTelemetry, OCSF, CycloneDX, SPDX and SWID.
 

@@ -33,7 +33,7 @@ The standard covers the following aspects
 
 We welcome community contributions to enhance and evolve ACS!
 
-- **Questions & Discussions:** Join our [GitHub Discussions](do we have github enterprise?).
+- **Questions & Discussions:** Join our [GitHub Discussions](https://github.com/Agent-Control-Standard/ACS/discussions).
 - **Issues & Feedback:** Report issues or suggest improvements via [GitHub Issues](https://github.com/Agent-Control-Standard/ACS/issues).
 - **Contribution Guide:** See our [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute.
 

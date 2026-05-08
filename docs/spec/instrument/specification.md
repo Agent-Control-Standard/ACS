@@ -455,7 +455,7 @@ Object representing the receiver agent in the A2A protocol communication
 ### 3.17. `Identity` Object
 Object representing identity in the context. This is a union object that can be one of the following:
 - [`User`](#310-user-object)
-- [`MachineIdentity`]()
+- [`MachineIdentity`](#3171-machineidentity-object)
 - [`AgentIdentity`](#318-agentidentity-object)
 
 
@@ -464,7 +464,7 @@ Object representing a machine identity
 
 | Field Name | Type      | Required | Description                                                                                                  |
 | :--------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------- |
-| `id`     | `striung` | Yes      | The unique identifier of the application or service. |
+| `id`     | `string` | Yes      | The unique identifier of the application or service. |
 | `name`     | `string`| Yes      | The name of the application or service. |
 | `organization`     | [`Organization`](#311-organization-object)[] | Yes      | The owning organization of the application or service. |
 | `metadata`                   | `Record<string, any>` | No       | Arbitrary key-value metadata associated with the identity. |
