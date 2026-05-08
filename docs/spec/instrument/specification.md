@@ -64,7 +64,7 @@ The full envelope schemas are [`request-envelope.json`](https://github.com/afoge
 
 Required at session start, before any hook traffic. Wire method: `handshake/hello`. Schema: [`handshake.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/handshake.json) (`$defs/ClientHello` and `$defs/ServerHello`).
 
-**Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)), `approver_types_supported` (which approver types the client can route an `ASK` disposition to; absent/empty declares no `ASK` handling — see [§9.2](#92-approver-incapable-clients-normative)).
+**Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
 
 **Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
@@ -228,9 +228,9 @@ Intent extensions are subject to the session's `scope_mode`: a Guardian operatin
 
 ### 9.2 Approver-incapable clients (normative)
 
-Some Observed Agents — IDE plugins, headless automation, runtimes whose enforcement model is allow/deny only — have no way to route an `ASK` disposition. ClientHello carries an optional `approver_types_supported` array (`human` / `agent` / `service`) declaring which approver types the client can resolve. ServerHello carries the same field declaring which the Guardian can route to.
+Some Observed Agents — IDE plugins, headless automation, runtimes whose enforcement model is allow/deny only — have no way to route an `ASK` disposition. The Guardian determines client ASK-handling capability by deployment-defined means: agent identity bound at handshake, policy keyed on `agent_id`, organizational configuration, or any other out-of-band signal the deployment trusts. ACS does not put this declaration on the wire in v0.1; it is part of the Guardian's policy bundle.
 
-If the intersection of `ClientHello.approver_types_supported` and `ServerHello.approver_types_supported` is empty (including the case where either side declares no support), the Guardian MUST NOT return `ASK`. The Guardian MUST instead substitute one of:
+When the Guardian determines that the client cannot resolve `ASK`, the Guardian MUST NOT return `ASK`. The Guardian MUST instead substitute one of:
 
 1. `DEFER` with `timeout_decision: "deny"` — when the underlying issue might resolve through retry, an out-of-band escalation, or a later state change. The deferred verdict still counts toward cascading-deferral limits (§6).
 2. `DENY` with `reason_codes: ["approver_unavailable"]` and `reasoning` that names the missing capability — when no recovery path exists.
