@@ -89,8 +89,10 @@ The documentation follows this hierarchy:
 ### Development Setup
 This is a documentation-focused project built with:
 - **UV** for Python dependency management (replaces pip)
-- **MkDocs Material** for documentation generation
-- **GitHub Pages** for hosting at agentcontrolstandard.org
+- **MkDocs Material** for local documentation preview
+
+### Hosting (decoupled from this repo)
+This repository is the **source of truth for the ACS spec** (schema, hooks, events, AgBOM definitions, written specification). The marketing and docs site at **agentcontrolstandard.ai** is built and deployed independently from a separate repository — changes here do not propagate automatically. The `.org` and `.com` domains redirect to `.ai`.
 
 ### Roadmap Context
 - **v0.1** (Current): Documentation, schemas, and requirements
