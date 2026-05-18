@@ -117,7 +117,7 @@ The decision envelope ([`response-envelope.json`](https://github.com/afogel/ACS_
 |---|---|---|
 | `decision` | yes | The verdict, one of the five dispositions above. |
 | `reasoning` | conditional | Single human-renderable explanation. Serves both end-user display and audit/agent-internal consumption; deployments wanting different text per audience SHOULD compose them client-side from `reasoning` + `policy_data` + `reason_codes`. |
-| `policy_references` | no | Array of `{policy_id, policy_name, rule_id}` — the rules that fired. A single decision MAY cite multiple entries when several paradigms reject the same action; audit replay walks the list to reconstruct contributions. |
+| `policy_references` | no | Array of `{policy_id, policy_version, policy_name, rule_id}` — the rules that fired. `policy_version` is OPTIONAL and deployment-defined, but SHOULD be populated when replay or ledger-backed policy state matters. A single decision MAY cite multiple entries when several paradigms reject the same action; audit replay walks the list to reconstruct contributions. |
 | `reason_codes` | no | Array of machine-readable categorization strings. Free vocabulary in v0.1. UIs and meta-policies SHOULD switch on these rather than parsing reasoning text or rule IDs. |
 | `policy_data` | no | Free-form structured payload for paradigm- or policy-specific facts. When multiple paradigms fire, conventionally keyed by paradigm name (`{ "ibac": {...}, "fides": {...}, "aarm": {...} }`). |
 | `cited_provenance_ids` | no | Array of `provenance_id`s whose facts drove this decision. Standard top-level surface for "which provenance objects mattered". |
@@ -163,7 +163,7 @@ Used both by Guardians that derive trust in policy and by vendor implementations
 | `external` | `untrusted` |
 | `agent_generated` | minimum trust of `derived_from` lineage |
 
-Provenance MUST be populated by deterministic code outside the LLM's output path. Implementations MUST NOT instruct the LLM to produce it. The agent declares `provenance_producer: "framework" | "llm" | "none"` in the handshake; a `none` producer emits no Provenance objects, and Guardians whose policies require Provenance MUST refuse the session at handshake time rather than silently degrading enforcement.
+Provenance MUST be populated by deterministic code outside the LLM's output path. Implementations MUST NOT instruct the LLM to produce it. The agent declares `provenance_producer: "deterministic" | "none"` in the handshake; a `none` producer emits no Provenance objects, and Guardians whose policies require Provenance MUST refuse the session at handshake time rather than silently degrading enforcement. LLM-authored Provenance is not a conformant producer mode because it makes an untrusted runtime output responsible for its own lineage.
 
 ## 8. SessionContext and Intent
 
@@ -347,7 +347,7 @@ A liveness method is required for connection-health checks, transport-debugging,
 | Version | Theme | Highlights |
 |---|---|---|
 | **v0.1.0** | Baseline + profiles | ACS-Core (mandatory), ACS-Trace, ACS-Inspect/Inspect-Dynamic, ACS-Provenance, ACS-Crypto, ACS-Audit profiles |
-| **v0.2.0** | Async + composition | Streaming, wrapped streaming, batching atomicity / ordering / dependency semantics, recursive ASK, quorum, multi-tenant isolation, Cedar binding, connection reuse, sensitivity-tier timeout model, AgBOM federation across A2A peers |
+| **v0.2.0** | Async + composition | Streaming, wrapped streaming, batching atomicity / ordering / dependency semantics, recursive ASK, quorum, multi-tenant isolation, policy-author attestation profile, Cedar binding, connection reuse, sensitivity-tier timeout model, AgBOM federation across A2A peers |
 | **v0.3.0+** | Reach + transport | gRPC and unix_socket transports, A2A/MCP `deny`/`modify` extensions, classical-only signature deprecation, full deployment-mode taxonomy |
 
 ## 17. Error Handling

@@ -48,11 +48,15 @@
             "type": "object",
             "properties": {
               "policy_id": { "type": "string" },
+              "policy_version": {
+                "type": "string",
+                "description": "Optional deployment-chosen version identifier for the referenced policy bundle or document. Lets audit replay reconstruct the exact historical policy state without prescribing a ledger or versioning scheme."
+              },
               "policy_name": { "type": "string" },
               "rule_id": { "type": "string" }
             }
           },
-          "description": "The policies/rules that fired. A single decision MAY cite multiple — when IBAC + FIDES + AARM all reject the same action, expect three entries here, one per paradigm. Audit replay walks this list to reconstruct which rules contributed."
+          "description": "The policies/rules that fired. A single decision MAY cite multiple — when IBAC + FIDES + AARM all reject the same action, expect three entries here, one per paradigm. policy_version is optional and deployment-defined, but SHOULD be populated when the deployment supports replay or ledger-backed policy state. Audit replay walks this list to reconstruct which rules contributed."
         },
         "policy_data": {
           "type": "object",

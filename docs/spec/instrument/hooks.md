@@ -290,4 +290,4 @@ Liveness probe. Always returns `decision: "allow"` regardless of policy, signatu
 
 ## protocols/MCP/\*
 
-See [Extending MCP](./extend_mcp.md). Wrapped MCP messages flow through `protocols/MCP/*` (e.g. `protocols/MCP/tools/call`). The wrapped methods carry the underlying MCP message intact and apply the standard ACS envelope, decision contract, and audit-chain rules on top.
+See [Extending MCP](./extend_mcp.md). Wrapped MCP messages flow through `protocols/MCP/*` (e.g. `protocols/MCP/initialize`, `protocols/MCP/tools/call`, `protocols/MCP/prompts/get`, `protocols/MCP/resources/read`). The wrapped methods carry the underlying MCP message intact and apply the standard ACS envelope, decision contract, and audit-chain rules on top. Deployments that only need transport-agnostic tool governance MAY collapse MCP tool calls into `steps/toolCallRequest`; deployments that need MCP-specific policy precision use this namespace to preserve distinctions such as capability negotiation, prompt fetches, resource reads/subscriptions, and notifications.

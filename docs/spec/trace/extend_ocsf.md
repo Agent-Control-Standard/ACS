@@ -92,7 +92,7 @@ ACS events map to OCSF 1.5+ event classes. The normative class assignments and t
       "decision": "deny",
       "evaluator": "deterministic",
       "policy_references": [
-        { "policy_id": "acme-ibac-v1", "rule_id": "email-send-recipient-not-in-intent" }
+        { "policy_id": "acme-ibac", "policy_version": "v1", "rule_id": "email-send-recipient-not-in-intent" }
       ],
       "reason_codes": ["ibac_capability_mismatch"],
       "cited_provenance_ids": ["p1"],

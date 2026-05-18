@@ -62,6 +62,8 @@ Adds cryptographic signature support beyond the baseline's replay-protection fie
 
 Baseline deployments without ACS-Crypto MAY use `HMAC-SHA256` for integrity or rely on transport-level security; neither is required by ACS-Core.
 
+Policy-author identity is distinct from both Observed Agent identity and Guardian identity. v0.1 keeps policy-author authorization and trust schemes deployment-defined, but `policy_references[].policy_version` gives replay and ledger-backed deployments a stable pointer to the policy state that was evaluated. A future Policy Attestation profile is expected to bind policy references to verifiable author signatures using algorithms from the ACS-Crypto registry while leaving the deployment trust scheme (for example SPIFFE, OIDC, DID, organizational PKI, or quorum signing) out of the core wire contract.
+
 ## ACS-Audit
 
 Strengthens the audit chain beyond ACS-Core's baseline. A deployment claiming ACS-Audit MUST populate `request_hash` (lowercase-hex SHA-256 of JCS-canonicalized request params) on every ContextEntry, ensuring the chain commits to request content, not just step metadata. ACS-Audit deployments SHOULD also populate `timestamp` and `provenance_summary` on every ContextEntry.

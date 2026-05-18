@@ -105,11 +105,11 @@ The Guardian's deterministic layer evaluates against IBAC (does `email.send` to 
     "acs_version": "0.1.0",
     "request_id": "550e8400-e29b-41d4-a716-446655440000",
     "decision": "allow",
-    "reasoning": "Recipient is trusted (user_input); body lineage is untrusted but the trusted recipient + possibly-tainted body combination is permitted by FIDES P-F under acme-baseline-v1.",
+    "reasoning": "Recipient is trusted (user_input); body lineage is untrusted but the trusted recipient + possibly-tainted body combination is permitted by FIDES P-F under acme-baseline version v1.",
     "reason_codes": ["fides_p_f_check_passed", "ibac_capability_match"],
     "policy_references": [
-      { "policy_id": "acme-baseline-v1", "rule_id": "allow-trusted-recipients" },
-      { "policy_id": "acme-ibac-v1", "rule_id": "email-send-in-intent" }
+      { "policy_id": "acme-baseline", "policy_version": "v1", "rule_id": "allow-trusted-recipients" },
+      { "policy_id": "acme-ibac", "policy_version": "v1", "rule_id": "email-send-in-intent" }
     ],
     "policy_data": {
       "fides": { "recipient_trust": "trusted", "body_trust": "untrusted", "p_f_passed": true },
@@ -147,7 +147,7 @@ User's committed Intent: `["summarize Project X"]`. The agent attempts `email.se
   "reasoning": "Tool call email.send falls outside Intent.parsed for session abc-123.",
   "reason_codes": ["ibac_capability_mismatch"],
   "policy_references": [
-    { "policy_id": "acme-ibac-v1", "rule_id": "tool-call-must-be-in-intent" }
+    { "policy_id": "acme-ibac", "policy_version": "v1", "rule_id": "tool-call-must-be-in-intent" }
   ],
   "policy_data": {
     "ibac": {
@@ -167,10 +167,10 @@ A second tool call later in the same session: `email.send` with a `recipient` de
 ```json
 {
   "decision": "deny",
-  "reasoning": "Outbound email.send recipient and body both derive from untrusted retrieval (provenance_id=p2); FIDES P-T denies under acme-baseline-v1.",
+  "reasoning": "Outbound email.send recipient and body both derive from untrusted retrieval (provenance_id=p2); FIDES P-T denies under acme-baseline version v1.",
   "reason_codes": ["fides_p_t_failed", "untrusted_recipient_derivation"],
   "policy_references": [
-    { "policy_id": "acme-baseline-v1", "rule_id": "no-untrusted-recipient-derivation" }
+    { "policy_id": "acme-baseline", "policy_version": "v1", "rule_id": "no-untrusted-recipient-derivation" }
   ],
   "policy_data": {
     "fides": {
@@ -194,7 +194,7 @@ A calendar agent: privileged LLM emits a program `schedule_meeting(attendees=USE
   "reasoning": "Argument 'attendees' derives from retrieved content (provenance_id=p7) along a path the synthesized program's capability set forbids.",
   "reason_codes": ["camel_argument_dependency_violation"],
   "policy_references": [
-    { "policy_id": "acme-camel-v1", "rule_id": "consequential-args-must-trace-to-trusted-input" }
+    { "policy_id": "acme-camel", "policy_version": "v1", "rule_id": "consequential-args-must-trace-to-trusted-input" }
   ],
   "policy_data": {
     "camel": {
@@ -215,10 +215,10 @@ Much later in a session that has touched untrusted email content, the agent atte
 ```json
 {
   "decision": "deny",
-  "reasoning": "Session abc-123 has processed retrieved content from step s-14 onward without trusted re-grounding; payment.transfer is consequential per acme-aarm-v1.",
+  "reasoning": "Session abc-123 has processed retrieved content from step s-14 onward without trusted re-grounding; payment.transfer is consequential per acme-aarm version v1.",
   "reason_codes": ["aarm_cumulative_taint", "consequential_action_in_tainted_window"],
   "policy_references": [
-    { "policy_id": "acme-aarm-v1", "rule_id": "no-consequential-finance-after-untrusted-retrieval" }
+    { "policy_id": "acme-aarm", "policy_version": "v1", "rule_id": "no-consequential-finance-after-untrusted-retrieval" }
   ],
   "policy_data": {
     "aarm": {
@@ -243,8 +243,8 @@ In multi-paradigm deployments a single decision MAY cite all firing paradigms â€
   "reasoning": "Action outside Intent.parsed (IBAC) and arguments derived from untrusted retrieval (FIDES P-T); either alone would deny.",
   "reason_codes": ["ibac_capability_mismatch", "fides_p_t_failed"],
   "policy_references": [
-    { "policy_id": "acme-ibac-v1", "rule_id": "tool-call-must-be-in-intent" },
-    { "policy_id": "acme-fides-v1", "rule_id": "p-t-blocks-untrusted-derivation" }
+    { "policy_id": "acme-ibac", "policy_version": "v1", "rule_id": "tool-call-must-be-in-intent" },
+    { "policy_id": "acme-fides", "policy_version": "v1", "rule_id": "p-t-blocks-untrusted-derivation" }
   ],
   "policy_data": {
     "ibac": { "requested_capability": { "tool": "email.send" }, "intent_parsed": ["summarize.read"] },

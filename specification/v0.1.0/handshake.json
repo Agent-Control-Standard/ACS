@@ -40,8 +40,8 @@
         },
         "provenance_producer": {
           "type": "string",
-          "enum": ["framework", "llm", "none"],
-          "description": "Declares who populates Provenance objects. 'framework' = deterministic framework code (REQUIRED for IFC paradigms). 'llm' = the LLM produces them (NOT RECOMMENDED — Guardians SHOULD reject this and refuse the session if their policy requires Provenance). 'none' = no Provenance is emitted; Guardians whose policies require Provenance MUST refuse the session at handshake time rather than silently degrading enforcement."
+          "enum": ["deterministic", "none"],
+          "description": "Declares whether Provenance objects are populated by deterministic code outside the LLM output path. 'deterministic' is REQUIRED for information-flow paradigms and for deployments claiming ACS-Provenance. 'none' = no Provenance is emitted; Guardians whose policies require Provenance MUST refuse the session at handshake time rather than silently degrading enforcement. LLM-authored Provenance is not a conformant producer mode."
         },
         "wrapped_protocols": {
           "type": "array",
