@@ -29,7 +29,7 @@ The full per-hook payload schemas live under [`specification/v0.1.0/hooks/`](htt
 | [`system/ping`](#systemping) | Liveness probe | Always ALLOW | No |
 | `protocols/MCP/*` | Wrapped MCP messages | Yes | Yes |
 
-`protocols/A2A/*` is reserved for v0.2.
+`protocols/A2A/*` is reserved for v0.2. The namespace is recognized in the handshake's `wrapped_protocols` for forward compatibility, but no normative wrapping semantics are defined in v0.1.
 
 ## Common envelope
 
