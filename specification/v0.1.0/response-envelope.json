@@ -61,7 +61,7 @@
         "policy_data": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Paradigm-specific or policy-specific structured payload. Free-form escape hatch for facts the policy wants to surface beyond reasoning text — e.g., FIDES exposes the violating argument path and lineage; IBAC exposes the requested capability and closest Intent.parsed match; AARM exposes the earliest policy-untrusted step_id and lookback_distance computed by the Guardian (v0.1 carries factual provenance on the wire and the Guardian projects it onto its trust classification — see §3.7). When multiple paradigms fire on the same decision, the convention is to key by paradigm name: { 'ibac': {...}, 'fides': {...}, 'aarm': {...} }, so each payload is independently parseable. Unstructured 'data' from earlier ACS drafts maps here."
+          "description": "Paradigm-specific or policy-specific structured payload. Free-form escape hatch for facts the policy wants to surface beyond reasoning text — e.g., FIDES exposes the violating argument path and lineage; IBAC exposes the requested capability and closest Intent.parsed match; AARM exposes the earliest policy-untrusted step_id and lookback_distance computed by the Guardian (v0.1 carries factual provenance on the wire and the Guardian projects it onto its trust classification — see §7.1). When multiple paradigms fire on the same decision, the convention is to key by paradigm name: { 'ibac': {...}, 'fides': {...}, 'aarm': {...} }, so each payload is independently parseable. Unstructured 'data' from earlier ACS drafts maps here."
         },
         "cited_provenance_ids": {
           "type": "array",

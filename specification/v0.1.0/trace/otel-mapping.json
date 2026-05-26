@@ -118,7 +118,7 @@
     },
     "provenance_attributes": {
       "type": "object",
-      "description": "When Provenance is attached to a hook payload, the resulting span MUST carry provenance facts as attributes. Lineage edges MAY be linked via OTel span links keyed by provenance_id. v0.1 emits the factual provenance fields (origin, source_id, lineage_depth) on the wire and on the span; trust classification is computed by the Guardian against local policy and is not a v0.1 span attribute (see §3.7).",
+      "description": "When Provenance is attached to a hook payload, the resulting span MUST carry provenance facts as attributes. Lineage edges MAY be linked via OTel span links keyed by provenance_id. v0.1 emits the factual provenance fields (origin, source_id, lineage_depth) on the wire and on the span; trust classification is computed by the Guardian against local policy and is not a v0.1 span attribute (see §7.1).",
       "properties": {
         "required": {
           "type": "array",
