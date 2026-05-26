@@ -178,7 +178,7 @@ Frameworks MUST fire `toolCallRequest` for every action that escapes the agent's
 
 Schema: [`hooks/tool-call-result.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/tool-call-result.json).
 
-Fires after tool execution, before the result is ingested into the agent. Provenance: `origin: tool_output`, with `derived_from` set to the originating `toolCallRequest`'s provenance ids when the tool's output is data-derived.
+Fires after tool execution, before the result is ingested into the agent's reasoning context. Provenance: `origin: tool_output`, with `derived_from` set to the originating `toolCallRequest`'s provenance ids when the tool's output is data-derived.
 
 **Payload:** `execution_id` (correlated to the request), outputs, exit status, duration.
 
