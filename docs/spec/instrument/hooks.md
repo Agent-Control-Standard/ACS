@@ -286,6 +286,8 @@ Inspect-pillar method. Fires whenever a component is added, removed, or version-
 
 Schema: [`hooks/system-ping.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/system-ping.json). See [Specification §13](./specification.md#13-liveness-system-methods).
 
+> **Note:** `system/ping` is in the `system/*` namespace, not `steps/*`. It is not a hook in the enforcement sense: it carries no audit and bypasses signature requirements.
+
 Liveness probe. Always returns `decision: "allow"` regardless of policy, signature, or session state. NOT written into SessionContext. NOT subject to signature requirements even when the session otherwise requires signatures.
 
 ---
