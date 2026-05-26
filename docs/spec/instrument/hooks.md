@@ -164,7 +164,7 @@ Memory write. The standard sink for cross-session influence; mediating it preven
 
 Schema: [`hooks/tool-call-request.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/tool-call-request.json).
 
-Fires after the framework has parsed a tool call from the LLM's output, but before the tool is dispatched to its handler. The central enforcement point for IBAC, FIDES, CaMeL, and AARM. Argument-level provenance attached to `ToolArgumentValue` lets Guardians reason about *which* arguments are tainted, not just whether the call is allowed at all.
+Fires after the framework has parsed a tool call from the LLM's output, but before the tool is dispatched to its handler. The central enforcement point for IBAC, FIDES, CaMeL, and AARM. Argument-level provenance attached to each `ToolArgumentValue` lets Guardians reason about the lineage of individual arguments, so policy can target specific data flows rather than the call as a whole.
 
 Frameworks MUST fire `toolCallRequest` for every action that escapes the agent's reasoning context, regardless of whether the framework's tool registry models it as a tool. This includes built-in operations such as filesystem reads/writes, network fetches, process execution, and shell commands. The Guardian relies on a complete view of all outward actions; primitives that bypass `toolCallRequest` are invisible to policy.
 
