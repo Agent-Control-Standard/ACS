@@ -116,7 +116,7 @@ Fires when external user input arrives, before it is presented to the agent's re
 
 Schema: [`hooks/agent-response.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agent-response.json).
 
-Agent output, before reaching the user. Provenance: `origin: agent_generated` with `derived_from` set to whatever inputs the response is derived from.
+Fires after the agent has produced a response, before it is delivered to the recipient (user, A2A peer, parent agent, or external system). Provenance: `origin: agent_generated` with `derived_from` set to whatever inputs the response is derived from.
 
 **Payload:** response content, optional sources/citations, agent reasoning.
 
