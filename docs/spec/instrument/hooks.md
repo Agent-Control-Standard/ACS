@@ -104,7 +104,7 @@ Lightweight hook marking the start of an agent turn. Many policies key on per-tu
 
 Schema: [`hooks/user-message.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/user-message.json).
 
-User input received, before reaching the agent. Provenance: `origin: user_input`.
+Fires when external user input arrives, before it is presented to the agent's reasoning context. Provenance: `origin: user_input`.
 
 **Payload:** message content, optional citation/sources, user context.
 
