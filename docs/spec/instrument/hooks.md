@@ -78,9 +78,9 @@ A deployment that does not emit `sessionStart` MAY allow the Guardian to implici
 
 Schema: [`hooks/agent-trigger.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agent-trigger.json).
 
-Fires when the agent is activated by an event (email arrival, scheduled trigger, A2A inbound, etc.). For A2A-mediated delegation, `trigger_type: "a2a_inbound"` carries the originating peer identity; in-process subagent spawns use [`subagentStart`](#subagentstart) instead.
+Fires when the agent is activated by an external triggering condition (event arrival, scheduled tick, A2A inbound message, user-initiated session, or system-issued activation). For A2A-mediated delegation, `trigger_type: "a2a_inbound"` carries the originating peer identity; for in-process subagent spawns, see [`subagentStart`](#subagentstart).
 
-**Payload:** `trigger_type` (`autonomous`, `user_initiated`, `scheduled`, `a2a_inbound`, `local`), `trigger_event` (event id, source, payload), agent context.
+**Payload:** `trigger_type` (`user_message`, `scheduled`, `external_event`, `a2a_inbound`, `system`), `trigger_source` (shape depends on `trigger_type`), optional `intent` (IBAC adopters populate; the Intent registered at sessionStart, carried here for activation-time policy checks).
 
 **Decision:** ALLOW / DENY / MODIFY. Guardian MAY rewrite the trigger payload (e.g. redact PII) before activation.
 
