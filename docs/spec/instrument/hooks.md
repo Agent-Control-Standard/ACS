@@ -204,7 +204,7 @@ Schema: [`hooks/post-compact.json`](https://github.com/afogel/ACS_official/blob/
 
 Fires after compaction. Audit + provenance-binding hook.
 
-**Payload:** resulting `summary` content with `provenance` whose `origin` MUST be `agent_generated` and whose `derived_from` MUST equal the union of `provenance_id`s of every entry in `entries_compacted`. When the deployment populates `trust` on the wire, `trust` MUST equal the minimum trust of those entries (the standard monotonicity rule applied to summarization). The framework — not the LLM — populates `derived_from`.
+**Payload:** resulting `summary` content with `provenance` whose `origin` MUST be `agent_generated` and whose `derived_from` MUST equal the union of `provenance_id`s of every entry in `entries_compacted`. The framework — not the LLM — populates `derived_from`.
 
 **Decision:** Not decision-eligible — compaction has already occurred. A Guardian MAY return MODIFY (rewrite the summary, e.g. to redact a region the policy can't compact), but MAY NOT return DENY. The audit chain MUST record the post-compact state regardless.
 
