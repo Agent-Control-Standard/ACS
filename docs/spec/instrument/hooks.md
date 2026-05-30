@@ -1,6 +1,6 @@
 # Hooks
 
-ACS v0.1.0 defines 16 native `steps/*` hooks plus the wrapped `protocols/MCP/*` namespace, the Inspect-pillar `agbom/*` methods, and the `system/ping` liveness method. This page catalogs each hook: when it fires, the canonical schema, the disposition contract, and the audit-chain implications.
+ACS v0.1.0 defines 19 native `steps/*` hooks plus the wrapped `protocols/MCP/*` namespace, the Inspect-pillar `agbom/*` methods, and the `system/ping` liveness method. This page catalogs each hook: when it fires, the canonical schema, the disposition contract, and the audit-chain implications.
 
 The full per-hook payload schemas live under [`specification/v0.1.0/hooks/`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/). Common envelope rules — `request_id`, `timestamp`, `acs_version`, `metadata`, signature handling, replay protection — are documented in [Specification §3](./specification.md#3-wire-format) and [§10.3](./specification.md#103-replay-protection).
 
@@ -22,6 +22,9 @@ The full per-hook payload schemas live under [`specification/v0.1.0/hooks/`](htt
 | [`postCompact`](#postcompact) | After compaction; carries new summary | No (audit + lineage binding) | Yes |
 | [`subagentStart`](#subagentstart) | In-process subagent spawned | Yes | Yes |
 | [`subagentStop`](#subagentstop) | Subagent terminated | No | Yes |
+| [`skillRegister`](#skillregister) | Skill enters the available set, before it can load | Yes | Yes |
+| [`skillLoad`](#skillload) | Registered skill activates into a session, before its actions run | Yes | Yes |
+| [`skillUnload`](#skillunload) | Skill leaves the active set | No (audit) | Yes |
 | [`turnEnd`](#turnend) | End of an agent turn | No (audit) | Yes |
 | [`sessionEnd`](#sessionend) | Session termination | No (audit finalization) | Yes |
 | [`agbom/snapshot`](#agbomsnapshot) | Full AgBOM, once per session | Yes (banned components) | Yes |
@@ -236,6 +239,48 @@ Schema: [`hooks/subagent-stop.json`](https://github.com/afogel/ACS_official/blob
 
 ---
 
+## skillRegister
+
+Schema: [`hooks/skill-register.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-register.json).
+
+Fires when a skill enters the agent's available set, before it is eligible to load or run. This is the static vetting gate: the one point where a Guardian sees the whole skill definition before any of its actions execute. A payload split across a skill's actions is benign at each action and malicious only in composition, so it escapes per-action hooks like [`toolCallRequest`](#toolcallrequest); `skillRegister` is where the whole definition is inspected.
+
+A skill is the loadable, composed counterpart to the passive `agent_capability` grouping. It is cataloged as a `skill` AgBOM component carrying its composition references, a least-privilege capability manifest, and the definition's reference and integrity digest. The `ref` and `digest` commit to the complete loadable artifact, including any bundled model weights or adapters, not only text. This matters for a model-bearing skill whose backdoor lives in opaque weights rather than any readable instruction: source inspection cannot see it, so the control is the digest plus `registration_provenance`, not body reading. The full definition body travels in this payload for inspection but is NOT persisted to the AgBOM; only the `ref` and `digest` persist. The approval recorded here is keyed on the `(skill_id, digest)` pair, which `skillLoad` is later checked against. Marketplace pre-publication scanning and publisher reputation are out of scope; ACS surfaces the definition, provenance, and manifest so the Guardian's policy can act.
+
+**Payload:** `skill_id`, `definition` (`ref`, `digest`, optional `body` for inspection), `declared_capabilities`, optional `composition` (`tools`/`mcp_servers`/`a2a_peers`/`models`/`composed_skills`), `registration_provenance`. A model-bearing skill lists its bundled model under `composition.models` so the AgBOM inventories it as a `model` component with its own provenance, rather than leaving the weights opaque inside the definition.
+
+**Decision:** ALLOW / DENY. A Guardian MAY deny registration; a denied skill MUST NOT become eligible to load. A Guardian SHOULD compare `declared_capabilities` against the union of capabilities the composed tools expose and MAY deny over-broad declarations.
+
+---
+
+## skillLoad
+
+Schema: [`hooks/skill-load.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-load.json).
+
+Fires when a registered skill activates into a session, before its actions run. Where `skillRegister` vets the artifact once and statically, `skillLoad` governs each activation in live context. It carries the load path, the ordered list of skills that led to the current load, so a Guardian can see and contain inter-skill cascades (skill A loads B loads C, each clean alone).
+
+`skillLoad` carries the `digest` of the artifact being loaded so the Guardian binds the activation to an approved registration. A load MUST be correlatable to a prior approved `skillRegister` for the same `(skill_id, digest)`; one the Guardian cannot tie to an approved registration, or whose digest differs from the approved one, is unverifiable and SHOULD be denied. Without this binding the gate is bypassable: a framework could emit `skillLoad` for an artifact that was never registered, or whose registration was denied. The framework MAY send a `digest_verified` hint, but a Guardian verifies the binding itself by comparing `digest` against its record of the approved registration rather than trusting the flag, since a compromised framework could assert it falsely.
+
+When a load is triggered by another skill, `load_trigger` is `skill_composition` and `load_path` carries more than one element.
+
+**Payload:** `skill_id`, `digest` (`algorithm`, `value`), `load_trigger` (`user`/`agent_decision`/`skill_composition`/`system`), `load_path` (ordered `{skill_id, step_id?}`, root first), optional `registration_ref`, optional `parent_step_id`, optional `digest_verified`, optional `declared_capabilities`.
+
+**Decision:** ALLOW / DENY. A Guardian SHOULD deny a load it cannot correlate to an approved `skillRegister` for the same `(skill_id, digest)`, SHOULD deny when `load_path` shows a skill loading another outside its declared `composed_skills`, and SHOULD deny when the loaded artifact's digest does not match the one vetted at `skillRegister`.
+
+---
+
+## skillUnload
+
+Schema: [`hooks/skill-unload.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-unload.json).
+
+Fires when a skill leaves the active set. Its enforcement value is low: by unload time the skill's actions have already run, so a Guardian typically observes rather than denies. It keeps the AgBOM's active inventory accurate, and repeated load/unload churn of the same skill is itself a signal worth tracing.
+
+**Payload:** `skill_id`, `reason` (`session_end`/`explicit_unload`/`replaced`/`error`), optional `replaced_by`.
+
+**Decision:** Audit only.
+
+---
+
 ## turnEnd
 
 Schema: [`hooks/turn-end.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/turn-end.json).
@@ -262,7 +307,7 @@ Session termination, audit finalization. The Guardian seals the chain at this po
 
 Schema: [`hooks/agbom-snapshot.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agbom-snapshot.json).
 
-Inspect-pillar method. Fires once per session, after `sessionStart` and before `agentTrigger` (the first content-bearing hook), and again after handshake-renegotiation. Carries the full AgBOM (the Observed Agent's component graph: models, MCP servers, A2A peers, tools, knowledge sources, memory stores, agent capabilities).
+Inspect-pillar method. Fires once per session, after `sessionStart` and before `agentTrigger` (the first content-bearing hook), and again after handshake-renegotiation. Carries the full AgBOM (the Observed Agent's component graph: models, MCP servers, A2A peers, tools, knowledge sources, memory stores, agent capabilities, skills).
 
 **Decision:** Normally ALLOW. Guardian MAY DENY to refuse a session whose component graph contains a banned model, tool, or peer.
 

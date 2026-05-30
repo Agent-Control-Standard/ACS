@@ -73,6 +73,7 @@ nav:
     - Session Lifecycle: concepts/session-lifecycle.md
     - Intent: concepts/intent.md
     - Capability: concepts/capability.md
+    - Skill: concepts/skill.md
     - Provenance: concepts/provenance.md
     - Trust Basis: concepts/trust.md
   - Specification:

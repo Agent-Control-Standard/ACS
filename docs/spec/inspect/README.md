@@ -35,6 +35,7 @@ Every component graph is expressed in the canonical AgBOM document ([`agbom/docu
 | `knowledge_source` | `id`, `name`, `source_type` (`vector_db`/`search_index`/`knowledge_base`/`web_search`/`other`) | `endpoint` (URI), `schema_ref` (URI) |
 | `memory_store` | `id`, `name`, `scope` (`session`/`user`/`tenant`/`global`), `store_type` | `path` (URI), `window_size` |
 | `agent_capability` | `id`, `name`, `description` | `tools[]`, `mcp_servers[]`, `a2a_peers[]` |
+| `skill` | `id`, `name`, `description`, `definition` (`ref`, `digest`) | `declared_capabilities[]`, `tools[]`, `mcp_servers[]`, `a2a_peers[]`, `models[]`, `composed_skills[]` |
 
 The full per-component schema is [`agbom/component.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/agbom/component.json).
 
