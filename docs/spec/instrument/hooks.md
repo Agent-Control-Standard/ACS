@@ -262,7 +262,7 @@ Session termination, audit finalization. The Guardian seals the chain at this po
 
 Schema: [`hooks/agbom-snapshot.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agbom-snapshot.json).
 
-Inspect-pillar method. Fires once per session, after `sessionStart` and before any content-bearing hook, and again after handshake-renegotiation. Carries the full AgBOM (the Observed Agent's component graph: models, MCP servers, A2A peers, tools, knowledge sources, memory stores, agent capabilities).
+Inspect-pillar method. Fires once per session, after `sessionStart` and before `agentTrigger` (the first content-bearing hook), and again after handshake-renegotiation. Carries the full AgBOM (the Observed Agent's component graph: models, MCP servers, A2A peers, tools, knowledge sources, memory stores, agent capabilities).
 
 **Decision:** Normally ALLOW. Guardian MAY DENY to refuse a session whose component graph contains a banned model, tool, or peer.
 
