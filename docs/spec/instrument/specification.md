@@ -4,7 +4,7 @@
 
 The Instrument pillar covers real-time interception, evaluation, and enforcement of agent behavior. It defines the wire format, the capability-negotiation handshake, the hook taxonomy, the disposition vocabulary, the SessionContext and Intent model, replay protection, and signature semantics. Trace (event emission) and Inspect (AgBOM) are co-equal v0.1.0 pillars covered in their own pages.
 
-A deployment that implements **ACS-Core** (this section's mandatory baseline) is v0.1.0-conformant. Additional capabilities — Trace event emission, AgBOM serialization, field-level provenance, cryptographic signatures, strengthened audit chains — are organized as **conformance profiles** (see [Conformance](../conformance.md)).
+A deployment that implements **ACS-Core** (this section's mandatory baseline) is v0.1.0-conformant. Additional capabilities (Trace event emission, AgBOM serialization, field-level provenance, cryptographic signatures, strengthened audit chains) are organized as **conformance profiles** (see [Conformance](../conformance.md)).
 
 ## 1. Design Principles
 
@@ -17,8 +17,8 @@ A deployment that implements **ACS-Core** (this section's mandatory baseline) is
 
 Two parties on the wire:
 
-- **Observed Agent** — the LLM-backed system being monitored. Implements ACS endpoints (or the stdio analog) and sends hook traffic to the Guardian.
-- **Guardian Agent** — the policy enforcement point. Two internal layers:
+- **Observed Agent**: the LLM-backed system being monitored. Implements ACS endpoints (or the stdio analog) and sends hook traffic to the Guardian.
+- **Guardian Agent**: the policy enforcement point. Two internal layers:
     - **Deterministic layer** (Cedar/Rego): always runs first.
     - **Agent layer** (LLM): invoked only when the deterministic layer's chain config delegates (`*`, `on_ask`, or pattern-based).
 
@@ -56,7 +56,7 @@ A worked example appears in [ACS in Action](../../topics/ACS_in_action_example.m
 | Response shape | Discriminated union: `{ "type": "final", ... }` |
 | Forward compat | Accept `X.Y.Z` matching major version; ignore unknown fields |
 
-Streaming and notifications are not supported in v0.1.0. Batching is permitted as standard JSON-RPC 2.0 — Guardians SHOULD accept array-shaped requests and return an array of correlated responses — but ACS does not add atomicity, ordering, or cross-request dependency semantics in v0.1. Each request in a batch is evaluated independently, in declared order, with each carrying its own `request_id` and (if signed) its own signature. A Guardian that does not support batching MUST return `-32600 Invalid Request` for array-shaped inputs so the Observed Agent can fall back to sequential requests.
+Streaming and notifications are not supported in v0.1.0. Batching is permitted as standard JSON-RPC 2.0 — Guardians SHOULD accept array-shaped requests and return an array of correlated responses, but ACS does not add atomicity, ordering, or cross-request dependency semantics in v0.1. Each request in a batch is evaluated independently, in declared order, with each carrying its own `request_id` and (if signed) its own signature. A Guardian that does not support batching MUST return `-32600 Invalid Request` for array-shaped inputs so the Observed Agent can fall back to sequential requests.
 
 The full envelope schemas are [`request-envelope.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/request-envelope.json) and [`response-envelope.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/response-envelope.json).
 
@@ -95,7 +95,7 @@ Hook details, payloads, and per-hook examples are catalogued on the [Hooks](./ho
 
 Wrapped: `protocols/MCP/*` (specified in v0.1; see [Extending MCP](./extend_mcp.md)). The `protocols/A2A/*` namespace is reserved; wrapping specification deferred to v0.2.
 
-Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [Inspect](../inspect/README.md)). System methods (`system/*`): `system/ping` (§13). These are not Instrument hooks — they're the wire surface for Inspect and transport-control — but they share the request-envelope shape, and `agbom/*` participates in the SessionContext audit chain.
+Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [Inspect](../inspect/README.md)). System methods (`system/*`): `system/ping` (§13). These are not Instrument hooks (they're the wire surface for Inspect and transport-control) but they share the request-envelope shape, and `agbom/*` participates in the SessionContext audit chain.
 
 ## 6. Disposition Vocabulary
 
@@ -104,7 +104,7 @@ Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [I
 | `ALLOW` | Proceed | none (`reasoning` RECOMMENDED when user-visible audit trails are expected) |
 | `DENY` | Block | `reasoning` |
 | `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`) | `reasoning`, `modifications` |
-| `ASK` | Pause and request approval (substituted with `DEFER` or `DENY` for approver-incapable clients — see [§9.2](#92-approver-incapable-clients-normative)) | `reasoning`, `ask_details` |
+| `ASK` | Pause and request approval (substituted with `DEFER` or `DENY` for approver-incapable clients; see [§9.2](#92-approver-incapable-clients-normative)) | `reasoning`, `ask_details` |
 | `DEFER` | Verdict not yet reachable | `reasoning`, `defer_details` |
 
 DEFER reasons: `insufficient_context`, `conflicting_policies`, `low_confidence`, `pending_dependency`. DEFER MUST include `resolution_method`, `resolution_timeout_ms`, and `timeout_decision` (default `deny`). Cascading deferrals MUST be bounded per session.
@@ -117,7 +117,7 @@ The decision envelope ([`response-envelope.json`](https://github.com/afogel/ACS_
 |---|---|---|
 | `decision` | yes | The verdict, one of the five dispositions above. |
 | `reasoning` | conditional | Single human-renderable explanation. Serves both end-user display and audit/agent-internal consumption; deployments wanting different text per audience SHOULD compose them client-side from `reasoning` + `policy_data` + `reason_codes`. |
-| `policy_references` | no | Array of `{policy_id, policy_version, policy_name, rule_id}` — the rules that fired. `policy_version` is OPTIONAL and deployment-defined, but SHOULD be populated when replay or ledger-backed policy state matters. A single decision MAY cite multiple entries when several paradigms reject the same action; audit replay walks the list to reconstruct contributions. |
+| `policy_references` | no | Array of `{policy_id, policy_version, policy_name, rule_id}`, the rules that fired. `policy_version` is OPTIONAL and deployment-defined, but SHOULD be populated when replay or ledger-backed policy state matters. A single decision MAY cite multiple entries when several paradigms reject the same action; audit replay walks the list to reconstruct contributions. |
 | `reason_codes` | no | Array of machine-readable categorization strings. Free vocabulary in v0.1. UIs and meta-policies SHOULD switch on these rather than parsing reasoning text or rule IDs. |
 | `policy_data` | no | Free-form structured payload for paradigm- or policy-specific facts. When multiple paradigms fire, conventionally keyed by paradigm name (`{ "ibac": {...}, "fides": {...}, "aarm": {...} }`). |
 | `cited_provenance_ids` | no | Array of `provenance_id`s whose facts drove this decision. Standard top-level surface for "which provenance objects mattered". |
@@ -126,11 +126,13 @@ The decision envelope ([`response-envelope.json`](https://github.com/afogel/ACS_
 
 ### 6.2 Paradigm composition
 
-These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulative-context, IBAC) without per-paradigm wire extensions. A FIDES P-T denial cites the violating lineage in `cited_provenance_ids` and exposes the violating-argument path in `policy_data`. An IBAC intent-mismatch DEFER routes through `defer_details` while exposing the requested capability and closest `Intent.parsed` match in `policy_data`. An AARM cumulative-context denial cites `earliest_untrusted_step_id` in `cited_provenance_ids` and reproduces the relevant lookback state in `policy_data`. When a deployment composes paradigms — e.g., IBAC outer + FIDES inner across an A2A boundary — a single decision MAY cite all of them: `policy_references` with one entry per paradigm, `reason_codes` with one or more codes per paradigm, `policy_data` keyed by paradigm.
+These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulative-context, IBAC) without per-paradigm wire extensions. A FIDES P-T denial cites the violating lineage in `cited_provenance_ids` and exposes the violating-argument path in `policy_data`. An IBAC intent-mismatch DEFER routes through `defer_details` while exposing the requested capability and closest `Intent.parsed` match in `policy_data`. An AARM cumulative-context denial cites `earliest_untrusted_step_id` in `cited_provenance_ids` and reproduces the relevant lookback state in `policy_data`. When a deployment composes paradigms (e.g., IBAC outer + FIDES inner across an A2A boundary) a single decision MAY cite all of them: `policy_references` with one entry per paradigm, `reason_codes` with one or more codes per paradigm, `policy_data` keyed by paradigm.
 
 ## 7. Provenance
 
-MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL — paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/provenance.json).
+The Provenance concept and its fields are defined in [Concepts › Provenance](../../concepts/provenance.md) (normative). This section specifies the wire shape and the v0.1 trust-classification stance.
+
+Provenance MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL: paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/provenance.json).
 
 | Field | Required | Type | Notes |
 |---|---|---|---|
@@ -145,7 +147,7 @@ The wire format reserves an OPTIONAL `trust` enum (`trusted`, `untrusted`, `unkn
 
 When a deployment **does** populate `trust`:
 
-- The framework — not the LLM — MUST attach the label, deterministically, based on which channel data crossed. `trust` is never a content judgment and never a producer claim.
+- The framework, not the LLM, MUST attach the label, deterministically, based on which channel data crossed. `trust` is never a content judgment and never a producer claim.
 - For data with `origin: agent_generated`, the framework MUST compute `trust` as the minimum trust of the entries in `derived_from` (monotonicity rule). No amount of LLM processing launders untrusted data into trusted data.
 - Receivers (especially across A2A or multi-Guardian boundaries) MUST treat the field as a hint and re-derive trust against local policy keyed off `origin` + `source_id` rather than honor a remote-asserted label at face value.
 
@@ -180,7 +182,7 @@ The SessionContext container is intentionally not schematized in v0.1. The wire-
 Schema: [`context-entry.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/context-entry.json). Append-only entry in the audit chain.
 
 - **Required:** `entry_id`, `step_id`, `step_type`, `entry_hash`.
-- **SHOULD:** `request_hash` (lowercase-hex SHA-256 of the JCS-canonicalized request envelope params; without this the chain commits only to step metadata, not to request content — deployments claiming the **ACS-Audit** profile MUST populate `request_hash`), `timestamp`, `provenance_summary`, `previous_hash` (required for every entry except the first).
+- **SHOULD:** `request_hash` (lowercase-hex SHA-256 of the JCS-canonicalized request envelope params; without this the chain commits only to step metadata, not to request content, so deployments claiming the **ACS-Audit** profile MUST populate `request_hash`), `timestamp`, `provenance_summary`, `previous_hash` (required for every entry except the first).
 
 Storage representation is implementation-defined; this spec constrains the canonical form used for hashing, not how Guardians store entries internally.
 
@@ -200,9 +202,9 @@ Schema: [`provenance-summary.json`](https://github.com/afogel/ACS_official/blob/
 
 ### 8.4 Intent
 
-Optional. `raw`, `parsed` (capability list), `parser_provenance` (REQUIRED if `parsed` present; `origin` MUST be `user_input`), `scope_mode`.
+Intent is OPTIONAL and is defined in [Concepts › Intent](../../concepts/intent.md) (normative). Wire fields: `raw`, `parsed` (capability list), `parser_provenance` (REQUIRED if `parsed` present; `origin` MUST be `user_input`), `scope_mode`.
 
-**Intent immutability (normative).** Once an Intent is established (via `sessionStart` or the first `agentTrigger` for the session), `Intent.parsed` MUST NOT be modifiable by the runtime LLM, by tool outputs, or by any data crossing an `untrusted` channel. The framework enforces immutability; any modification attempt MUST be ignored or rejected, and SHOULD be recorded as an audit event. The only conformant mechanism for extending `Intent.parsed` within a session is an approver's `intent_extension` returned via the ASK flow (§9). This rule is load-bearing for IBAC's central security claim: the capability set is fixed before untrusted data enters and can grow only through explicit, audited approver action.
+**Intent immutability enforcement (normative).** The invariant is defined in [Concepts › Intent](../../concepts/intent.md): once established (via `sessionStart` or the first `agentTrigger` for the session), `Intent.parsed` is fixed and may grow only through an approver's `intent_extension` via the ASK flow (§9.1). The framework MUST enforce it: any attempt to modify `Intent.parsed` by the runtime LLM, by tool outputs, or by data crossing an `untrusted` channel MUST be ignored or rejected, and SHOULD be recorded as an audit event. This rule is load-bearing for IBAC's central security claim: the capability set is fixed before untrusted data enters and can grow only through explicit, audited approver action.
 
 ### 8.5 Size-based archival (optional)
 
@@ -228,16 +230,16 @@ Intent extensions are subject to the session's `scope_mode`: a Guardian operatin
 
 ### 9.2 Approver-incapable clients (normative)
 
-Some Observed Agents — IDE plugins, headless automation, runtimes whose enforcement model is allow/deny only — have no way to route an `ASK` disposition. The Guardian determines client ASK-handling capability by deployment-defined means: agent identity bound at handshake, policy keyed on `agent_id`, organizational configuration, or any other out-of-band signal the deployment trusts. ACS does not put this declaration on the wire in v0.1; it is part of the Guardian's policy bundle.
+Some Observed Agents (IDE plugins, headless automation, runtimes whose enforcement model is allow/deny only) have no way to route an `ASK` disposition. The Guardian determines client ASK-handling capability by deployment-defined means such as agent identity bound at handshake, policy keyed on `agent_id`, organizational configuration, or any other out-of-band signal the deployment trusts. ACS does not put this declaration on the wire in v0.1; it is part of the Guardian's policy bundle.
 
 When the Guardian determines that the client cannot resolve `ASK`, the Guardian MUST NOT return `ASK`. The Guardian MUST instead substitute one of:
 
-1. `DEFER` with `timeout_decision: "deny"` — when the underlying issue might resolve through retry, an out-of-band escalation, or a later state change. The deferred verdict still counts toward cascading-deferral limits (§6).
-2. `DENY` with `reason_codes: ["approver_unavailable"]` and `reasoning` that names the missing capability — when no recovery path exists.
+1. `DEFER` with `timeout_decision: "deny"`: when the underlying issue might resolve through retry, an out-of-band escalation, or a later state change. The deferred verdict still counts toward cascading-deferral limits (§6).
+2. `DENY` with `reason_codes: ["approver_unavailable"]` and `reasoning` that names the missing capability: when no recovery path exists.
 
 The choice is policy-driven: deployments SHOULD prefer `DEFER` when the request is potentially recoverable through a different surface, and `DENY` when the action is unconditionally outside the client's reachable authority.
 
-This rule preserves the security guarantee — actions that would have been `ASK`'d in an approver-capable deployment are not silently allowed — while letting clients without approver UX participate in ACS sessions as fully conformant ACS-Core deployments.
+This rule preserves the security guarantee (actions that would have been `ASK`'d in an approver-capable deployment are not silently allowed) while letting clients without approver UX participate in ACS sessions as fully conformant ACS-Core deployments.
 
 ## 10. Cryptographic Signatures
 
@@ -245,22 +247,22 @@ Optional at the field level; when signatures are negotiated, the envelope is `{ 
 
 ### 10.1 Algorithm registry
 
-The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope supports any registered algorithm, and the handshake declares which algorithms each side supports. v0.1 prioritizes adoption breadth over cryptographic maximalism — signatures are already field-optional, and a spec that ships without PQC mandates protects more deployments than a spec that mandates PQC and doesn't ship. PQC algorithms from NIST FIPS 203–205 (2024) are registered and available; a future version is expected to promote PQC to RECOMMENDED once ecosystem support matures.
+The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope supports any registered algorithm, and the handshake declares which algorithms each side supports. v0.1 prioritizes adoption breadth over cryptographic maximalism: signatures are already field-optional, and a spec that ships without PQC mandates protects more deployments than a spec that mandates PQC and doesn't ship. PQC algorithms from NIST FIPS 203–205 (2024) are registered and available; a future version is expected to promote PQC to RECOMMENDED once ecosystem support matures.
 
 | Algorithm | Class | v0.1.0 status |
 |---|---|---|
-| `HMAC-SHA256` | Symmetric MAC | RECOMMENDED — shared-secret integrity; simplest deployment path. Sufficient for same-host and trusted-network topologies where the threat is accidental tampering or replay. |
-| `ECDSA-P256` | Classical asymmetric | OPTIONAL — strongest current ecosystem support across Java, Node, .NET, HSMs, and major cloud KMS providers. |
-| `RSA-PSS-SHA256` | Classical asymmetric | OPTIONAL — legacy interop; deployments with existing RSA PKI. |
-| `ML-DSA-65` | PQC, lattice (FIPS 204) | OPTIONAL — ~128-bit post-quantum security; ~3.3 KB signatures. Recommended for deployments shipping PQC libraries today. |
-| `ML-DSA-44` | PQC, lattice | OPTIONAL — low-bandwidth profile. |
-| `ML-DSA-87` | PQC, lattice | OPTIONAL — high-security profile. |
-| `SLH-DSA-128s` | PQC, hash (FIPS 205) | OPTIONAL — algorithmic diversity vs. ML-DSA's lattice assumption. Caution: ~7.8 KB signatures, signing takes hundreds of milliseconds — unsuitable for hot-path Guardian responses without careful latency budgeting. |
-| `SLH-DSA-128f` | PQC, hash | OPTIONAL — faster signing; larger signatures. |
-| `ML-DSA-65+ECDSA-P256` | Hybrid | OPTIONAL — transitional composite for PQC forward-resistance with classical co-signature. |
-| `ML-DSA-65+RSA-PSS-SHA256` | Hybrid | OPTIONAL — transitional composite. |
+| `HMAC-SHA256` | Symmetric MAC | RECOMMENDED. Shared-secret integrity; simplest deployment path. Sufficient for same-host and trusted-network topologies where the threat is accidental tampering or replay. |
+| `ECDSA-P256` | Classical asymmetric | OPTIONAL. Strongest current ecosystem support across Java, Node, .NET, HSMs, and major cloud KMS providers. |
+| `RSA-PSS-SHA256` | Classical asymmetric | OPTIONAL. Legacy interop; deployments with existing RSA PKI. |
+| `ML-DSA-65` | PQC, lattice (FIPS 204) | OPTIONAL. ~128-bit post-quantum security; ~3.3 KB signatures. Recommended for deployments shipping PQC libraries today. |
+| `ML-DSA-44` | PQC, lattice | OPTIONAL. Low-bandwidth profile. |
+| `ML-DSA-87` | PQC, lattice | OPTIONAL. High-security profile. |
+| `SLH-DSA-128s` | PQC, hash (FIPS 205) | OPTIONAL. Algorithmic diversity vs. ML-DSA's lattice assumption. Caution: ~7.8 KB signatures, signing takes hundreds of milliseconds, unsuitable for hot-path Guardian responses without careful latency budgeting. |
+| `SLH-DSA-128f` | PQC, hash | OPTIONAL. Faster signing; larger signatures. |
+| `ML-DSA-65+ECDSA-P256` | Hybrid | OPTIONAL. Transitional composite for PQC forward-resistance with classical co-signature. |
+| `ML-DSA-65+RSA-PSS-SHA256` | Hybrid | OPTIONAL. Transitional composite. |
 
-**PQC migration intent.** The long-term direction is PQC-primary. A future ACS version is expected to promote `ML-DSA-65` to RECOMMENDED and eventually deprecate classical-only algorithms, but the timeline depends on ecosystem readiness — library maturity across Java/Node/.NET, HSM/KMS support breadth, and operational experience at scale. The crypto-agile envelope ensures that migration requires no wire-format changes; only the handshake-negotiated algorithm set shifts.
+**PQC migration intent.** The long-term direction is PQC-primary. A future ACS version is expected to promote `ML-DSA-65` to RECOMMENDED and eventually deprecate classical-only algorithms, but the timeline depends on ecosystem readiness: library maturity across Java/Node/.NET, HSM/KMS support breadth, and operational experience at scale. The crypto-agile envelope ensures that migration requires no wire-format changes; only the handshake-negotiated algorithm set shifts.
 
 ### 10.2 Hybrid signature value encoding
 

@@ -66,6 +66,15 @@ nav:
   - Topics:
     - Core concepts: topics/core_concepts.md
     - ACS in Action: topics/ACS_in_action_example.md
+  - Concepts:
+    - Overview: concepts/README.md
+    - Agents: concepts/agents.md
+    - Identity: concepts/identity.md
+    - Session Lifecycle: concepts/session-lifecycle.md
+    - Intent: concepts/intent.md
+    - Capability: concepts/capability.md
+    - Provenance: concepts/provenance.md
+    - Trust Basis: concepts/trust.md
   - Specification:
     - Conformance Profiles: spec/conformance.md
     - Instrument:

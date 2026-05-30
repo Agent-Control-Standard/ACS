@@ -8,8 +8,8 @@ Each principle is a heuristic, a smell test, and a worked example from a real v0
 
 A `MUST` belongs wherever its truth holds, not wherever it was first written.
 
-- **Cross-cutting invariant** — true across pillars → define it once, above the pillars, tagged NORMATIVE. *e.g. "`Intent.parsed` MUST NOT be modified by the LLM or by data crossing an untrusted channel."* Intent flows through all three pillars (Instrument fires decisions against it, Trace records it, Inspect catalogs what it authorized), so the invariant lives above them.
-- **Mechanism requirement** — true within one pillar's enforcement → keep it in that pillar. *e.g. "the Guardian MUST verify approver identity," "a client declaring `provenance_producer: none` MUST be refused at handshake."*
+- **Cross-cutting invariant** (true across pillars) → define it once, above the pillars, tagged NORMATIVE. *e.g. "`Intent.parsed` MUST NOT be modified by the LLM or by data crossing an untrusted channel."* Intent flows through all three pillars (Instrument fires decisions against it, Trace records it, Inspect catalogs what it authorized), so the invariant lives above them.
+- **Mechanism requirement** (true within one pillar's enforcement) → keep it in that pillar. *e.g. "the Guardian MUST verify approver identity," "a client declaring `provenance_producer: none` MUST be refused at handshake."*
 
 **Smell test:** if a requirement is restated in two pillars, or buried in one pillar but relied on by another, it's at the wrong altitude. Hoist the invariant; leave the mechanics.
 
@@ -17,12 +17,12 @@ A `MUST` belongs wherever its truth holds, not wherever it was first written.
 
 A change that optimizes one constituency at the others' expense is suspect. Name the trade before deciding.
 
-1. **Expressiveness** — can the spec describe the real governance situation at all?
-2. **Framework implementers** — can they reach conformance cheaply? This guards the adoption floor.
-3. **Vendors and competitors** — is there room to build differentiated solutions on top? Don't absorb the value vendors should compete on.
-4. **Adopters and deployments** — is integration cost low?
-5. **Wire minimalism** — expressive enough *without* premature functionality or contract bloat that ossifies around guesses.
-6. **Security reality** — does it match where boundary crossing and trust-laundering actually occur?
+1. **Expressiveness**: can the spec describe the real governance situation at all?
+2. **Framework implementers**: can they reach conformance cheaply? This guards the adoption floor.
+3. **Vendors and competitors**: is there room to build differentiated solutions on top? Don't absorb the value vendors should compete on.
+4. **Adopters and deployments**: is integration cost low?
+5. **Wire minimalism**: expressive enough *without* premature functionality or contract bloat that ossifies around guesses.
+6. **Security reality**: does it match where boundary crossing and trust-laundering actually occur?
 
 **Smell test:** "more fields" or "more guidance" usually pays constituency 1 by taxing 2, 3, and 5. If you can't name who you're taxing, you haven't finished the analysis.
 
@@ -42,18 +42,29 @@ Everything else belongs in `policy_data`, a conformance profile, or vendor terri
 
 ## 4. The wire is paradigm-neutral; new paradigms ride existing elements first
 
-We name four control paradigms today — IBAC, FIDES, CaMeL, AARM — but these are points on a wider space. They represent different philosophical approaches to crafting effective controls, each grounded in existing standards and research. Others will need support over time, and the contract must accommodate them without being re-cut for each one.
+We name four control paradigms today (IBAC, FIDES, CaMeL, AARM) but these are points on a wider space. They represent different philosophical approaches to crafting effective controls, each grounded in existing standards and research. Others will need support over time, and the contract must accommodate them without being re-cut for each one.
 
 The wire stays neutral. A new paradigm reaches the wire through the elements that already carry paradigm-specific intent:
 
-- `reason_codes` — free vocabulary for machine-readable categorization.
-- `policy_data` — free-form payload, conventionally keyed by paradigm name (`{"ibac": {...}, "fides": {...}}`).
-- `policy_references` — one entry per paradigm when several reject the same action.
-- conformance profiles — when a paradigm needs a declarable capability tier.
+- `reason_codes`: free vocabulary for machine-readable categorization.
+- `policy_data`: free-form payload, conventionally keyed by paradigm name (`{"ibac": {...}, "fides": {...}}`).
+- `policy_references`: one entry per paradigm when several reject the same action.
+- conformance profiles: when a paradigm needs a declarable capability tier.
 
-A new paradigm earns a wire `MUST` only when it needs a signal none of these can already carry. That is Principle 3 applied to paradigms: if the needed information is expressible through existing conformant elements, it is not a spec change — it is a deployment or profile.
+A new paradigm earns a wire `MUST` only when it needs a signal none of these can already carry. That is Principle 3 applied to paradigms: if the needed information is expressible through existing conformant elements, it is not a spec change. It is a deployment or profile.
 
 **Smell test:** "does this paradigm need a new wire field, or can it ride `policy_data`, `reason_codes`, or a profile?" If the latter, leave the wire alone. Prefer grounding the paradigm in an existing standard over inventing new surface.
+
+## 5. Normative by default; mark the exceptions
+
+Spec text is normative unless it says otherwise. Mark informative sections explicitly with "This section is non-normative", and treat examples and notes as informative by convention.
+
+- **Non-normative prose carries no RFC 2119 keywords.** A capitalized MUST/SHOULD/MAY in informative text either creates an accidental requirement or teaches readers to ignore the keyword. Lowercase the word, or move the requirement to a normative section.
+- **On a mixed page** (a concept page holding invariants and teaching together), tag each invariant **(normative)** and let the surrounding prose read as informative and keyword-free.
+
+This is the companion to Principle 1. That one fixes *where* a normative statement lives; this one fixes *how its force is marked*. Together they keep a hoisted invariant binding and keep explanatory prose from binding by accident.
+
+**Smell test:** "Is this `MUST` sitting in text a reader would take as binding?" If the section is informative, either the requirement is in the wrong place (hoist it per Principle 1), or the keyword should not be capitalized. Convention follows W3C: default-normative, with informative sections marked explicitly.
 
 ---
 
