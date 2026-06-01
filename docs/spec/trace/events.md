@@ -41,7 +41,7 @@ The full mapping lives in [`trace/ocsf-mapping.json`](https://github.com/afogel/
 | ACS step | OCSF class | Class UID |
 |---|---|---|
 | `steps/sessionStart` | Authentication | 3002 |
-| `steps/userMessage`, `steps/agentResponse` | Application Activity | 6002 |
+| `steps/agentTrigger`, `steps/userMessage`, `steps/agentResponse` | Application Activity | 6002 |
 | `steps/toolCallRequest`, `steps/toolCallResult` | Process Activity | 1007 |
 | `steps/knowledgeRetrieval`, `steps/memoryStore`, `steps/memoryContextRetrieval` | Datastore Activity | 6005 |
 | `steps/preCompact`, `steps/postCompact` | Datastore Activity | 6005 (compaction subtype) |
