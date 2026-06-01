@@ -11,11 +11,14 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["type", "value", "provenance"],
+        "required": ["type", "value"],
         "properties": {
           "type": { "type": "string", "enum": ["text", "image", "audio", "file"] },
           "value": {},
-          "provenance": { "$ref": "../provenance.json" }
+          "provenance": {
+            "$ref": "../provenance.json",
+            "description": "OPTIONAL in the base schema; REQUIRED on every content item under provenance_producer: deterministic (ACS-Provenance). Validate against user-message.acs-provenance.json when the profile is claimed. See Specification section 7."
+          }
         }
       }
     }

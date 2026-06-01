@@ -23,10 +23,13 @@
     },
     "content": {
       "type": "object",
-      "required": ["value", "provenance"],
+      "required": ["value"],
       "properties": {
         "value": {},
-        "provenance": { "$ref": "../provenance.json" }
+        "provenance": {
+          "$ref": "../provenance.json",
+          "description": "OPTIONAL in the base schema; REQUIRED under provenance_producer: deterministic (ACS-Provenance). Validate against memory-store.acs-provenance.json when the profile is claimed. See Specification section 7."
+        }
       }
     },
     "metadata": {

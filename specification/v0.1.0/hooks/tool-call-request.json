@@ -25,13 +25,16 @@
     },
     "arguments": {
       "type": "object",
-      "description": "Tool arguments. Each argument value MUST carry its own provenance.",
+      "description": "Tool arguments. Under provenance_producer: deterministic, each argument value carries its own provenance (ACS-Provenance).",
       "additionalProperties": {
         "type": "object",
-        "required": ["value", "provenance"],
+        "required": ["value"],
         "properties": {
           "value": {},
-          "provenance": { "$ref": "../provenance.json" }
+          "provenance": {
+            "$ref": "../provenance.json",
+            "description": "OPTIONAL in the base schema; REQUIRED on every argument under provenance_producer: deterministic (ACS-Provenance). Validate against tool-call-request.acs-provenance.json when the profile is claimed. See Specification section 7."
+          }
         }
       }
     },

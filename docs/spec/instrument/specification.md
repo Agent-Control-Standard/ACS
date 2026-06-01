@@ -132,7 +132,12 @@ These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulat
 
 The Provenance concept and its fields are defined in [Concepts › Provenance](../../concepts/provenance.md) (normative). This section specifies the wire shape and the v0.1 trust-classification stance.
 
-Provenance MAY be attached to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Field-level attachment is OPTIONAL: paradigms that do not require information-flow tracking (e.g. pure IBAC) can omit it. When a Provenance object is emitted, all required fields MUST be populated. Schema: [`provenance.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/provenance.json).
+Provenance attaches to data-bearing fields (`Message.content`, `KnowledgeRetrievalResult`, `ToolCallResult.outputs`, `ToolArgumentValue`, A2A payload). Whether it is present is governed at the session level by the handshake's `provenance_producer` (§4), not chosen per field at emit time:
+
+- Under **`deterministic`**, the producer MUST attach a Provenance object to **every** data-bearing field in every hook payload it emits. Partial population within a producing session is non-conformant: provenance is all-or-nothing per session. This is the conformance bar for the **ACS-Provenance** profile.
+- Under **`none`**, the producer emits no Provenance objects. A Guardian whose policy requires provenance MUST refuse such a session at handshake time (§4) rather than accept provenance-free payloads.
+
+The base hook payload schemas therefore mark `provenance` OPTIONAL so that ACS-Core (pure IBAC and other paradigms that need no information-flow tracking) validates. Deployments claiming ACS-Provenance validate payloads against the strict `*.acs-provenance.json` variant of each data-bearing hook, which restores `provenance` to the required set. When a Provenance object is emitted, all of its own required fields MUST be populated. Schema: [`provenance.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/provenance.json).
 
 | Field | Required | Type | Notes |
 |---|---|---|---|

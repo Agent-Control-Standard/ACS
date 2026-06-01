@@ -29,10 +29,13 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["value", "provenance"],
+        "required": ["value"],
         "properties": {
           "value": {},
-          "provenance": { "$ref": "../provenance.json" }
+          "provenance": {
+            "$ref": "../provenance.json",
+            "description": "OPTIONAL in the base schema; REQUIRED on every output item under provenance_producer: deterministic (ACS-Provenance). Validate against tool-call-result.acs-provenance.json when the profile is claimed. See Specification section 7."
+          }
         }
       }
     },

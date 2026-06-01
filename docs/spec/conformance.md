@@ -23,7 +23,7 @@ A v0.1.0-conformant deployment MUST implement ACS-Core. ACS-Core comprises:
 - **Liveness** — `system/ping` ([§13](./instrument/specification.md#13-liveness-system-methods)).
 - **Wrapped MCP** — `protocols/MCP/*` ([Hooks](./instrument/hooks.md#protocolsmcp)).
 
-ACS-Core does NOT require: field-level Provenance objects, Trace event emission, AgBOM, cryptographic signatures, or `request_hash` on ContextEntry (`request_hash` remains SHOULD).
+ACS-Core does NOT require: field-level Provenance objects, Trace event emission, AgBOM, cryptographic signatures, or `request_hash` on ContextEntry (`request_hash` remains SHOULD). ACS-Core deployments validate hook payloads against the base schemas, where `provenance` is OPTIONAL; field-level Provenance is added by the ACS-Provenance profile.
 
 ## ACS-Trace
 
@@ -50,7 +50,7 @@ Adds `agbom/changed` emission on every mid-session component mutation, with audi
 
 ## ACS-Provenance
 
-Adds field-level Provenance objects ([§7](./instrument/specification.md#7-provenance)) to data-bearing fields. A deployment claiming ACS-Provenance MUST populate `provenance_id`, `origin`, and (when applicable) `derived_from` on Provenance-bearing fields.
+Adds field-level Provenance objects ([§7](./instrument/specification.md#7-provenance)) to data-bearing fields. A deployment claiming ACS-Provenance runs `provenance_producer: deterministic` and MUST attach a Provenance object to every data-bearing field in every hook payload it emits, populating `provenance_id`, `origin`, and (when applicable) `derived_from`. Payloads are validated against the strict `*.acs-provenance.json` variant of each data-bearing hook, which restores `provenance` to the required set; ACS-Core deployments validate against the permissive base schema. Partial population within a producing session is non-conformant.
 
 The wire-format `trust` enum is OPTIONAL in v0.1; the v0.1 expected practice is for Guardians to derive trust from `origin` + `source_id` against local policy without populating the field. Vendor Guardian implementations that elect to populate `trust` on the wire MUST enforce the monotonicity rule on `agent_generated` trust and SHOULD use the default channel-to-trust mapping ([§7.2](./instrument/specification.md#72-default-channel-to-trust-mapping)) so cross-deployment audits remain portable.
 

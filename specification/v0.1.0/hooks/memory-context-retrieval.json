@@ -24,12 +24,15 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["value", "provenance"],
+        "required": ["value"],
         "properties": {
           "memory_id": { "type": "string" },
           "value": {},
           "stored_at": { "type": "string", "format": "date-time" },
-          "provenance": { "$ref": "../provenance.json" }
+          "provenance": {
+            "$ref": "../provenance.json",
+            "description": "OPTIONAL in the base schema; REQUIRED on every result under provenance_producer: deterministic (ACS-Provenance). Validate against memory-context-retrieval.acs-provenance.json when the profile is claimed. See Specification section 7."
+          }
         }
       }
     }
