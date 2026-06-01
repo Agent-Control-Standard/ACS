@@ -10,9 +10,10 @@ If you've contributed and aren't listed here, open a PR. We'd rather over-credit
 - **Ariel** ([@afogel](https://github.com/afogel))
 - **[@bar-capsule](https://github.com/bar-capsule)**
 - **Fred Wilmot** ([@fewdisc](https://github.com/fewdisc))
+- **Stefano Amorelli** ([@stefanoamorelli](https://github.com/stefanoamorelli))
 
 ## How attribution works here
 
-We list contributors alphabetically by last name where known, then by GitHub handle. We don't rank by commit count or seniority. Spec review, threat-model discussion, and reference-implementation work all count the same as merged PRs.
+We list contributors alphabetically by display name or handle. We don't rank by commit count or seniority. Spec review, threat-model discussion, and reference-implementation work all count the same as merged PRs.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get involved.
