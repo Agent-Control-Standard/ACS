@@ -8,7 +8,7 @@ A distinct but related question (*how much may I rely on this?*) is the [trust b
 
 A Provenance object carries:
 
-- **`origin`**: the channel a piece of data crossed: `user_input`, `tool_output`, `agent_generated`, `retrieved`, `system`, or `memory`.
+- **`origin`**: the channel a piece of data crossed: `user_input`, `system`, `tool_output`, `retrieved`, `agent_generated`, `a2a_inbound`, or `external`.
 - **`source_id`**: the specific source within that origin (a tool, a memory store, a user).
 - **`derived_from`**: the lineage, the prior Provenance objects this data was computed from.
 

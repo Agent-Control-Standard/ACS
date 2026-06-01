@@ -59,19 +59,19 @@ This example shows a deployment that elects to populate the OPTIONAL `trust` fie
     "tenant_id": "acme-corp",
     "metadata": {
       "agent_id": "cursor-agent-01",
-      "session_id": "abc-123",
+      "session_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
       "turn_id": "t-7",
       "platform": "cursor"
     },
     "payload": {
-      "tool": "email.send",
+      "tool": { "name": "email.send" },
+      "capability": "network.egress",
       "arguments": {
         "recipient": {
           "value": "manager@company.com",
           "provenance": {
             "provenance_id": "p1",
             "origin": "user_input",
-            "trust": "trusted",
             "source_id": "user-12345",
             "derived_from": []
           }
@@ -81,7 +81,6 @@ This example shows a deployment that elects to populate the OPTIONAL `trust` fie
           "provenance": {
             "provenance_id": "p3",
             "origin": "agent_generated",
-            "trust": "untrusted",
             "source_id": "llm-gpt-4",
             "derived_from": ["p2"]
           }

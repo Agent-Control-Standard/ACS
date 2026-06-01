@@ -54,7 +54,7 @@ Each canonical component becomes one entry in the CycloneDX `components[]` array
       "version": "1.4.0",
       "properties": [
         { "name": "acs:capability", "value": "datastore.read" },
-        { "name": "acs:registration_provenance.origin", "value": "configuration" }
+        { "name": "acs:registration_provenance.origin", "value": "system" }
       ]
     }
   ],

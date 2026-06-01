@@ -16,17 +16,19 @@ The full mapping lives in [`trace/otel-mapping.json`](https://github.com/afogel/
 | `steps/agentTrigger` | `acs.agent.trigger` | `acs.agent.id`, `acs.trigger.type` |
 | `steps/userMessage` | `acs.message.user` | `acs.session.id`, `acs.content.types[]` |
 | `steps/agentResponse` | `acs.message.agent` | `acs.session.id`, `acs.agent.id` |
-| `steps/toolCallRequest` | `gen_ai.tool.call` | `gen_ai.tool.name`, `acs.capability`, `acs.tool.provider` |
-| `steps/toolCallResult` | `gen_ai.tool.result` | `gen_ai.tool.name`, `acs.exit_status`, `acs.duration_ms` |
+| `steps/toolCallRequest` | `gen_ai.tool.call` | `gen_ai.tool.name`, `acs.capability`; `acs.tool.provider` (optional) |
+| `steps/toolCallResult` | `gen_ai.tool.result` | `gen_ai.tool.name`, `acs.exit_status`; `acs.duration_ms` (optional) |
 | `steps/knowledgeRetrieval` | `acs.knowledge.retrieval` | `acs.source.type`, `acs.results.count` |
 | `steps/memoryStore` | `acs.memory.store` | `acs.memory_store.name`, `acs.operation` |
 | `steps/memoryContextRetrieval` | `acs.memory.retrieval` | `acs.memory_store.name`, `acs.results.count` |
 | `steps/sessionEnd` | `acs.session.end` | `acs.session.reason` |
 | `steps/turnStart`, `steps/turnEnd` | `acs.turn`, `acs.turn.end` | `acs.turn.id`, `acs.turn.triggered_by` / `acs.turn.outcome` |
-| `steps/preCompact`, `steps/postCompact` | `acs.compact`, `acs.compact.complete` | `acs.compact.entry_count`, `acs.compact.triggered_by`; `postCompact` adds `acs.provenance.lineage_depth_after` (optional) |
+| `steps/preCompact` | `acs.compact` | `acs.compact.entry_count`, `acs.compact.triggered_by` |
+| `steps/postCompact` | `acs.compact.complete` | `acs.compact.entry_count`; `acs.compact.lineage_depth_after` (optional) |
 | `steps/subagentStart`, `steps/subagentStop` | `acs.subagent`, `acs.subagent.end` | `acs.subagent.session_id`, `acs.subagent.parent_session_id`, `acs.subagent.intent_derivation` / `acs.subagent.outcome`, `acs.subagent.final_chain_hash` |
 | Decision (allow/deny/modify/ask/defer) | `acs.decision` (span event) | `acs.decision`, `acs.evaluator`, `acs.reasoning` (when present), `acs.confidence` (when present) |
-| `agbom/snapshot`, `agbom/changed` | `acs.agbom` | `acs.agbom.format` (`canonical`/`cyclonedx`/`spdx`/`swid`), `acs.agbom.component_count` |
+| `agbom/snapshot` | `acs.agbom` | `acs.agbom.format` (`canonical`/`cyclonedx`/`spdx`/`swid`), `acs.agbom.component_count` |
+| `agbom/changed` | `acs.agbom` | `acs.agbom.format` (`canonical`/`cyclonedx`/`spdx`/`swid`), `acs.agbom.change_reason` |
 
 When Provenance is attached to a hook payload, the resulting span MUST carry `acs.provenance.origin` as an attribute, and SHOULD carry `acs.provenance.source_id` and `acs.provenance.lineage_depth` when populated. v0.1 emits factual provenance attributes; trust classification is computed by the Guardian against local policy and is not a v0.1 span attribute (see [Specification §7](../instrument/specification.md#7-provenance)). Provenance lineage edges MAY be linked via OTel span links keyed by `provenance_id`.
 
