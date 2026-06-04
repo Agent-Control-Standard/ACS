@@ -66,7 +66,7 @@ Required at session start, before any hook traffic. Wire method: `handshake/hell
 
 **Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
 
-**Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
+**Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `skew_window_ms` (request-timestamp skew tolerance for replay protection, §10.3), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
 Version mismatch terminates with `UNSUPPORTED_VERSION` (`-32001`, §17.1). Unknown fields MUST be ignored. If the client declares `provenance_producer: "none"` and the Guardian's `policy_requires_provenance` is true, the Guardian MUST refuse the session at handshake time with `PROVENANCE_REQUIRED` (`-32002`, §17.1) rather than silently degrading enforcement.
 
@@ -275,7 +275,7 @@ For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the
 
 ### 10.3 Replay protection
 
-`request_id` (UUID), `timestamp` (ISO 8601), and optional `nonce` (16–64 bytes). Guardians MUST reject requests whose `timestamp` is more than the handshake-negotiated skew window in the past or future, returning `TIMESTAMP_OUT_OF_WINDOW` (`-32006`, §17.1), MUST reject duplicate `request_id` values within the session with `REPLAY_DETECTED` (`-32005`, §17.1), and SHOULD reject duplicate `nonce` values within a sliding window the deployment configures (also `REPLAY_DETECTED`).
+`request_id` (UUID), `timestamp` (ISO 8601), and optional `nonce` (16–64 bytes). Guardians MUST reject requests whose `timestamp` is more than the negotiated skew window (`skew_window_ms` in ServerHello, §4; RECOMMENDED default 300000) in the past or future, returning `TIMESTAMP_OUT_OF_WINDOW` (`-32006`, §17.1), MUST reject duplicate `request_id` values within the session with `REPLAY_DETECTED` (`-32005`, §17.1), and SHOULD reject duplicate `nonce` values within a sliding window the deployment configures (also `REPLAY_DETECTED`). The Observed Agent uses `skew_window_ms` for clock-drift diagnostics.
 
 ## 11. Platform / OS Independence
 

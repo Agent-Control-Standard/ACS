@@ -118,6 +118,12 @@
             }
           }
         },
+        "skew_window_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 300000,
+          "description": "Maximum clock skew, in milliseconds, the Guardian tolerates between a request's 'timestamp' and its own clock, in either direction. Bounds timestamp freshness for replay protection (Specification 10.3); a request whose 'timestamp' is further than this from the Guardian's clock is rejected with TIMESTAMP_OUT_OF_WINDOW (-32006, Specification 17.1). When omitted the RECOMMENDED default is 300000 (5 minutes); deployments with well-synchronized clocks SHOULD tighten it. The Observed Agent uses the value for clock-drift diagnostics and MAY surface it on Trace events."
+        },
         "approver_types_supported": {
           "type": "array",
           "items": { "type": "string", "enum": ["human", "agent", "service"] },
