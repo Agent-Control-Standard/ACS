@@ -103,7 +103,7 @@ Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [I
 |---|---|---|
 | `ALLOW` | Proceed | none (`reasoning` RECOMMENDED when user-visible audit trails are expected) |
 | `DENY` | Block | `reasoning` |
-| `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`) | `reasoning`, `modifications` |
+| `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`; composition rules in [§6.3](#63-modify-composition-normative)) | `reasoning`, `modifications` |
 | `ASK` | Pause and request approval (substituted with `DEFER` or `DENY` for approver-incapable clients; see [§9.2](#92-approver-incapable-clients-normative)) | `reasoning`, `ask_details` |
 | `DEFER` | Verdict not yet reachable | `reasoning`, `defer_details` |
 
@@ -127,6 +127,19 @@ The decision envelope ([`response-envelope.json`](https://github.com/afogel/ACS_
 ### 6.2 Paradigm composition
 
 These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulative-context, IBAC) without per-paradigm wire extensions. A FIDES P-T denial cites the violating lineage in `cited_provenance_ids` and exposes the violating-argument path in `policy_data`. An IBAC intent-mismatch DEFER routes through `defer_details` while exposing the requested capability and closest `Intent.parsed` match in `policy_data`. An AARM cumulative-context denial cites `earliest_untrusted_step_id` in `cited_provenance_ids` and reproduces the relevant lookback state in `policy_data`. When a deployment composes paradigms (e.g., IBAC outer + FIDES inner across an A2A boundary) a single decision MAY cite all of them: `policy_references` with one entry per paradigm, `reason_codes` with one or more codes per paradigm, `policy_data` keyed by paradigm.
+
+### 6.3 MODIFY composition (normative)
+
+`modifications` carries one of two mutually exclusive shapes:
+
+- **Wholesale replacement.** `modified_content` replaces the entire payload. It is exclusive: a MODIFY that carries `modified_content` MUST NOT also carry `redactions` or `parameter_overrides`, because path-addressed edits have nothing to address inside an opaque replacement string.
+- **Structured edits.** `redactions` and `parameter_overrides` MAY appear together, but their targets MUST be disjoint: no `redactions` path may address the same field as a `parameter_overrides` key, nor an ancestor or descendant of it. Disjoint edits commute, so the effective payload is well-defined with no apply-order rule.
+
+A Guardian MUST NOT emit a `modifications` object that violates either rule. An Observed Agent that receives one cannot determine the Guardian's intent and MUST fail closed, treating the decision as `DENY`, and SHOULD record an audit event.
+
+The disjoint-target rule is deliberately narrower than a precedence rule. A fixed apply-order would force every overlap to silently pick a winner, and either order has a failure mode: applying overrides last can re-expose a field a redaction just removed, and applying redactions last lets arbitrary replacement text overwrite a value an override deliberately sanitized. Requiring disjoint targets removes the conflict rather than resolving it by an order the Guardian cannot observe.
+
+The provenance of a value introduced by `parameter_overrides` (its `origin`, and whether a Guardian may raise the trust of data it rewrites) is a separate question deferred to a later version alongside the audit-chain integrity work. v0.1 defines no Guardian-injected `origin`.
 
 ## 7. Provenance
 
