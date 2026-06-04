@@ -114,7 +114,7 @@
             "ML-DSA-65+ECDSA-P256",
             "ML-DSA-65+RSA-PSS-SHA256"
           ],
-          "description": "Signature algorithm. HMAC-SHA256 is symmetric MAC for shared-secret deployments (v0.1 RECOMMENDED). ECDSA-P256 and RSA-PSS-SHA256 are classical asymmetric. ML-DSA-* and SLH-DSA-* are pure PQC. The '<PQC>+<CLASSICAL>' forms are hybrid composites: the value field is the base64 of len(pqc_sig)||pqc_sig||len(classical_sig)||classical_sig where each len is a 4-byte big-endian unsigned integer; verifiers MUST verify both component signatures over the same canonical input."
+          "description": "Signature algorithm. HMAC-SHA256 is symmetric MAC for shared-secret deployments (v0.1 RECOMMENDED). ECDSA-P256 and RSA-PSS-SHA256 are classical asymmetric. ML-DSA-* and SLH-DSA-* are pure PQC. The '<PQC>+<CLASSICAL>' forms are hybrid composites: the value field is the base64 of len(pqc_sig)||pqc_sig||len(classical_sig)||classical_sig where each len is a 4-byte big-endian unsigned integer; verifiers MUST verify both component signatures over the canonical input defined in Specification 10 (the JCS canonicalization of the envelope with the signature field removed)."
         },
         "value": {
           "type": "string",

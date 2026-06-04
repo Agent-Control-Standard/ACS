@@ -263,6 +263,8 @@ This rule preserves the security guarantee (actions that would have been `ASK`'d
 
 Optional at the field level; when signatures are negotiated, the envelope is `{ algorithm, value, key_id }` with the algorithm chosen from the registry below. Supported algorithms are declared per-direction in the handshake.
 
+**Signed input.** The signed input for every algorithm is the RFC 8785 (JCS) canonicalization of the request or response envelope with the `signature` field removed, encoded as UTF-8. This binds the signature to the whole envelope, including `method`, `metadata.session_id`, `request_id`, and `timestamp`, so a captured signature cannot be lifted into a different envelope (for example, re-wrapping a signed `toolCallResult` under a different `session_id`). A verifier MUST recompute this canonical form and MUST reject a signature that does not cover it (`SIGNATURE_INVALID`, §17.1). The input is fixed by this rule, not declared per message: a discoverable `signed_fields` would let a producer advertise partial coverage that omits `session_id`, reopening the gap this closes. Alternative canonicalization is not permitted in v0.1, matching the chain-hash rule in §8.
+
 ### 10.1 Algorithm registry
 
 The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope supports any registered algorithm, and the handshake declares which algorithms each side supports. v0.1 prioritizes adoption breadth over cryptographic maximalism: signatures are already field-optional, and a spec that ships without PQC mandates protects more deployments than a spec that mandates PQC and doesn't ship. PQC algorithms from NIST FIPS 203–205 (2024) are registered and available; a future version is expected to promote PQC to RECOMMENDED once ecosystem support matures.
@@ -284,7 +286,7 @@ The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope suppor
 
 ### 10.2 Hybrid signature value encoding
 
-For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the concatenation `len(pqc_sig) || pqc_sig || len(classical_sig) || classical_sig`, where each `len` is a 4-byte big-endian unsigned integer and the whole blob is base64-encoded for wire transit. Verifiers MUST verify both component signatures over the same canonical input; failure of either component is a signature failure (`SIGNATURE_INVALID`, §17.1). The same `key_id` resolves to a hybrid key descriptor that pins both component public keys.
+For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the concatenation `len(pqc_sig) || pqc_sig || len(classical_sig) || classical_sig`, where each `len` is a 4-byte big-endian unsigned integer and the whole blob is base64-encoded for wire transit. Verifiers MUST verify both component signatures over the canonical input defined in §10; failure of either component is a signature failure (`SIGNATURE_INVALID`, §17.1). The same `key_id` resolves to a hybrid key descriptor that pins both component public keys.
 
 ### 10.3 Replay protection
 
