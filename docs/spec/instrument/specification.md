@@ -68,7 +68,7 @@ Required at session start, before any hook traffic. Wire method: `handshake/hell
 
 **Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
-Version mismatch terminates with `UNSUPPORTED_VERSION`. Unknown fields MUST be ignored. If the client declares `provenance_producer: "none"` and the Guardian's `policy_requires_provenance` is true, the Guardian MUST refuse the session at handshake time rather than silently degrading enforcement.
+Version mismatch terminates with `UNSUPPORTED_VERSION` (`-32001`, §17.1). Unknown fields MUST be ignored. If the client declares `provenance_producer: "none"` and the Guardian's `policy_requires_provenance` is true, the Guardian MUST refuse the session at handshake time with `PROVENANCE_REQUIRED` (`-32002`, §17.1) rather than silently degrading enforcement.
 
 ## 5. Hook Taxonomy
 
@@ -271,11 +271,11 @@ The registry is crypto-agile: the `{ algorithm, value, key_id }` envelope suppor
 
 ### 10.2 Hybrid signature value encoding
 
-For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the concatenation `len(pqc_sig) || pqc_sig || len(classical_sig) || classical_sig`, where each `len` is a 4-byte big-endian unsigned integer and the whole blob is base64-encoded for wire transit. Verifiers MUST verify both component signatures over the same canonical input; failure of either component is a signature failure. The same `key_id` resolves to a hybrid key descriptor that pins both component public keys.
+For any algorithm of the form `<PQC>+<CLASSICAL>`, the `value` field carries the concatenation `len(pqc_sig) || pqc_sig || len(classical_sig) || classical_sig`, where each `len` is a 4-byte big-endian unsigned integer and the whole blob is base64-encoded for wire transit. Verifiers MUST verify both component signatures over the same canonical input; failure of either component is a signature failure (`SIGNATURE_INVALID`, §17.1). The same `key_id` resolves to a hybrid key descriptor that pins both component public keys.
 
 ### 10.3 Replay protection
 
-`request_id` (UUID), `timestamp` (ISO 8601), and optional `nonce` (16–64 bytes). Guardians MUST reject requests whose `timestamp` is more than the handshake-negotiated skew window in the past or future, MUST reject duplicate `request_id` values within the session, and SHOULD reject duplicate `nonce` values within a sliding window the deployment configures.
+`request_id` (UUID), `timestamp` (ISO 8601), and optional `nonce` (16–64 bytes). Guardians MUST reject requests whose `timestamp` is more than the handshake-negotiated skew window in the past or future, returning `TIMESTAMP_OUT_OF_WINDOW` (`-32006`, §17.1), MUST reject duplicate `request_id` values within the session with `REPLAY_DETECTED` (`-32005`, §17.1), and SHOULD reject duplicate `nonce` values within a sliding window the deployment configures (also `REPLAY_DETECTED`).
 
 ## 11. Platform / OS Independence
 
@@ -359,13 +359,30 @@ A liveness method is required for connection-health checks, transport-debugging,
 
 ## 17. Error Handling
 
-ACS uses standard [JSON-RPC 2.0 error codes](https://www.jsonrpc.org/specification#error_object). The `-32000` to `-32099` range is reserved for ACS-specific errors.
+ACS uses standard [JSON-RPC 2.0 error codes](https://www.jsonrpc.org/specification#error_object). The `-32000` to `-32099` range is reserved for ACS-specific errors, enumerated in §17.1.
 
 | Code | Meaning | Typical use |
 |---|---|---|
 | `-32700` | Parse error | Invalid JSON payload |
 | `-32600` | Invalid Request | Not a valid JSON-RPC Request, or array-shaped input to a Guardian that does not support batching |
-| `-32601` | Method not found | The requested ACS method does not exist or is not supported |
+| `-32601` | Method not found | The requested ACS method does not exist |
 | `-32602` | Invalid params | `params` are invalid (wrong type, missing required field) |
 | `-32603` | Internal error | Unexpected server error |
-| `-32000` to `-32099` | Server error | Reserved for ACS-specific errors (e.g. `UNSUPPORTED_VERSION`, `SESSION_REFUSED`, `REPLAY_DETECTED`) |
+| `-32000` to `-32099` | ACS-specific | See the registry in §17.1 |
+
+### 17.1 ACS error code registry
+
+Every mandated refusal maps to a fixed code, so an SDK can branch on the code without parsing prose. An error response MAY carry a `data` object; when present it SHOULD include a machine-readable `reason` and a human-readable `message`, plus the per-code fields noted below.
+
+| Code | Name | Raised when | Observed Agent recovery |
+|---|---|---|---|
+| `-32000` | `SESSION_REFUSED` | Guardian policy refuses the session and no more specific code applies (for example an `agent_id` the policy does not permit). | Do not retry without a policy or configuration change; read `data.reason`. |
+| `-32001` | `UNSUPPORTED_VERSION` | No common `acs_version` at handshake (§4). | Retry the handshake with a version from `data.supported_versions`. |
+| `-32002` | `PROVENANCE_REQUIRED` | Policy requires provenance but the client declared `provenance_producer: "none"` (§4, §7). | Re-handshake as a `deterministic` producer, or connect to a Guardian that does not require provenance. |
+| `-32003` | `CAPABILITY_NOT_NEGOTIATED` | A method or profile was exercised that the handshake did not negotiate for this session (§4). | Re-handshake to negotiate the method or profile named in `data.method`. |
+| `-32004` | `SIGNATURE_INVALID` | A required signature is missing, malformed, or fails verification (§10). | Re-sign the request; if it persists, re-resolve `key_id`. |
+| `-32005` | `REPLAY_DETECTED` | Duplicate `request_id` or `nonce` within the session (§10.3). | Regenerate `request_id` (and `nonce`) and retry. |
+| `-32006` | `TIMESTAMP_OUT_OF_WINDOW` | `timestamp` falls outside the negotiated skew window (§10.3); `data.skew_window_ms` carries the window. | Correct clock drift and retry within the window. |
+| `-32007` | `CHAIN_MISMATCH` | The client's `chain_hash` does not match the Guardian's computed head (§8). | Re-fetch session state; a persistent mismatch is an integrity event, not a transient error. |
+
+`system/ping` MUST NOT return an ACS-specific error, so liveness probing survives signature-rotation and key-resolution failures (§13).
