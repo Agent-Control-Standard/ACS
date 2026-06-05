@@ -187,7 +187,7 @@ Provenance MUST be populated by deterministic code outside the LLM's output path
 
 ## 8. SessionContext and Intent
 
-State the Guardian Agent maintains across a session. Lives only on the Guardian Agent. The Observed Agent sends only `session_id` and an optional `chain_hash` for verification.
+State the Guardian Agent maintains across a session. The Guardian commits the chain head (`chain_hash`) on the wire in its response for every step where it writes a ContextEntry (§8.6), so the chain is externally observable rather than purely Guardian-internal. The Observed Agent MAY also send `session_id` and a `chain_hash` for cross-checking.
 
 The chain root is established by the first ContextEntry the Guardian writes for a `session_id`, with `previous_hash: null`. This entry is normally produced by `sessionStart`; deployments that do not emit `sessionStart` MAY allow the Guardian to implicitly initialize the chain at the first content-bearing hook, but this is discouraged because it leaves no place to attach session-level identity, policy, or Intent before content enters.
 
@@ -228,7 +228,15 @@ Intent is OPTIONAL and is defined in [Concepts › Intent](../../concepts/intent
 
 Guardian Agents MAY archive entries when SessionContext exceeds a configurable byte threshold (suggested 64 KB). Archival MUST preserve `chain_hash`, `provenance_summary`, and `intent`. A mismatched `chain_hash` SHOULD trigger an audit event.
 
-## 9. Escalation / Approver Model
+### 8.6 Chain head publication (normative)
+
+The audit chain is only tamper-evident to an outside party if its head is committed where that party can see it. A Guardian that keeps `chain_hash` private can drop an entry (for example a DENY), recompute the chain forward, and present a clean history later, with no on-wire signal of the rewrite.
+
+For every step where the Guardian writes a ContextEntry (the content-bearing steps), the Guardian MUST include the resulting `chain_hash` in its response, and that `chain_hash` MUST be covered by the response signature (§10). Publishing the head as each decision is made lets an observer that records traffic detect any later rewrite, because the true sequence was already witnessed.
+
+`CHAIN_MISMATCH` is the named integrity condition, exposed two ways for two detectors. A Guardian that receives an Observed Agent's `chain_hash` (cross-check) that disagrees with its own computed head MAY DENY with `reason_codes: ["chain_mismatch"]`, or return the `CHAIN_MISMATCH` error (`-32007`, §17.1) when it cannot proceed at all. An Observed Agent or external auditor that finds a published `chain_hash` inconsistent with the recomputed chain SHOULD treat it as an integrity event, not a transient error.
+
+Tamper-evidence here is bounded by the signature in use. Under the HMAC baseline the published, signed head gives integrity against a network tamperer and lets a key-holder verify the chain, but it does not bind the Guardian itself: the Guardian holds the symmetric key and can re-sign a rewritten head. Non-repudiation, proving to a third party that a specific Guardian issued a specific head, requires the asymmetric ACS-Crypto profile. The baseline detects accidental divergence and cross-Guardian disagreement; defeating a determined, compromised Guardian is a profile-level guarantee, not a Core one.
 
 ASK approvers MAY be human, agent, or service. `ask_details.approver = { type, id, endpoint }`. The Approver receives an ACS-shaped request and returns an ACS-shaped decision. Approver authentication is REQUIRED. Guardian MUST verify approver identity against policy.
 
@@ -398,6 +406,6 @@ Every mandated refusal maps to a fixed code, so an SDK can branch on the code wi
 | `-32004` | `SIGNATURE_INVALID` | A required signature is missing, malformed, or fails verification (§10). | Re-sign the request; if it persists, re-resolve `key_id`. |
 | `-32005` | `REPLAY_DETECTED` | Duplicate `request_id` or `nonce` within the session (§10.3). | Regenerate `request_id` (and `nonce`) and retry. |
 | `-32006` | `TIMESTAMP_OUT_OF_WINDOW` | `timestamp` falls outside the negotiated skew window (§10.3); `data.skew_window_ms` carries the window. | Correct clock drift and retry within the window. |
-| `-32007` | `CHAIN_MISMATCH` | The client's `chain_hash` does not match the Guardian's computed head (§8). | Re-fetch session state; a persistent mismatch is an integrity event, not a transient error. |
+| `-32007` | `CHAIN_MISMATCH` | The client's `chain_hash` does not match the Guardian's computed head (§8.6). Also exposable as a deny `reason_code: "chain_mismatch"` when the Guardian can still return a decision. | Re-fetch session state; a persistent mismatch is an integrity event, not a transient error. |
 
 `system/ping` MUST NOT return an ACS-specific error, so liveness probing survives signature-rotation and key-resolution failures (§13).
