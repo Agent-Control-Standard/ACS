@@ -18,12 +18,16 @@ A v0.1.0-conformant deployment MUST implement ACS-Core. ACS-Core comprises:
 - **Request/response envelope** — JSON-RPC 2.0 with ACS extensions ([§3](./instrument/specification.md#3-wire-format)). `request_id`, `timestamp`, `acs_version`, `metadata` required on every request.
 - **Hook taxonomy** — At minimum: `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. Additional hooks (`turnStart`/`turnEnd`, `preCompact`/`postCompact`, `subagentStart`/`subagentStop`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `skillRegister`/`skillLoad`/`skillUnload`) are normatively defined and SHOULD be implemented when the harness can observe the corresponding event; they are capability-negotiated via the handshake. A deployment whose AgBOM includes `skill` components SHOULD emit the skill lifecycle hooks, so a Guardian is not blind to a composition surface the inventory already exposes.
 - **Dispositions** — All five (ALLOW, DENY, MODIFY, ASK, DEFER) with required fields per [§6](./instrument/specification.md#6-disposition-vocabulary).
-- **SessionContext and Intent** — `session_id`, `chain_hash` (rolling SHA-256), append-only ContextEntry chain ([§8](./instrument/specification.md#8-sessioncontext-and-intent)). Intent is optional but normative when IBAC is the enforcement paradigm.
+- **SessionContext and Intent**: `session_id`, `chain_hash` (rolling SHA-256), append-only ContextEntry chain, with the Guardian publishing the chain head (`chain_hash`) on responses for content-bearing steps ([§8](./instrument/specification.md#8-sessioncontext-and-intent)). Intent is optional but normative when IBAC is the enforcement paradigm.
 - **Replay protection** — `request_id` (UUID) and `timestamp` on every request; Guardians MUST reject replays per [§10.3](./instrument/specification.md#103-replay-protection).
+- **Baseline integrity**: every request and response carries a signature over the canonical envelope ([§10](./instrument/specification.md#10-cryptographic-signatures)). `HMAC-SHA256` with an HKDF-derived per-session key from deployment-provided key material is the baseline; asymmetric and post-quantum algorithms are the ACS-Crypto profile.
+- **Decision honoring**: the Observed Agent MUST wait for the Guardian's decision up to the negotiated timeout and apply it; on timeout it applies the `on_timeout` posture (default `proceed`, fail-open) and records a fail-open proceed as an audit event ([§6.4](./instrument/specification.md#64-honoring-decisions-normative)).
 - **Liveness** — `system/ping` ([§13](./instrument/specification.md#13-liveness-system-methods)).
 - **Wrapped MCP** — `protocols/MCP/*` ([Hooks](./instrument/hooks.md#protocolsmcp)).
 
-ACS-Core does NOT require: field-level Provenance objects, Trace event emission, AgBOM, cryptographic signatures, or `request_hash` on ContextEntry (`request_hash` remains SHOULD). ACS-Core deployments validate hook payloads against the base schemas, where `provenance` is OPTIONAL; field-level Provenance is added by the ACS-Provenance profile.
+ACS-Core does NOT require: field-level Provenance objects, Trace event emission, AgBOM, asymmetric or post-quantum signatures, or `request_hash` on ContextEntry (`request_hash` remains SHOULD). It DOES require the baseline signature (§10) and decision honoring (§6.4). ACS-Core deployments validate hook payloads against the base schemas, where `provenance` is OPTIONAL; field-level Provenance is added by the ACS-Provenance profile.
+
+What "ACS-Core conformant" guarantees: the channel is authenticated and the Observed Agent honors the Guardian's decisions. It does NOT assert that a deployment's policies are strict, nor that the audit chain is tamper-evident against a compromised Guardian (that is the ACS-Crypto and ACS-Audit profiles, since the HMAC baseline is symmetric). A permissive Guardian is a conformant but permissive deployment, not a violation.
 
 ## ACS-Trace
 
@@ -60,7 +64,7 @@ Required for FIDES, CaMeL, and AARM-style enforcement paradigms (which depend on
 
 Adds cryptographic signature support beyond the baseline's replay-protection fields. A deployment claiming ACS-Crypto MUST support at least `ML-DSA-65` (RECOMMENDED primary) and SHOULD support `SLH-DSA-128s` as an algorithmic-diversity backup. Hybrid composites (`ML-DSA-65+ECDSA-P256`, `ML-DSA-65+RSA-PSS-SHA256`) are OPTIONAL for transitional deployments.
 
-Baseline deployments without ACS-Crypto MAY use `HMAC-SHA256` for integrity or rely on transport-level security; neither is required by ACS-Core.
+ACS-Core requires a baseline signature; `HMAC-SHA256` over the canonical envelope ([§10](./instrument/specification.md#10-cryptographic-signatures)) satisfies it. ACS-Crypto replaces or augments the baseline with asymmetric and post-quantum algorithms, which add the non-repudiation and external verifiability the symmetric baseline cannot give. Transport-level security alone does not satisfy the Core signature requirement: it does not bind a message for audit, or across multi-hop A2A and multi-Guardian paths.
 
 Policy-author identity is distinct from both Observed Agent identity and Guardian identity. v0.1 keeps policy-author authorization and trust schemes deployment-defined, but `policy_references[].policy_version` gives replay and ledger-backed deployments a stable pointer to the policy state that was evaluated. A future Policy Attestation profile is expected to bind policy references to verifiable author signatures using algorithms from the ACS-Crypto registry while leaving the deployment trust scheme (for example SPIFFE, OIDC, DID, organizational PKI, or quorum signing) out of the core wire contract.
 
@@ -70,13 +74,13 @@ Strengthens the audit chain beyond ACS-Core's baseline. A deployment claiming AC
 
 ## Profile combinations
 
-Profiles compose. A deployment that wants full observability and supply-chain inventory but not cryptographic signatures declares `["acs-core", "acs-trace", "acs-inspect", "acs-provenance"]`. A high-assurance deployment declares all of `["acs-core", "acs-trace", "acs-inspect", "acs-inspect-dynamic", "acs-provenance", "acs-crypto", "acs-audit"]`. A minimal IDE harness declares `["acs-core"]` only.
+Profiles compose. A deployment that wants full observability and supply-chain inventory but not asymmetric or post-quantum signatures (it keeps the Core HMAC baseline) declares `["acs-core", "acs-trace", "acs-inspect", "acs-provenance"]`. A high-assurance deployment declares all of `["acs-core", "acs-trace", "acs-inspect", "acs-inspect-dynamic", "acs-provenance", "acs-crypto", "acs-audit"]`. A minimal IDE harness declares `["acs-core"]` only.
 
 ## Quick reference
 
 | Profile | What it adds | When to claim |
 |---|---|---|
-| `acs-core` | Handshake, envelope, hook taxonomy, dispositions, SessionContext, Intent, replay protection, ping | Always (mandatory) |
+| `acs-core` | Handshake, envelope, hook taxonomy, dispositions, SessionContext + published chain head, replay protection, baseline signature (HMAC-SHA256), decision honoring, ping | Always (mandatory) |
 | `acs-trace` | OTel + OCSF event emission per step | Cross-vendor observability or SIEM integration |
 | `acs-inspect` | `agbom/snapshot` + canonical AgBOM serialization | Policy depends on component inventory |
 | `acs-inspect-dynamic` | `agbom/changed` on mutation | Agent hot-swaps components mid-session |

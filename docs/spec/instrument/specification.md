@@ -141,6 +141,12 @@ The disjoint-target rule is deliberately narrower than a precedence rule. A fixe
 
 The provenance of a value introduced by `parameter_overrides` (its `origin`, and whether a Guardian may raise the trust of data it rewrites) is a separate question deferred to a later version alongside the audit-chain integrity work. v0.1 defines no Guardian-injected `origin`.
 
+### 6.4 Honoring decisions (normative)
+
+A hook is a control point only if the Observed Agent waits for the verdict and applies it. For every step it submits, the Observed Agent MUST wait for the Guardian's decision, up to the negotiated timeout (`timeout_config`, §4), and MUST apply it: `ALLOW` proceeds, `DENY` blocks the action, `MODIFY` proceeds with the modified payload (§6.3), `ASK` pauses for approval, `DEFER` suspends pending resolution. A framework that emits hooks but proceeds without applying the verdict is not conformant.
+
+On timeout, the Observed Agent applies the deployment's timeout posture, declared as `on_timeout` in the handshake (§4) and defaulting to `proceed` (fail-open) so that a slow or unreachable Guardian does not halt production. A deployment MAY set `on_timeout: deny` (fail-closed). A step that proceeds without a decision (a fail-open timeout) MUST be recorded as an audit event, so the bypass is visible rather than silent. When a decision does arrive within the timeout, the agent MUST honor it regardless of the timeout posture.
+
 ## 7. Provenance
 
 The Provenance concept and its fields are defined in [Concepts › Provenance](../../concepts/provenance.md) (normative). This section specifies the wire shape and the v0.1 trust-classification stance.
@@ -269,7 +275,7 @@ This rule preserves the security guarantee (actions that would have been `ASK`'d
 
 ## 10. Cryptographic Signatures
 
-Optional at the field level; when signatures are negotiated, the envelope is `{ algorithm, value, key_id }` with the algorithm chosen from the registry below. Supported algorithms are declared per-direction in the handshake.
+A signature over the §10 canonical input is REQUIRED in ACS-Core. The signature envelope is `{ algorithm, value, key_id }`, the algorithm drawn from the registry below and the per-direction supported set declared in the handshake. `HMAC-SHA256` is the baseline that satisfies the requirement; ACS-Core does not require asymmetric or post-quantum signatures, which are the ACS-Crypto profile (§10.1). The per-session HMAC key is `HKDF`-derived from deployment-provided input keying material (a pre-shared secret, or a transport channel binding such as a TLS exporter) together with the `session_id`. ACS v0.1 defines no in-band key-exchange: a deployment with neither a shared secret nor a secure transport cannot use the HMAC baseline and satisfies the requirement with an ACS-Crypto algorithm whose key distribution it manages out of band.
 
 **Signed input.** The signed input for every algorithm is the RFC 8785 (JCS) canonicalization of the request or response envelope with the `signature` field removed, encoded as UTF-8. This binds the signature to the whole envelope, including `method`, `metadata.session_id`, `request_id`, and `timestamp`, so a captured signature cannot be lifted into a different envelope (for example, re-wrapping a signed `toolCallResult` under a different `session_id`). A verifier MUST recompute this canonical form and MUST reject a signature that does not cover it (`SIGNATURE_INVALID`, §17.1). The input is fixed by this rule, not declared per message: a discoverable `signed_fields` would let a producer advertise partial coverage that omits `session_id`, reopening the gap this closes. Alternative canonicalization is not permitted in v0.1, matching the chain-hash rule in §8.
 
