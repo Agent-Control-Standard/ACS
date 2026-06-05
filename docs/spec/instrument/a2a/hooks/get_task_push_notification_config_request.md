@@ -3,10 +3,10 @@
 This hook **must** be used before the observed agent sends the A2A-compliant message to server agent.
 
 #### 2. Method
-[`tasks/pushNotificationConfig/get`](specification.md#48-a2a-protocol-methods)
+`tasks/pushNotificationConfig/get`
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |
@@ -95,10 +95,10 @@ The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse
 This hook **must** be used before the observed server agent receives the A2A-compliant message.
 
 #### 2. Method
-[`tasks/pushNotificationConfig/get`](specification.md#48-a2a-protocol-methods)
+`tasks/pushNotificationConfig/get`
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |
