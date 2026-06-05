@@ -66,9 +66,15 @@ Required at session start, before any hook traffic. Wire method: `handshake/hell
 
 **Observed Agent → Guardian Agent (ClientHello):** `acs_versions_supported`, `methods_implemented`, `transports_supported`, `max_payload_size_bytes`, `provenance_producer`, `wrapped_protocols`, `profiles_supported` (conformance profiles the client implements; see [Conformance](../conformance.md)).
 
-**Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `skew_window_ms` (request-timestamp skew tolerance for replay protection, §10.3), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
+**Guardian Agent → Observed Agent (ServerHello):** `negotiated_version`, `methods_evaluated`, `selected_transport`, `signature_algorithms_supported`, `timeout_config` (default and per-method), `on_decision_failure` (failure posture, §6.4), `skew_window_ms` (request-timestamp skew tolerance for replay protection, §10.3), `approver_types_supported`, `policy_requires_provenance`, `agbom_serializations_supported` (Inspect-pillar serialization formats the Guardian renders on request), `trace_emission` (whether the Guardian emits OTel and/or OCSF for the Trace pillar, plus optional OTLP collector endpoint), `profiles_accepted`.
 
 Version mismatch terminates with `UNSUPPORTED_VERSION` (`-32001`, §17.1). Unknown fields MUST be ignored. If the client declares `provenance_producer: "none"` and the Guardian's `policy_requires_provenance` is true, the Guardian MUST refuse the session at handshake time with `PROVENANCE_REQUIRED` (`-32002`, §17.1) rather than silently degrading enforcement.
+
+### 4.1 Handshake failure (normative)
+
+`on_decision_failure` is negotiated in the handshake, so it cannot govern a handshake that never completes. When `handshake/hello` fails — the Guardian is unreachable, silent past the deployment's connection timeout, or errors without producing a ServerHello — the Observed Agent applies its **startup posture**, configured out of band: `proceed` starts the session unguarded, `refuse` does not start it. The default is `proceed`, matching `on_decision_failure`, so a Guardian outage does not block new sessions.
+
+A Guardian that answers with a refusal (`SESSION_REFUSED`, `UNSUPPORTED_VERSION`, `PROVENANCE_REQUIRED`) has decided; the startup posture applies only when no answer arrives. A session started unguarded MUST be recorded in the deployment's own audit log — there is no Guardian to receive the event — and SHOULD be surfaced on Trace events when the deployment claims ACS-Trace. The Observed Agent SHOULD retry the handshake for subsequent sessions. Whether a Guardian can attach mid-flight to a session that started unguarded is undefined in v0.1; renegotiation is deferred to v0.2 alongside `system/handshake_renegotiate` (§13).
 
 ## 5. Hook Taxonomy
 
@@ -109,6 +115,8 @@ Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [I
 
 DEFER reasons: `insufficient_context`, `conflicting_policies`, `low_confidence`, `pending_dependency`. DEFER MUST include `resolution_method`, `resolution_timeout_ms`, and `timeout_decision` (default `deny`). Cascading deferrals MUST be bounded per session.
 
+`timeout_decision` defaulting to `deny` is deliberately the opposite of `on_decision_failure` defaulting to `proceed` (§6.4). An expired DEFER is a Guardian that flagged a concern and failed to resolve it, not one that never answered: a degraded Guardian that can still emit DEFER fails closed where a silent one fails open.
+
 ### 6.1 Decision result fields
 
 The decision envelope ([`response-envelope.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/response-envelope.json)) carries a fixed set of fields that compose to support audit, observability, and cross-paradigm enforcement:
@@ -145,7 +153,9 @@ The provenance of a value introduced by `parameter_overrides` (its `origin`, and
 
 A hook is a control point only if the Observed Agent waits for the verdict and applies it. For every step it submits, the Observed Agent MUST wait for the Guardian's decision, up to the negotiated timeout (`timeout_config`, §4), and MUST apply it: `ALLOW` proceeds, `DENY` blocks the action, `MODIFY` proceeds with the modified payload (§6.3), `ASK` pauses for approval, `DEFER` suspends pending resolution. A framework that emits hooks but proceeds without applying the verdict is not conformant.
 
-On timeout, the Observed Agent applies the deployment's timeout posture, declared as `on_timeout` in the handshake (§4) and defaulting to `proceed` (fail-open) so that a slow or unreachable Guardian does not halt production. A deployment MAY set `on_timeout: deny` (fail-closed). A step that proceeds without a decision (a fail-open timeout) MUST be recorded as an audit event, so the bypass is visible rather than silent. When a decision does arrive within the timeout, the agent MUST honor it regardless of the timeout posture.
+A step suffers a **decision failure** when no usable decision arrives within the negotiated timeout: the Guardian stays silent, the transport fails (connection refused, TLS failure, malformed response), or the Guardian returns an error instead of a decision. All three resolve the same way: the Observed Agent applies the deployment's failure posture, declared as `on_decision_failure` in the handshake (§4) and defaulting to `proceed` (fail-open) so that a slow, erroring, or unreachable Guardian does not halt production. A deployment MAY set `on_decision_failure: deny` (fail-closed). The negotiated timeout bounds every failure mode: an error from the §17.1 registry carries a recovery action the agent MAY attempt within the remaining budget, and an unambiguous failure (a refused connection) MAY resolve immediately rather than waiting out the clock.
+
+Every step that proceeds without a decision MUST be recorded as an audit event, so the bypass is visible rather than silent. When a decision does arrive within the timeout, the agent MUST honor it regardless of the posture. Fail-open trades enforcement for availability under disruption: an adversary who can disrupt the channel converts control into audit. Deployments for which that trade is unacceptable set `on_decision_failure: deny`.
 
 ## 7. Provenance
 
@@ -356,6 +366,7 @@ A liveness method is required for connection-health checks, transport-debugging,
 - Guardians MUST always return `decision: "allow"` for `system/ping` regardless of policy, signature, or session state. The method does not represent a controllable agent action.
 - `system/ping` MUST NOT be written into SessionContext as a ContextEntry; it does not participate in the chain hash.
 - `system/ping` MUST NOT require a signature even if the session otherwise requires signatures, so that liveness probing remains possible during signature-rotation or key-resolution failures.
+- The signature exemption means a successful ping does not prove the enforcement path is healthy: a Guardian can answer pings while rejecting every signed hook, for example during a key-resolution outage (`SIGNATURE_INVALID`, §17.1). Deployments SHOULD monitor hook-path decision failures (§6.4) directly rather than infer enforcement health from ping alone.
 - Connection failure or response timeout for `system/ping` is a transport-level signal that the Observed Agent MAY use to renegotiate transport, re-handshake, or fail over; it MUST NOT be interpreted as an enforcement event.
 - `system/ping` is the only method in the `system/*` namespace defined in v0.1.0. The namespace is reserved for future low-level transport/control methods (e.g. `system/handshake_renegotiate` in v0.2).
 
