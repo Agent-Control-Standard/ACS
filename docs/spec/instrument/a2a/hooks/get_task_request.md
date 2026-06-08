@@ -4,10 +4,10 @@ This hook is called when the observed client agent incquiry about a delegated ta
 This hook **must** be used before the observed agent sends the A2A-compliant message to server agent.
 
 #### 2. Method
-[`tasks/get`](specification.md#48-a2a-protocol-methods)
+`tasks/get`
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |
@@ -101,10 +101,10 @@ This hook is called when the observed server agent receives an incquiry message 
 This hook **must** be used before the observed agent processes the A2A-compliant message.
 
 #### 2. Method
-[`tasks/get`](specification.md#48-a2a-protocol-methods)
+`tasks/get`
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |

@@ -1,635 +1,342 @@
-# Supported hooks
+# Hooks
 
-The supported hooks intervent the agent's workflow and interactions with the environment (see [Agent Environment Overview](../topics/core_concepts.md#agent-environment-overview)), to seamlessly expose the interaction data through the ACS standard.
+ACS v0.1.0 defines 19 native `steps/*` hooks plus the wrapped `protocols/MCP/*` namespace, the Inspect-pillar `agbom/*` methods, and the `system/ping` liveness method. This page catalogs each hook: when it fires, the canonical schema, the disposition contract, and the audit-chain implications.
 
-| Components | When | Native support | Protocols
-|--|--|--|--|
-| Trigger | On trigger received | [Details](#1-agent-trigger) | |
-| API Tools, OS Tools | On tool call request | [Details](#2-tool-call-request) | [MCP](#10-mcp-outbound) |
-| API Tools, OS Tools | On tool call completed | [Details](#3-tool-call-result) | [MCP](#11-mcp-inbound) |
-| User | On user interaction received | [Details](#4-user-message) | |
-| Memory | On memory context retrieved | [Details](#5-memory-context-retrieval) | |
-| Memory | On memory store | [Details](#7-memory-store) | |
-| Knowledge | On knowledge retrieved | [Details](#6-knowledge-retrieval) | |
-| User | On agent response ready to send back to the user | [Details](#8-agent-response) | |
-| Other Agents | On task delegation to other agent |  | A2A([send](a2a/hooks/send_message_request.md), [stream](a2a/hooks/stream_message_request.md))|
-| Other Agents | On task cancellation |  | [A2A](a2a/hooks/cancel_request.md)|
-| Other Agents | On task details / status inquiry |  | [A2A](a2a/hooks/get_task_request.md)|
-| Other Agents | On task notification config inquiry |  | [A2A](a2a/hooks/get_notification_config_request.md)|
-| Other Agents | On task notification config update |  | [A2A](a2a/hooks/set_notification_config_request.md)|
-| Other Agents | On task updates subscribe |  | [A2A](a2a/hooks/resubscribe_to_task_request.md)|
+The full per-hook payload schemas live under [`specification/v0.1.0/hooks/`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/). Common envelope rules — `request_id`, `timestamp`, `acs_version`, `metadata`, signature handling, replay protection — are documented in [Specification §3](./specification.md#3-wire-format) and [§10.3](./specification.md#103-replay-protection).
 
+## Overview
 
-## 1. Agent Trigger
+| Hook | When it fires | Decision-eligible | Audit-chain |
+|---|---|---|---|
+| [`sessionStart`](#sessionstart) | Session initiation | Yes | Root entry |
+| [`agentTrigger`](#agenttrigger) | Agent activation by event/schedule | Yes | Yes |
+| [`turnStart`](#turnstart) | Beginning of an agent turn | Yes (most return ALLOW) | Yes |
+| [`userMessage`](#usermessage) | User input received | Yes | Yes |
+| [`agentResponse`](#agentresponse) | Agent output before user delivery | Yes | Yes |
+| [`knowledgeRetrieval`](#knowledgeretrieval) | RAG / knowledge lookup | Yes | Yes |
+| [`memoryContextRetrieval`](#memorycontextretrieval) | Memory read | Yes | Yes |
+| [`memoryStore`](#memorystore) | Memory write | Yes | Yes |
+| [`toolCallRequest`](#toolcallrequest) | Before tool execution | Yes | Yes |
+| [`toolCallResult`](#toolcallresult) | After tool execution, before agent ingestion | Yes | Yes |
+| [`preCompact`](#precompact) | Before context-window compaction | Yes | Yes |
+| [`postCompact`](#postcompact) | After compaction; carries new summary | No (audit + lineage binding) | Yes |
+| [`subagentStart`](#subagentstart) | In-process subagent spawned | Yes | Yes |
+| [`subagentStop`](#subagentstop) | Subagent terminated | No | Yes |
+| [`skillRegister`](#skillregister) | Skill enters the available set, before it can load | Yes | Yes |
+| [`skillLoad`](#skillload) | Registered skill activates into a session, before its actions run | Yes | Yes |
+| [`skillUnload`](#skillunload) | Skill leaves the active set | No (audit) | Yes |
+| [`turnEnd`](#turnend) | End of an agent turn | No (audit) | Yes |
+| [`sessionEnd`](#sessionend) | Session termination | No (audit finalization) | Yes |
+| [`agbom/snapshot`](#agbomsnapshot) | Full AgBOM, once per session | Yes (banned components) | Yes |
+| [`agbom/changed`](#agbomchanged) | Mid-session AgBOM mutation | Yes | Yes |
+| [`system/ping`](#systemping) | Liveness probe | Always ALLOW | No |
+| `protocols/MCP/*` | Wrapped MCP messages | Yes | Yes |
 
-### 1.1. Description
-This hook is called when the agent is triggered by an event, such as email or slack notifcations, recurrent schedule etc.<br>
-This hook should be used **after** the content is extracted from the trigger and **before** the agent is triggered or activated.
+`protocols/A2A/*` is reserved for v0.2. The namespace is recognized in the handshake's `wrapped_protocols` for forward compatibility, but no normative wrapping semantics are defined in v0.1.
 
-### 1.2. Method
-[`steps/agentTrigger`](specification.md#41-stepsagenttrigger)
+## Common envelope
 
-### 1.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+Every native hook uses the standard request envelope from [`request-envelope.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/request-envelope.json):
 
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The agent should be triggered with the original extracted content from the trigger. |
-| `deny` | The trigger should be blocked and agent should not be triggered. |
-| `modify` | The agent should be triggered with the modified content found in `modifiedRequest` field. |
-
-
-### 1.4. Example
-   ```json
+```json
 {
-    "jsonrpc": "2.0",
-    "method": "steps/agentTrigger", 
-    "id": "ec3485a7-6e51-469f-8901-ae8538d6db9c",
-    "params": {
-        "trigger": {
-            "type": "autonomous",
-            "content": [
-                {
-                    "kind": "data",
-                    "data": {
-                        "to": "user@company.io",
-                        "from": "no-reply@accounts.google.com",
-                        "subject": "Security Alert",
-                        "body": "We noticed a new sign-in to your Google Account on a Apple iPhone device. If this was you, you don't need to do anything. If not, we'll help you secure your account."
-                    }
-                }
-            ],
-            "event": {
-                "type": "email",
-                "id": "b13e363f-1387-41ce-bff0-62ee518c60cf"
-            }
-        },
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Personal assistant",
-                "instructions": "You are very helpful agent. You manage my email box.",
-                "version": "9889",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "e4368263-1797-48ac-9ca8-61a6b4ad9ea3"
-            },
-            "turnId": "f128c460-241f-44a9-b4eb-5e5c4a2f56ea", 
-            "stepId": "d87380ae-6b3b-454a-b911-0c1396e2ef68",
-            "timestamp": "2025-01-24T15:30:45.123Z",
-        }
-    }
+  "jsonrpc": "2.0",
+  "method": "steps/<hook>",
+  "id": "<jsonrpc-id>",
+  "params": {
+    "acs_version": "0.1.0",
+    "request_id": "<uuid>",
+    "timestamp": "<iso-8601>",
+    "tenant_id": "<optional>",
+    "metadata": {
+      "agent_id": "<id>",
+      "session_id": "<uuid>",
+      "turn_id": "<id-when-inside-a-turn>"
+    },
+    "payload": { /* hook-specific */ },
+    "signature": { "algorithm": "...", "value": "...", "key_id": "..." }
+  }
 }
-   ```
-
-## 2. Tool Call Request
-
-### 2.1. Description
-This hook is called when the agent decides on calling a tool.<br>
-This hook should be used **after** the inputs are extracted and **before** the tool is called.
-
-### 2.2. Method
-[`steps/toolCallRequest`](specification.md#46-stepstoolcallrequest)
-
-### 2.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The tool should be called with extracted input parameters. |
-| `deny` | The tool should not be called. It should be blocked. |
-| `modify` | The tool should be called with the modified inputs found in `modifiedRequest` field. |
-
-
-### 2.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/toolCallRequest", 
-    "id": "13fa8d6f-8f9f-4d01-ba6b-db99d84d77de",
-    "params": {
-        "toolCallRequest": {
-            "executionId": "69dbf4c3-be33-4694-a9f0-8d3a824c5d5b",
-            "toolId": "c264f381-10cf-4403-bd11-383014c0fcc6",
-            "inputs": [
-                {
-                    "name": "phone_number",
-                    "value": "+337-665-99-06"
-                },
-                {
-                    "name": "conent",
-                    "value": "Urgent security alert from Google!!"
-                }
-            ]
-        },
-        "reasoning": "Detected urgent email that needs the user's attention. I should use the send_sms tool to notify the user.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Personal assistant",
-                "instructions": "You are very helpful agent. You manage my email box.",
-                "version": "9889",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "e4368263-1797-48ac-9ca8-61a6b4ad9ea3"
-            },
-            "turnId": "69ef57b8-3993-440d-9493-523914f3f149", 
-            "stepId": "9263448a-186a-4c3b-abcf-443feb44a01e",
-            "timestamp": "2025-01-24T15:32:45.123Z",
-        }
-    }
-}
-   ```
-
-## 3. Tool Call Result
-
-### 3.1. Description
-This hook is called when tool is completed.<br>
-This hook should be used **before** the tool result is processed.
-
-### 3.2. Method
-[`steps/toolCallResult`](specification.md#46-stepstoolcallresult)
-
-### 3.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The tool result should be processed by the agent. |
-| `deny` | The tool result should not be further processed or used by the agent. |
-| `modify` | The tool result should be processed with the modified inputs found in `modifiedRequest` field. |
-
-
-### 3.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/toolCallResult", 
-    "id": "9ba7f23b-6280-4f87-9d29-9ef82064f91e",
-    "params": {
-        "toolCallResult": {
-            "executionId": "69dbf4c3-be33-4694-a9f0-8d3a824c5d5b",
-            "result": {
-                "outputs": [],
-                "isError": false,
-            }
-        },
-        "reasoning": "Sent the user an sms with to notify about the security alert using send_sms tool. My task is completed.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Personal assistant",
-                "instructions": "You are very helpful agent. You manage my email box.",
-                "version": "9889",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "e4368263-1797-48ac-9ca8-61a6b4ad9ea3"
-            },
-            "turnId": "69ef57b8-3993-440d-9493-523914f3f149", 
-            "stepId": "9263448a-186a-4c3b-abcf-443feb44a01e",
-            "timestamp": "2025-01-24T15:34:45.123Z",
-        }
-    }
-}
-   ```
-
-## 4. User Message
-
-### 4.1. Description
-This hook is called when a user sends a prompt to the agent.<br>
-This hook should be used **before** the user prompt reaches the agent.<br>
-
-### 4.2. Method
-[`steps/message`](specification.md#45-stepsmessage)<br><br>
-This method is used with [Agent Response](#8-agent-response) hook.<br>
-For this hook `role` **MUST** be `user` (see example).
-
-
-### 4.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The agent should be triggered with the original user prompt. |
-| `deny` | The trigger should be blocked and agent should not be triggered. |
-| `modify` | The agent should be triggered with the modified prompt found in `modifiedRequest` field. |
-
-
-### 4.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/message", 
-    "id": "55a8c2d7-0ea3-4cc7-b5e8-c859bf7a612f",
-    "params": {
-        "message": {
-            "role": "user",
-            "id": "a66c132e-a554-4dfc-8a47-2db66e13ef39",
-            "content": [
-                {
-                    "kind": "text",
-                    "text": "What is the bank account of Acme Corp?"
-                }
-            ]
-        },
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Payments agent",
-                "instructions": "You are very helpful agent. You manage customers bank accounts and payments",
-                "version": "8878",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "84c36ebb-83aa-4bc9-8670-7aba4cedc70f"
-            },
-            "turnId": "f31ec273-9272-47dd-8ec4-8b2da695507e", 
-            "stepId": "f3a357c4-2257-4cbe-ba16-e6fa2ca4e2ed",
-            "timestamp": "2025-01-24T15:30:45.123Z",
-            "user": {
-                "id": "8cc6e9bc-6ad5-4b95-8060-300915b1aaba",
-                "email": "user@company.io",
-                "organization": {
-                    "id": "d8b0a63e-9a5d-4638-b5a3-4361ba067200",
-                    "name": "Azura"
-                }
-            }
-        }
-    }
-}
-   ```
-## 5. Memory Context Retrieval
-### 5.1. Description
-This hook is called when the agent retrieves content from the memory store such as conversation histroy.<br>
-This hook should be used **after** memory store is retrieved and **before** it is attached to the context window. <br>
-
-### 5.2. Method
-[`steps/memoryContextRetrieval`](specification.md#44-stepsmemorycontextretrieval)<br><br>
-
-
-### 5.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The memory store should be attached to the context. |
-| `deny` | The memory store should not be attached to the context. |
-| `modify` | The memory store should be attached to the context with the modified content found in `modifiedRequest` field. |
-
-### 5.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/memoryContextRetrieval", 
-    "id": "5d5d6170-ffba-4520-9839-0da4c31b5497",
-    "params": {
-        "memory": [
-            "[{\"role\":\"user\",\"message\":\"what is bank account of Continental Bank?\"},{\"role\":\"agent\",\"message\":\"Bank account of  Continental Bank is 000456789123\"}]",
-        ],
-        "reasoning": "I might find these details from previous interactions. I need to look at the conversation history to decide.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Payments agent",
-                "instructions": "You are very helpful agent. You manage customers bank accounts and payments",
-                "version": "8878",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "84c36ebb-83aa-4bc9-8670-7aba4cedc70f"
-            },
-            "turnId": "083db36a-5ba1-4d37-8c3f-ebc2ec23b96b", 
-            "stepId": "491fef1e-992d-4503-aadb-e36c935fdeb2",
-            "timestamp": "2025-01-24T15:31:00.123Z",
-            "user": {
-                "id": "8cc6e9bc-6ad5-4b95-8060-300915b1aaba",
-                "email": "user@company.io",
-                "organization": {
-                    "id": "d8b0a63e-9a5d-4638-b5a3-4361ba067200",
-                    "name": "Azura"
-                }
-            }
-        }
-    }
-}
-   ```
-
-## 6. Knowledge Retrieval
-
-### 6.1. Description
-This hook is called when the agent retrieve data from a knowledge source.<br>
-This hook should be used **after** knowledge is retrieved and **before** it gets into the LLM to generate responses. <br>
-
-### 6.2. Method
-[`steps/knowledgeRetrieval`](specification.md#42-stepsknowledgeretrieval)<br><br>
-
-
-### 6.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The retrieved data should be attached as is into the LLM context. |
-| `deny` | The data retrieved should be blocked. ie the agent should not use or attach the retieved data to it's context. |
-| `modify` | The agent should use the retierved data with the modified content found in `modifiedRequest` field. |
-
-### 6.4. Example 
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/knowledgeRetrieval", 
-    "id": "651aed43-4aca-4226-94fe-66fb77cd6c4a",
-    "params": {
-        "knowledgeStep": {
-            "query": "Bank account of Acme Corp",
-            "keywords": [
-                "Bank",
-                "Account",
-                "Acme Corp"
-                ],
-            "results": [
-                {
-                    "id": "0a267158-7b44-452a-bba8-c1107bdf6128",
-                    "content" :"
-                    Account_ID,Account_Holder,Bank_Name,Account_Type,Routing_Number,Account_Number,Currency
-                    BA-1001,Acme Corp,First National Bank,Checking,111000025,000123456789,USD
-                    BA-1002,Globex Industries,Metro Credit Union,Savings,222000198,000987654321,USD
-                    BA-1003,Initech LLC,Continental Bank,Checking,333000455,000456789123,EUR"
-                }
-            ]
-        },
-        "reasoning": "I need to find a bank account. I expect this to be available in  Bank Accounts.xlsx file.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Payments agent",
-                "instructions": "You are very helpful agent. You manage customers bank accounts and payments",
-                "version": "8878",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "84c36ebb-83aa-4bc9-8670-7aba4cedc70f"
-            },
-            "turnId": "083db36a-5ba1-4d37-8c3f-ebc2ec23b96b", 
-            "stepId": "234b6b2f-a2af-45d1-95b9-c16c13dca431",
-            "timestamp": "2025-01-24T15:31:45.123Z",
-            "user": {
-                "id": "8cc6e9bc-6ad5-4b95-8060-300915b1aaba",
-                "email": "user@company.io",
-                "organization": {
-                    "id": "d8b0a63e-9a5d-4638-b5a3-4361ba067200",
-                    "name": "Azura"
-                }
-            }
-        }
-    }
-}
-   ```
-
-## 7. Memory Store
-
-### 7.1. Description
-This hook is called when the agent stores data into the memory store.<br>
-This hook should be used **before** the memory store is updated. <br>
-
-### 7.2. Method
-[`steps/memoryStore`](specification.md#43-stepsmemorystore)<br><br>
-
-
-### 7.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The memory store should be updated. |
-| `deny` | The memory store should not be updated. |
-| `modify` | The memory store should be updated with the modified content found in `modifiedRequest` field. |
-
-
-### 7.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/memoryStore", 
-    "id": "797aad44-7cd1-43c3-a6ec-6536cd295ed9",
-    "params": {
-        "memory": [
-            "[{\"role\":\"user\",\"message\":\"What is the bank account of Acme Corp?\"},{\"role\":\"agent\",\"message\":\"The bank account of Acme Corp is 000123456789\"}]",
-        ],
-        "reasoning": "I should memorize Acme Corp bank account details for future interactions.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Payments agent",
-                "instructions": "You are very helpful agent. You manage customers bank accounts and payments",
-                "version": "8878",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "84c36ebb-83aa-4bc9-8670-7aba4cedc70f"
-            },
-            "turnId": "083db36a-5ba1-4d37-8c3f-ebc2ec23b96b", 
-            "stepId": "ee33bce7-72b9-4ef7-a464-1f3f70ed7e06",
-            "timestamp": "2025-01-24T15:31:58.123Z",
-            "user": {
-                "id": "8cc6e9bc-6ad5-4b95-8060-300915b1aaba",
-                "email": "user@company.io",
-                "organization": {
-                    "id": "d8b0a63e-9a5d-4638-b5a3-4361ba067200",
-                    "name": "Azura"
-                }
-            }
-        }
-    }
-}
-   ```
-
-## 8. Agent Response
-
-### 8.1. Description
-This hook is called when the agent sends back a response.<br>
-This hook should be used **before** the agent response is sent to the user. <br>
-
-### 8.2. Method
-[`steps/message`](specification.md#45-stepsmessage)<br><br>
-This method is used with [User Message](#4-user-message) hook.<br>
-For this hook `role` **MUST** be `agent` (see example).
-
-
-### 8.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The agent response should be sent as is. |
-| `deny` | The agent response should be blocked. Recommended to send a response indicating that the original response was blocked. |
-| `modify` | The agent response should be sent back with the modified content found in `modifiedRequest` field. |
-
-
-### 8.4. Example
-   ```json
-{
-    "jsonrpc": "2.0",
-    "method": "steps/message", 
-    "id": "716601aa-36eb-4720-ab08-c59b9321aecb",
-    "params": {
-        "message": {
-            "role": "agent",
-            "id": "a66c132e-a554-4dfc-8a47-2db66e13ef39",
-            "content": [
-                {
-                    "kind": "text",
-                    "text": "The bank account of Acme Corp is 000123456789"
-                }
-            ]
-        },
-        "citations": [
-            {
-                "kind": "file",
-                "id": "0a267158-7b44-452a-bba8-c1107bdf6128",
-                "name": "Bank Accounts.xlsx"
-            }
-        ],
-        "reasoning": "Found Acme Corp bank account details in Bank Accounts.xlsx. I can respond to the user.",
-        "context": {
-            "agent": {
-                "id": "1c88ab7d-395f-449a-af51-6028f9e842ea",
-                "name": "Payments agent",
-                "instructions": "You are very helpful agent. You manage customers bank accounts and payments",
-                "version": "8878",
-                "provider": {
-                    "name": "OpenAI",
-                    "url": "https://openai.com/"
-                }
-            },
-            "session": {
-                "id": "84c36ebb-83aa-4bc9-8670-7aba4cedc70f"
-            },
-            "turnId": "083db36a-5ba1-4d37-8c3f-ebc2ec23b96b", 
-            "stepId": "fdee9786-1754-4c87-962c-a1ed02918b99",
-            "timestamp": "2025-01-24T15:33:45.123Z",
-            "user": {
-                "id": "8cc6e9bc-6ad5-4b95-8060-300915b1aaba",
-                "email": "user@company.io",
-                "organization": {
-                    "id": "d8b0a63e-9a5d-4638-b5a3-4361ba067200",
-                    "name": "Azura"
-                }
-            }
-        }
-    }
-}
-   ```
-
-# MCP protocol hooks
-For detailed explanation on how to extend MCP please refer to [extend_mcp.md](extend_mcp.md)
-
-## 11. MCP Outbound
-
-### 11.1. Description
-This hook is called when the agent communicate with remote MCP servers via MCP protocol. <br>
-This hook should be used **before** the agent sends MCP-compliant message to the remote MCP server. <br>
-
-### 11.2. Method
-[`protocols/MCP`](specification.md#410-protocolsmcp)<br><br>
-
-
-### 11.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The MCP message should be sent to the remote server as is. |
-| `deny` | The MCP communication should be blocked. The message should not be sent to the remote MCP server. |
-| `modify` | The MCP message should be sent to the remote server with the modified content found in `modifiedRequest` field. |
-
-
-### 11.4. Example
-   ```json
-    {
-        "jsonrpc": "2.0",
-        "id": "13fd5c5c-2e82-47db-ac4b-227fffd6683a",
-        "method": "protocols/MCP",
-        "params": {
-            "jsonrpc": "2.0",
-            "id": "15275b01-b6dc-4fa5-9f17-6a949c72de3c",
-            "method": "tools/call",
-            "params": {
-            "arguments": {
-                "specialty": "Family Medicine",
-                "datetime":  "2025-01-24T15:30:45.123Z",
-                "City": "Berlin"
-            },
-            "name": "get_appointment_slots"
-            }
-        }
-    }
-   ```
-
-## 12. MCP Inbound
-
-### 12.1. Description
-This hook is called when the agent received a message from MCP remote server. <br>
-This hook should be used **before** the agent processes the MCP received message from the remote MCP server. <br>
-
-### 12.2. Method
-[`protocols/MCP`](specification.md#410-protocolsmcp)<br><br>
-
-
-### 12.3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
-
-| Decision | Behavior |
-| :--------- | :---------- |
-| `allow` | The MCP message should be processed by the agent as is. |
-| `deny` | The MCP message should not be processed by the agent. |
-| `modify` | The MCP message should be processed by the agent with the modified content found in `modifiedRequest` field. |
-
-
-### 12.4. Example
-   ```json
-    {
-        "jsonrpc": "2.0",
-        "id": "e1c93383-e6ca-433c-999d-85cbca53a172",
-        "method": "protocols/MCP",
-        "params": {
-            "jsonrpc": "2.0",
-            "id": "15275b01-b6dc-4fa5-9f17-6a949c72de3c",
-            "result": {
-                "content": "
-                {\"specialty\":\"Family Medicine\",\"city\":\"Berlin\",\"requested_datetime\":\"2025-01-24T15:30:45.123Z\"
-                \"time_zone\":\"Europe/Berlin\",\"slots\":[{\"slot_id\":\"96e3e9e4-019d-4c2a-8a62-0f2f725882f9\"
-                \"start\":\"2025-01-24T16:00:00+01:00\",\"end\":\"2025-01-24T16:20:00+01:00\",\"doctor_name\":\"Dr. Anna Schmidt\"
-                \"clinic_name\":\"HealthyLife Praxis\"},{\"slot_id\":\"4b5d3fc7-0b4d-4376-bd2f-2f92fe7f32d2\"
-                \"start\":\"2025-01-24T16:30:00+01:00\",\"end\":\"2025-01-24T16:50:00+01:00\",\"doctor_name\":\"Dr. Lukas Becker\"
-                \"clinic_name\":\"Kreuzberg Family Clinic\"},{\"slot_id\":\"18d97122-aba5-4f46-92d5-9bdd1e14cf2b\"
-                \"start\":\"2025-01-24T17:10:00+01:00\",\"end\":\"2025-01-24T17:30:00+01:00\",\"doctor_name\":\"Dr. Jana Meyer\"
-                \"clinic_name\":\"Prenzlauer Care Center\"}]}"
-            }
-        }
-    }
-   ```
+```
+
+The decision envelope shape is documented in [Specification §6](./specification.md#6-disposition-vocabulary) and [`response-envelope.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/response-envelope.json).
+
+---
+
+## sessionStart
+
+Schema: [`hooks/session-start.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/session-start.json).
+
+Fires once per session, after the `handshake/hello` exchange completes and before any other `steps/*` hook for the same `session_id`. Establishes the audit chain root (`previous_hash: null`), session-level identity and policy bindings, and the initial `Intent` (when IBAC is the enforcement paradigm).
+
+**Payload:** session-level identity descriptors, declared policy mode, `intent` (optional, with `parser_provenance`), platform context.
+
+**Decision:** ALLOW / DENY. A Guardian MAY refuse a session whose identity, policy mode, or platform fails policy checks; this is the cleanest place to refuse before content enters.
+
+A deployment that does not emit `sessionStart` MAY allow the Guardian to implicitly initialize the chain at the first content-bearing hook, but this is discouraged because it leaves no place to attach session-level Intent before content enters.
+
+---
+
+## agentTrigger
+
+Schema: [`hooks/agent-trigger.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agent-trigger.json).
+
+Fires when the agent is activated by an external triggering condition (event arrival, scheduled tick, A2A inbound message, user-initiated session, or system-issued activation). For A2A-mediated delegation, `trigger_type: "a2a_inbound"` carries the originating peer identity; for in-process subagent spawns, see [`subagentStart`](#subagentstart).
+
+**Payload:** `trigger_type` (`user_message`, `scheduled`, `external_event`, `a2a_inbound`, `system`), `trigger_source` (shape depends on `trigger_type`), optional `intent` (IBAC adopters populate; the Intent registered at sessionStart, carried here for activation-time policy checks).
+
+**Decision:** ALLOW / DENY / MODIFY. Guardian MAY rewrite the trigger payload (e.g. redact PII) before activation.
+
+---
+
+## turnStart
+
+Schema: [`hooks/turn-start.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/turn-start.json).
+
+Lightweight hook marking the start of an agent turn. Many policies key on per-turn state — "deny consequential actions in any turn after a turn that retrieved untrusted data," "limit tool-call count per turn," "reset cumulative-taint at turn boundary." Without an explicit turn boundary, every Guardian rolls its own heuristic for inferring turn breaks (usually pairing `userMessage` with the next `agentResponse`), and the heuristics don't agree under auto-continuation, planning loops, and multi-step ReAct cycles.
+
+`turn_id` is added to the request envelope's `metadata` block and propagated onto every per-step ContextEntry between `turnStart` and `turnEnd`. AARM-style "no consequential action in N turns after taint" becomes computable from the audit chain in O(1) per check.
+
+**Payload:** `turn_id`, `triggered_by` (`user_message`, `auto_continuation`, `agent_loop`, `subagent_return`), optional `parent_turn_id` for nested turns.
+
+**Decision:** Decision-eligible — a Guardian MAY deny to block the turn from starting — but most deployments will return ALLOW and use the hook for state transitions in policy.
+
+---
+
+## userMessage
+
+Schema: [`hooks/user-message.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/user-message.json).
+
+Fires when external user input arrives, before it is presented to the agent's reasoning context. Provenance: `origin: user_input`.
+
+**Payload:** message content, optional citation/sources, user context.
+
+**Decision:** ALLOW / DENY / MODIFY. Guardian MAY redact content before delivery to the agent.
+
+---
+
+## agentResponse
+
+Schema: [`hooks/agent-response.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agent-response.json).
+
+Fires after the agent has produced a response, before it is delivered to the recipient (user, A2A peer, parent agent, or external system). Provenance: `origin: agent_generated` with `derived_from` set to whatever inputs the response is derived from.
+
+**Payload:** response content, optional sources/citations, agent reasoning.
+
+**Decision:** ALLOW / DENY / MODIFY.
+
+---
+
+## knowledgeRetrieval
+
+Schema: [`hooks/knowledge-retrieval.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/knowledge-retrieval.json).
+
+Fires when the agent retrieves external knowledge (RAG, vector search, knowledge base lookup). Provenance: `origin: retrieved`, with `source_id` identifying the index or knowledge source.
+
+**Payload:** `query`, `keywords`, retrieved results (each with content, mime type, source id).
+
+**Decision:** ALLOW / DENY / MODIFY. Guardian MAY redact retrieved content before injection into the agent context.
+
+---
+
+## memoryContextRetrieval
+
+Schema: [`hooks/memory-context-retrieval.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/memory-context-retrieval.json).
+
+Memory read — long-term, session-scoped, or user-scoped — into the agent's working context. Provenance: `origin: retrieved`, `source_id` identifies the memory store.
+
+**Payload:** memory entries pulled into context.
+
+**Decision:** ALLOW / DENY / MODIFY.
+
+---
+
+## memoryStore
+
+Schema: [`hooks/memory-store.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/memory-store.json).
+
+Memory write. The standard sink for cross-session influence; mediating it prevents memory poisoning.
+
+**Payload:** entries to be written, target store, scope (`session`/`user`/`tenant`/`global`), TTL.
+
+**Decision:** ALLOW / DENY / MODIFY.
+
+---
+
+## toolCallRequest
+
+Schema: [`hooks/tool-call-request.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/tool-call-request.json).
+
+Fires after the framework has parsed a tool call from the LLM's output, but before the tool is dispatched to its handler. The central enforcement point for IBAC, FIDES, CaMeL, and AARM. Argument-level provenance attached to each `ToolArgumentValue` lets Guardians reason about the lineage of individual arguments, so policy can target specific data flows rather than the call as a whole.
+
+Frameworks MUST fire `toolCallRequest` for every action that escapes the agent's reasoning context, regardless of whether the framework's tool registry models it as a tool. This includes built-in operations such as filesystem reads/writes, network fetches, process execution, and shell commands. The Guardian relies on a complete view of all outward actions; primitives that bypass `toolCallRequest` are invisible to policy.
+
+**Payload:** `tool` (id, capability), `arguments` (each value carrying optional Provenance), agent reasoning.
+
+**Decision:** ALLOW / DENY / MODIFY / ASK / DEFER. The full disposition vocabulary applies — this is the hook where most paradigm composition happens.
+
+---
+
+## toolCallResult
+
+Schema: [`hooks/tool-call-result.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/tool-call-result.json).
+
+Fires after tool execution, before the result is ingested into the agent's reasoning context. Provenance: `origin: tool_output`, with `derived_from` set to the originating `toolCallRequest`'s provenance ids when the tool's output is data-derived.
+
+**Payload:** `execution_id` (correlated to the request), outputs, exit status, duration.
+
+**Decision:** ALLOW / DENY / MODIFY.
+
+---
+
+## preCompact
+
+Schema: [`hooks/pre-compact.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/pre-compact.json).
+
+Fires before context-window compaction. Compaction is the chokepoint where provenance can be laundered: when the runtime LLM compresses a long context window into a summary, the post-compaction text is new `agent_generated` content whose `derived_from` lineage spans every untrusted item that was in the pre-compaction context. Without an explicit hook, the framework has no clean place to attach the rule that *the compacted summary's lineage is the union of all summarized entries' lineage*. AARM cumulative-context tracking breaks across compaction without it, FIDES's monotonicity claim is unverifiable, and Guardians cannot enforce "don't compact across a trust boundary" policies.
+
+**Payload:** `entries_to_compact` (array of `step_id`s that will be summarized), pre-compaction `provenance_summary` (so the Guardian can see what it's about to lose), `triggered_by` (`size_threshold`, `manual`, `agent_initiated`).
+
+**Decision:** Decision-eligible. Guardian MAY return DENY to block compaction (e.g. because deployment policy disallows compacting after `untrusted` data has entered until a trusted re-grounding occurs).
+
+---
+
+## postCompact
+
+Schema: [`hooks/post-compact.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/post-compact.json).
+
+Fires after compaction. Audit + provenance-binding hook.
+
+**Payload:** resulting `summary` content with `provenance` whose `origin` MUST be `agent_generated` and whose `derived_from` MUST equal the union of `provenance_id`s of every entry in `entries_compacted`. The framework — not the LLM — populates `derived_from`.
+
+**Decision:** Not decision-eligible — compaction has already occurred. A Guardian MAY return MODIFY (rewrite the summary, e.g. to redact a region the policy can't compact), but MAY NOT return DENY. The audit chain MUST record the post-compact state regardless.
+
+---
+
+## subagentStart
+
+Schema: [`hooks/subagent-start.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/subagent-start.json).
+
+In-process delegation — a parent agent spawning a subagent within the same runtime, with no A2A boundary crossed — needs an explicit lifecycle event. A2A-mediated delegation already flows through [`agentTrigger`](#agenttrigger) with `trigger_type: a2a_inbound` on the subagent's side; `subagentStart` is for the same-runtime case.
+
+This matters for IBAC: when a subagent spawns, the audit chain must record whether it inherits the parent's `Intent.parsed`, gets a derived intent, or starts fresh — and whether subsequent operations are checked against the parent's, the subagent's, or both Intents. The composition case (IBAC outer + CaMeL inner) is precisely the case this hook handles.
+
+**Payload:** `subagent_session_id` (a fresh `session_id` distinct from the envelope's parent `session_id`), `parent_session_id`, `parent_step_id` (the originating step that triggered the spawn), `intent_derivation` (`inherit_full` / `inherit_subset` / `derived_from_parent` / `fresh`), `subagent_intent` (the new Intent for the subagent, with `parser_provenance`).
+
+**Decision:** Decision-eligible. Guardian MAY DENY — refuse the subagent spawn, e.g. because the `intent_derivation` would grant capabilities the parent's `Intent.parsed` does not authorize.
+
+Each subagent has its own SessionContext and audit chain; the parent–child relation is captured in the `subagentStart` payload.
+
+---
+
+## subagentStop
+
+Schema: [`hooks/subagent-stop.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/subagent-stop.json).
+
+**Payload:** `subagent_session_id`, `outcome` (`completed`, `failed`, `cancelled`), the subagent's `final_chain_hash`, optional `summary` of what was returned to the parent. The summary's `provenance` follows the standard monotonicity rule.
+
+**Decision:** Audit only.
+
+---
+
+## skillRegister
+
+Schema: [`hooks/skill-register.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-register.json).
+
+Fires when a skill enters the agent's available set, before it is eligible to load or run. This is the static vetting gate: the one point where a Guardian sees the whole skill definition before any of its actions execute. A payload split across a skill's actions is benign at each action and malicious only in composition, so it escapes per-action hooks like [`toolCallRequest`](#toolcallrequest); `skillRegister` is where the whole definition is inspected.
+
+A skill is the loadable, composed counterpart to the passive `agent_capability` grouping. It is cataloged as a `skill` AgBOM component carrying its composition references, a least-privilege capability manifest, and the definition's reference and integrity digest. The `ref` and `digest` commit to the complete loadable artifact, including any bundled model weights or adapters, not only text. This matters for a model-bearing skill whose backdoor lives in opaque weights rather than any readable instruction: source inspection cannot see it, so the control is the digest plus `registration_provenance`, not body reading. The full definition body travels in this payload for inspection but is NOT persisted to the AgBOM; only the `ref` and `digest` persist. The approval recorded here is keyed on the `(skill_id, digest)` pair, which `skillLoad` is later checked against. Marketplace pre-publication scanning and publisher reputation are out of scope; ACS surfaces the definition, provenance, and manifest so the Guardian's policy can act.
+
+**Payload:** `skill_id`, `definition` (`ref`, `digest`, optional `body` for inspection), `declared_capabilities`, optional `composition` (`tools`/`mcp_servers`/`a2a_peers`/`models`/`composed_skills`), `registration_provenance`. A model-bearing skill lists its bundled model under `composition.models` so the AgBOM inventories it as a `model` component with its own provenance, rather than leaving the weights opaque inside the definition.
+
+**Decision:** ALLOW / DENY. A Guardian MAY deny registration; a denied skill MUST NOT become eligible to load. A Guardian SHOULD compare `declared_capabilities` against the union of capabilities the composed tools expose and MAY deny over-broad declarations.
+
+---
+
+## skillLoad
+
+Schema: [`hooks/skill-load.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-load.json).
+
+Fires when a registered skill activates into a session, before its actions run. Where `skillRegister` vets the artifact once and statically, `skillLoad` governs each activation in live context. It carries the load path, the ordered list of skills that led to the current load, so a Guardian can see and contain inter-skill cascades (skill A loads B loads C, each clean alone).
+
+`skillLoad` carries the `digest` of the artifact being loaded so the Guardian binds the activation to an approved registration. A load MUST be correlatable to a prior approved `skillRegister` for the same `(skill_id, digest)`; one the Guardian cannot tie to an approved registration, or whose digest differs from the approved one, is unverifiable and SHOULD be denied. Without this binding the gate is bypassable: a framework could emit `skillLoad` for an artifact that was never registered, or whose registration was denied. The framework MAY send a `digest_verified` hint, but a Guardian verifies the binding itself by comparing `digest` against its record of the approved registration rather than trusting the flag, since a compromised framework could assert it falsely.
+
+When a load is triggered by another skill, `load_trigger` is `skill_composition` and `load_path` carries more than one element.
+
+**Payload:** `skill_id`, `digest` (`algorithm`, `value`), `load_trigger` (`user`/`agent_decision`/`skill_composition`/`system`), `load_path` (ordered `{skill_id, step_id?}`, root first), optional `registration_ref`, optional `parent_step_id`, optional `digest_verified`, optional `declared_capabilities`.
+
+**Decision:** ALLOW / DENY. A Guardian SHOULD deny a load it cannot correlate to an approved `skillRegister` for the same `(skill_id, digest)`, SHOULD deny when `load_path` shows a skill loading another outside its declared `composed_skills`, and SHOULD deny when the loaded artifact's digest does not match the one vetted at `skillRegister`.
+
+---
+
+## skillUnload
+
+Schema: [`hooks/skill-unload.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/skill-unload.json).
+
+Fires when a skill leaves the active set. Its enforcement value is low: by unload time the skill's actions have already run, so a Guardian typically observes rather than denies. It keeps the AgBOM's active inventory accurate, and repeated load/unload churn of the same skill is itself a signal worth tracing.
+
+**Payload:** `skill_id`, `reason` (`session_end`/`explicit_unload`/`replaced`/`error`), optional `replaced_by`.
+
+**Decision:** Audit only.
+
+---
+
+## turnEnd
+
+Schema: [`hooks/turn-end.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/turn-end.json).
+
+**Payload:** `turn_id`, `outcome` (`completed`, `deferred`, `error`), `step_count`, optional `summary`.
+
+**Decision:** Not decision-eligible — the turn has already happened.
+
+---
+
+## sessionEnd
+
+Schema: [`hooks/session-end.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/session-end.json).
+
+Session termination, audit finalization. The Guardian seals the chain at this point.
+
+**Payload:** `session_reason` (`completed`, `cancelled`, `error`, `timeout`), final aggregates.
+
+**Decision:** Audit only.
+
+---
+
+## agbom/snapshot
+
+Schema: [`hooks/agbom-snapshot.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agbom-snapshot.json).
+
+Inspect-pillar method. Fires once per session, after `sessionStart` and before `agentTrigger` (the first content-bearing hook), and again after handshake-renegotiation. Carries the full AgBOM (the Observed Agent's component graph: models, MCP servers, A2A peers, tools, knowledge sources, memory stores, agent capabilities, skills).
+
+**Decision:** Normally ALLOW. Guardian MAY DENY to refuse a session whose component graph contains a banned model, tool, or peer.
+
+See the [Inspect pillar](../inspect/README.md) for the full AgBOM schema and serialization mapping.
+
+---
+
+## agbom/changed
+
+Schema: [`hooks/agbom-changed.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/agbom-changed.json).
+
+Inspect-pillar method. Fires whenever a component is added, removed, or version-changed mid-session. Carries either a full snapshot or a diff (`added[]`, `removed[]`, `changed[]`).
+
+**Decision:** ALLOW / DENY. Guardian MAY DENY to block a hot-swap; otherwise audited.
+
+`agbom/changed` is part of the **ACS-Inspect-Dynamic** profile extension. Deployments claiming the base **ACS-Inspect** profile (snapshot only) are not required to emit it.
+
+---
+
+## system/ping
+
+Schema: [`hooks/system-ping.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/system-ping.json). See [Specification §13](./specification.md#13-liveness-system-methods).
+
+> **Note:** `system/ping` is in the `system/*` namespace, not `steps/*`. It is not a hook in the enforcement sense: it carries no audit and bypasses signature requirements.
+
+Liveness probe. Always returns `decision: "allow"` regardless of policy, signature, or session state. NOT written into SessionContext. NOT subject to signature requirements even when the session otherwise requires signatures.
+
+---
+
+## protocols/MCP/\*
+
+See [Extending MCP](./extend_mcp.md). Wrapped MCP messages flow through `protocols/MCP/*` (e.g. `protocols/MCP/initialize`, `protocols/MCP/tools/call`, `protocols/MCP/prompts/get`, `protocols/MCP/resources/read`). The wrapped methods carry the underlying MCP message intact and apply the standard ACS envelope, decision contract, and audit-chain rules on top. Deployments that only need transport-agnostic tool governance MAY collapse MCP tool calls into `steps/toolCallRequest`; deployments that need MCP-specific policy precision use this namespace to preserve distinctions such as capability negotiation, prompt fetches, resource reads/subscriptions, and notifications.

@@ -4,11 +4,11 @@ This hook is called when the observed client agent sends a message to server age
 This hook **must** be used before the observed agent sends the A2A-compliant message to server agent.
 
 #### 2. Method
-[`message/stream`](specification.md#48-a2a-protocol-methods)
+`message/stream`
 
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |
@@ -143,11 +143,11 @@ This hook is called when the observed server agent receves stream message reques
 This hook **must** be used before the observed agent processes the A2A-compliant message.
 
 #### 2. Method
-[`message/stream`](specification.md#48-a2a-protocol-methods)
+`message/stream`
 
 
 #### 3. Reponse
-The response is an [`ACSSuccessResponse`](specification.md#51-acssuccessresponse-object) object.
+The response is an [response envelope](../../specification.md#6-disposition-vocabulary) object.
 
 | Decision | Behavior |
 | :--------- | :---------- |

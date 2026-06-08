@@ -1,60 +1,65 @@
-# Core concepts
+# Core Concepts
 
-ACS specifies the in-line _Hooks_ and out-of-band _Events_ that an agent need to support to be considered trustworthy.
-Usings these events and hooks, _Observed Agents_ can be monitored and protected by a _Guardian Agent_.
+ACS specifies how an AI agent exposes its behavior so a separate **Guardian Agent** can permit, deny, or modify what the agent does, in real time, with a verifiable audit trail. The agent being monitored is an **Observed Agent**.
 
-## Agent Control Standard
+## The three pillars
 
-To support an holistic view and security enforcement, the framework defines three components
+ACS v0.1.0 organizes capabilities into three co-equal pillars:
 
-1. **Instrument** - Observed agents provide standard hooks that can modify runtime execution via lightweight callouts
-2. **Trace** - Observed agents emit comprehensive events on every runtime decision and lifecycle change
-3. **Inspect** - Observed agents support requests for Agent Bill-Of-Material (AgBOM)
+1. **Instrument**: real-time control points (hooks). Observed Agents send hook traffic to the Guardian; the Guardian returns one of five dispositions (`allow`, `deny`, `modify`, `ask`, `defer`). Hooks fire before actions execute, enabling preventive enforcement. See [Specification](../spec/instrument/specification.md) and [Hooks](../spec/instrument/hooks.md).
+2. **Trace**: deterministic event emission. Every hook is also recordable as an OpenTelemetry span and an OCSF event. Decisions are recorded as span events on the parent step span, so the verdict and the action it gates share a parent. See [Trace Events](../spec/trace/events.md).
+3. **Inspect**: queryable, dynamic Agent Bill of Materials (AgBOM). The Observed Agent declares its components (models, MCP servers, A2A peers, tools, knowledge sources, memory stores) and reports mutations. See [Inspect](../spec/inspect/README.md).
 
-## Agent Environment Overview
+A v0.1.0-conformant deployment implements **ACS-Core** (the Instrument baseline). Trace, Inspect, field-level Provenance, cryptographic signatures, and strengthened audit chains are organized as [conformance profiles](../spec/conformance.md) declared in the handshake.
 
-An agent operates within an environment that includes interactions with several key entities and system components:
+## The two parties
 
-| Components | Description | Can be Local | Can be Remote | Related Protocols |
-|--|--|--|--|--|
-| User | Interface with the user, either directly or indirectly | ✓ | ✓ | |
-| Trigger | Any system event that triggers the agent including notifications, recurrent triggers etc. | ✓ | ✓ | |
-| Other Agents | Communication and collaboration with peer agents | ✓ | ✓ | A2A |
-| Memory | Access short-term or long-term, memory resources | ✓ | ✓ | |
-| Knowledge | Files, resources, RAG, and other sources | ✓ | ✓ | MCP |
-| Prompts | Saved prompts used by the agent as templates for sub-tasks | ✓ | ✗ | MCP |
-| API Tools | Tool calls that operate over REST API calls or function calls | ✓ | ✓ | MCP |
-| OS Tools | Tool calls that operate via Operating System calls or direct keyboard and mouse manipulation (CUA agents) | ✓ | ✗ | |
-| LLM | Direct access to LLMs either for sub-tasks or reasoning | ✓ | ✓ | |
+- **Observed Agent**: the LLM-backed system being monitored. Sends hook traffic. Enforces decisions.
+- **Guardian Agent**: the policy enforcement point. Two internal layers:
+    - **Deterministic layer** (OPA/Rego, Cedar): always runs first.
+    - **Agent layer** (LLM): invoked only when the deterministic layer's chain config delegates. Optional in v0.1; deterministic-only deployments are fully conformant.
 
-A trustworthy agent is an Observed Agent that transparently exposes its interactions with the environment through standardized APIs to a Guardian Agent
+## Vocabulary
 
-![Agent Diagram](../assets/agent_env.png "Agent Environment Diagram")
+ACS scopes what it observes to a **session**, and within it to **turns** and **steps**. Each step produces a `ContextEntry` in the session's append-only audit chain, and the Guardian's verdict on it is one of five **dispositions** (`allow`, `deny`, `modify`, `ask`, `defer`).
 
-## Agent Instrumentation
+Canonical definitions live in [Concepts › Session lifecycle](../concepts/session-lifecycle.md); the verdict set is specified in [Disposition Vocabulary](../spec/instrument/specification.md#6-disposition-vocabulary).
 
-### Observed Agent Responsibilities:
-An Observed Agent should ensure inspectability, traceability, and observability by:
+## Provenance
 
-- Emitting Standard Events: Every interaction with the environment must be exposed through standardized event formats.
-- Standardized Tracing: Maintain a standardized trace of all interactions to support improved observability, enable a holistic multi-agent view, and facilitate historical interaction analysis.
-- Instrumentation: Events should trigger hooks that allow the Guardian Agent to enforce policies. Example policies may include restricting external communication, redacting sensitive data, or enforcing compliance constraints. Based on these policies, the Guardian Agent can permit, deny, or modify the content of the interaction.
-- Reactive Capabilities: The agent must be capable of responding to Guardian Agent directives, including action denials or content mutations.
+Every data-bearing field may carry a **Provenance** object (`provenance_id`, `origin`, `source_id`, `derived_from` (lineage)) populated by deterministic framework code at channel boundaries, never by the LLM. v0.1 keeps trust *classification* off the mandatory wire surface: Guardians derive it from `origin` + `source_id` against local policy.
 
-### Guardian Agent Responsibilities:
-The Guardian Agent enforces policies and enables tracing through the following:
+Field-level Provenance is required under the **ACS-Provenance** profile and load-bearing for FIDES, CaMeL, and AARM-style enforcement. See [Concepts › Provenance](../concepts/provenance.md) and [§7](../spec/instrument/specification.md#7-provenance).
 
-- Event Instrumentation Utilization: Leverage standard event hooks to evaluate and enforce policies, responding with permit, deny, or modify instructions.
-- Standardized Tracing: Maintain a consistent trace of all interactions to enhance observability, support a comprehensive view across agents, and enable detailed analysis of interaction history.
-- Provide comprehensive and dynamic AgBOM: Maintain and notify an up to date list of components and dependencies for the agent environment changes such as new or updated tools, models and other components
+## SessionContext and Intent
+
+The Guardian maintains per-session state: the audit chain, the running provenance summary, and (optionally) an **Intent**, the structured authorization for the session (`raw`, `parsed`, `parser_provenance`, `scope_mode`). The Observed Agent sends only the `session_id` and an optional `chain_hash` for verification; SessionContext lives only on the Guardian.
+
+Once an Intent is established, `Intent.parsed` is immutable to the runtime LLM and to untrusted data, and grows only through approver action via the ASK flow, the rule that makes IBAC's central security claim hold. See [Concepts › Intent](../concepts/intent.md) and [§8](../spec/instrument/specification.md#8-sessioncontext-and-intent).
+
+## Agent environment
+
+| Component | Description | Local | Remote | Protocol |
+|---|---|---|---|---|
+| User | Direct or indirect human interface | ✓ | ✓ | n/a |
+| Trigger | System event activating the agent (notifications, schedules, A2A inbound) | ✓ | ✓ | n/a |
+| Other Agents | Peer agents | ✓ | ✓ | A2A |
+| Memory | Short- or long-term state | ✓ | ✓ | n/a |
+| Knowledge | Files, RAG sources, vector DBs | ✓ | ✓ | MCP |
+| Prompts | Saved templates for sub-tasks | ✓ | ✗ | MCP |
+| API Tools | REST or function calls | ✓ | ✓ | MCP |
+| OS Tools | OS calls or keyboard/mouse manipulation (CUA agents) | ✓ | ✗ | n/a |
+| LLM | Reasoning / sub-task model | ✓ | ✓ | n/a |
+
+![Agent environment](../assets/agent_env.png "Agent environment")
 
 ## A2A and MCP
 
-ACS works even better when MCP and A2A are part of an Agent's environment.
-It carries MCP and A2A intact, ensuring full compatibility and transparency.
-
-ACS also proposes security extensions for [MCP](../spec/instrument/extend_mcp.md) and [A2A](../spec/instrument/a2a/extend_a2a.md) for native observability support.
+ACS carries MCP and A2A intact. Wrapped MCP messages flow through `protocols/MCP/*` (e.g. `protocols/MCP/tools/call`). ACS also proposes security extensions for [MCP](../spec/instrument/extend_mcp.md) and [A2A](../spec/instrument/a2a/extend_a2a.md) for native observability support. The `protocols/A2A/*` namespace is reserved in v0.1; the wrapping specification arrives in v0.2.
 
 ## Read Next
 
+- [Concepts](../concepts/README.md)
 - [ACS in Action](./ACS_in_action_example.md)
+- [Conformance Profiles](../spec/conformance.md)
+- [Specification](../spec/instrument/specification.md)

@@ -1,21 +1,21 @@
 # Agent Control Standard
 
-The Agent Control Standard (ACS) provides specification for building [trustworthy agents](./README.md).
-Agents that implement ACS can be deployed with higher trust.
-They are instrumentable, traceable and inspectable.
-They are an open book 
+The Agent Control Standard (ACS) is a wire-format specification that lets a separate **Guardian Agent** permit, deny, or modify what an AI agent does in real time, over an authenticated channel and with a verifiable audit trail.
 
-They have a dynamic bill-of-material, a clear audit trail and hard inline-controls.
+Agents that implement ACS-Core run every step through a Guardian over an authenticated channel and honor its decisions in real time. With the Trace, Inspect, and Crypto profiles they also emit OpenTelemetry spans and OCSF events, expose a dynamic Agent Bill of Materials (models, MCP servers, A2A peers, tools, knowledge sources, memory stores), and gain cryptographic non-repudiation of the audit chain. ACS-Core authenticates the channel and binds the agent to the Guardian's decisions; it does not by itself make a deployment secure or its policies strict, and tamper-evidence against a compromised Guardian is the Crypto and Audit profiles, not Core.
 
-Trustworthiness of agents builds upon the foundation of existing standards (MCP and A2A), but provides value regardless. 
-It build upon cybersecurity and observability standards including OpenTelemetry, OCSF, CycloneDX, SPDX and SWID.
+ACS extends existing standards rather than reinventing them: JSON-RPC 2.0 for the wire format, OpenTelemetry and OCSF for observability, CycloneDX / SPDX / SWID for the AgBOM, MCP and A2A intact for tool and peer communication.
 
-ACS makes agents trustworthy.
+## What v0.1.0 ships
 
-!!! info "Work in progress"
-    This page is currently under development.
-    
-    **Want to contribute?** Check out the [GitHub issue](https://github.com/Agent-Control-Standard/ACS/issues/53) and join the discussion!
+- **ACS-Core** (mandatory baseline) — capability-negotiation handshake, JSON-RPC envelope, 16 native lifecycle hooks (`sessionStart`/`End`, `agentTrigger`, `userMessage`, `agentResponse`, `turnStart`/`End`, `toolCallRequest`/`Result`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `preCompact`/`postCompact`, `subagentStart`/`Stop`), wrapped MCP, five dispositions (`allow`, `deny`, `modify`, `ask`, `defer`), SessionContext with rolling SHA-256 chain hash, optional Intent with immutability rule, replay protection, and `system/ping` liveness.
+- **ACS-Trace** profile — OpenTelemetry semconv mapping + OCSF event-class mapping, with decisions emitted as span events on the parent step span.
+- **ACS-Inspect** / **ACS-Inspect-Dynamic** profiles — canonical AgBOM with `agbom/snapshot` and `agbom/changed`, deterministic CycloneDX / SPDX / SWID derivations.
+- **ACS-Provenance** profile — field-level `Provenance` objects with `origin`, `source_id`, `derived_from`, and an OPTIONAL wire-format `trust` enum that obeys the monotonicity rule.
+- **ACS-Crypto** profile — crypto-agile signature registry: HMAC-SHA256 baseline, ML-DSA-65 / SLH-DSA-128s for PQC, hybrid composites for transitional deployments.
+- **ACS-Audit** profile — `request_hash` on every ContextEntry so the chain commits to request content, not just step metadata.
+
+See [Conformance Profiles](./spec/conformance.md) for what each profile requires.
 
 ## Trustworthy agents are
 
