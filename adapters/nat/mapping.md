@@ -20,7 +20,7 @@ The ACS adapter is implemented as a `FunctionMiddleware` that, for each wrapped 
 | Sub-workflow invocation | `steps/subagentStart` / `steps/subagentStop` (NAT models sub-workflows as nested functions) |
 | Workflow entry | `steps/sessionStart` (when attaching at workflow level with a `sessionStart` semantic — typically configured via `target_function_or_group: <workflow>` plus dispatch logic in the Guardian based on tool name) |
 
-The minimal adapter in `acs_middleware.py` emits `steps/toolCallRequest` and `steps/toolCallResult` for every wrapped function call. The Guardian can dispatch on the tool name to apply different policy. Splitting into separate ACS step methods (e.g. `steps/knowledgeRetrieval` for retriever calls) is a configuration choice handled in the adapter's `pre_invoke` based on `function_context.name`; the example adapter uses a single method to keep the round-trip simple.
+The minimal adapter in `acs_adapter.py` emits `steps/toolCallRequest` and `steps/toolCallResult` for every wrapped function call. The Guardian can dispatch on the tool name to apply different policy. Splitting into separate ACS step methods (e.g. `steps/knowledgeRetrieval` for retriever calls) is a configuration choice handled in the adapter's `pre_invoke` based on `function_context.name`; the example adapter uses a single method to keep the round-trip simple.
 
 ## ACS disposition → NAT behavior
 

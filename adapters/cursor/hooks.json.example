@@ -1,0 +1,60 @@
+{
+  "_comment": "Drop into <project>/.cursor/hooks.json (or merge with your existing config). Replace ACS_GUARDIAN_URL with your deployment's endpoint and the python3 path with the absolute path to acs_adapter.py.",
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py sessionStart"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeSubmitPrompt"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py preToolUse",
+        "failClosed": true
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py postToolUse"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeShellExecution",
+        "failClosed": true
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py afterShellExecution"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeMCPExecution",
+        "failClosed": true
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py afterMCPExecution"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py subagentStart",
+        "failClosed": true
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py subagentStop"
+      }
+    ]
+  }
+}

@@ -36,10 +36,10 @@ except ImportError:
     _NAT_OK = False
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from acs_middleware import ACSMiddleware, ACSGuardianDenied  # noqa: E402
+from acs_adapter import ACSMiddleware, ACSGuardianDenied  # noqa: E402
 
 if _NAT_OK:
-    from acs_middleware import ACSMiddlewareConfig  # noqa: E402
+    from acs_adapter import ACSMiddlewareConfig  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 GUARDIAN = HERE.parent.parent / "example-guardian" / "example_guardian.py"

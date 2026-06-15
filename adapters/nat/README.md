@@ -19,7 +19,7 @@ The middleware interface, config base class, and registration mechanism are take
 ```bash
 # 1. Install NAT + adapter
 pip install nvidia-nat-core
-cp acs_middleware.py /path/in/your/project/
+cp acs_adapter.py /path/in/your/project/
 
 # 2. Run the example Guardian (shared with the Claude Code adapter)
 python3 ../example-guardian/example_guardian.py
@@ -45,9 +45,12 @@ EOF
 
 ## Files
 
-- `acs_middleware.py` — the middleware class + config + NAT registration. Stdlib + nvidia-nat-core only.
+- `acs_adapter.py` — the middleware class + config + NAT registration. Stdlib + nvidia-nat-core only.
+- `workflow.yml.example` — drop-in NAT workflow YAML wiring the middleware.
 - `mapping.md` — NAT lifecycle point → ACS step method table.
 - `tests/test_adapter.py` — 7 integration tests against the real NAT API (skipped automatically if NAT is not installed).
+- `tests/test_live.py` — 5 live workflow tests exercising NAT's `function_middleware_invoke` orchestration.
+- `tests/example_payloads.md` — masked real-world payload examples showing the in-process InvocationContext shape and what the adapter sends to the Guardian.
 
 ## How it differs from the Claude Code / Cursor adapters
 

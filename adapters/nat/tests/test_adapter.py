@@ -32,10 +32,10 @@ except ImportError:
 
 # Import adapter (it tolerates NAT missing)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from acs_middleware import ACSMiddleware, ACSGuardianDenied  # noqa: E402
+from acs_adapter import ACSMiddleware, ACSGuardianDenied  # noqa: E402
 
 if _NAT_OK:
-    from acs_middleware import ACSMiddlewareConfig  # noqa: E402
+    from acs_adapter import ACSMiddlewareConfig  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent

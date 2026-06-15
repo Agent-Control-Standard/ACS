@@ -32,13 +32,13 @@ cat > .cursor/hooks.json <<'EOF'
   "hooks": {
     "preToolUse": [
       {
-        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py preToolUse",
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py preToolUse",
         "failClosed": true
       }
     ],
     "beforeShellExecution": [
       {
-        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py beforeShellExecution",
+        "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeShellExecution",
         "failClosed": true
       }
     ]
@@ -48,15 +48,18 @@ EOF
 
 # 3. Test from the shell (no Cursor needed)
 echo '{"session_id":"x","tool_name":"Bash","tool_input":{"command":"rm -rf /home/u"}}' \
-  | ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 cursor_adapter.py preToolUse
+  | ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 acs_adapter.py preToolUse
 # {"permission": "deny", "user_message": "destructive Bash pattern in: rm -rf /home/u", ...}
 ```
 
 ## Files
 
-- `cursor_adapter.py` — the adapter. Stdlib-only Python. No `pip install` required.
+- `acs_adapter.py` — the adapter. Stdlib-only Python. No `pip install` required.
+- `hooks.json.example` — drop-in Cursor config wiring the adapter into every relevant hook.
 - `mapping.md` — Cursor hook → ACS step method table, plus disposition translation.
 - `tests/test_adapter.py` — 13 round-trip tests. Run with `python3 -m unittest tests.test_adapter`.
+- `tests/test_live.py` — placeholder; Cursor's live test is the manual procedure in `tests/live_verification.md`.
+- `tests/example_payloads.md` — masked real-world payload examples showing exactly what Cursor emits.
 
 The example Guardian (`adapters/example-guardian/example_guardian.py`) is shared across all adapters — same ACS shape on the wire.
 
@@ -86,7 +89,7 @@ Environment variables:
 
 The adapter is invoked as:
 ```
-python3 cursor_adapter.py <event_name>
+python3 acs_adapter.py <event_name>
 ```
 where `<event_name>` is one of: `sessionStart`, `sessionEnd`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `subagentStart`, `subagentStop`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `beforeReadFile`, `afterFileEdit`, `beforeSubmitPrompt`, `preCompact`, `stop`, `afterAgentResponse`, `afterAgentThought`, `beforeTabFileRead`, `afterTabFileEdit`.
 

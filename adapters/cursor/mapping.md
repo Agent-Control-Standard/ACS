@@ -2,7 +2,7 @@
 
 Schema source: Cursor's `create-hook` skill (`~/.cursor/skills-cursor/create-hook/SKILL.md`).
 
-Each Cursor hook event maps to an ACS `steps/*` method. The adapter (`cursor_adapter.py`) does the translation in both directions.
+Each Cursor hook event maps to an ACS `steps/*` method. The adapter (`acs_adapter.py`) does the translation in both directions.
 
 ## Hook event mapping
 

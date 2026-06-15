@@ -19,19 +19,19 @@ cat > /tmp/acs-cursor-live/.cursor/hooks.json <<'EOF'
   "version": 1,
   "hooks": {
     "sessionStart": [
-      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py sessionStart" }
+      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py sessionStart" }
     ],
     "beforeSubmitPrompt": [
-      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py beforeSubmitPrompt" }
+      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeSubmitPrompt" }
     ],
     "preToolUse": [
-      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py preToolUse" }
+      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py preToolUse" }
     ],
     "postToolUse": [
-      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py postToolUse" }
+      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py postToolUse" }
     ],
     "beforeShellExecution": [
-      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/cursor_adapter.py beforeShellExecution" }
+      { "command": "ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 /path/to/acs_adapter.py beforeShellExecution" }
     ]
   }
 }
@@ -73,4 +73,4 @@ While running the reproduction, the Cursor events sent to the adapter include se
 - For tools: `tool_use_id`, `duration`
 - For Shell: `command`, `cwd`, `sandbox`
 
-If your Guardian wants to incorporate any of these into policy decisions, extend `cursor_adapter.py`'s `build_payload` to include the relevant fields.
+If your Guardian wants to incorporate any of these into policy decisions, extend `acs_adapter.py`'s `build_payload` to include the relevant fields.

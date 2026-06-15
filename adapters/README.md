@@ -6,9 +6,9 @@ Reference implementations that wire popular agent frameworks to an ACS Guardian.
 
 | Adapter | Status | Mapping | Working adapter | Tests | Live verification |
 |---|---|---|---|---|---|
-| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | ✓ 13 unit + 2 live tests (`test_live_claude_code.py`) automate ALLOW + DENY against a real `claude --print` session | ✓ Automated in test suite |
+| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | ✓ 13 unit + 2 live tests (`test_live.py`) automate ALLOW + DENY against a real `claude --print` session | ✓ Automated in test suite |
 | [cursor](./cursor/) | Reference implementation | ✓ | ✓ | ✓ 13 unit tests | ✓ Manual verification procedure documented in `tests/live_verification.md` (Cursor is a desktop app with no headless mode) |
-| [nat](./nat/) | Reference implementation | ✓ | ✓ | ✓ 7 unit + 5 live workflow tests (`test_live_nat_workflow.py`) exercise the real `function_middleware_invoke` orchestration path against `nvidia-nat-core` 1.7.0 | ✓ Automated in test suite |
+| [nat](./nat/) | Reference implementation | ✓ | ✓ | ✓ 7 unit + 5 live workflow tests (`test_live.py`) exercise the real `function_middleware_invoke` orchestration path against `nvidia-nat-core` 1.7.0 | ✓ Automated in test suite |
 
 ---
 
@@ -156,6 +156,37 @@ ACS standardizes the wire format and the decision contract. Adapters live where 
 3. Translates between them.
 
 The framework's agent code is untouched. The Guardian's policy code is untouched. The adapter is the bilingual translator that makes them speak. **One Guardian, one ACS contract, three adapters that translate three different protocols into that contract.** Add a new framework, write a new adapter, the Guardian doesn't change.
+
+---
+
+## Directory layout (identical across all three adapters)
+
+Each adapter follows the same structure. Files differ only where the framework's native naming requires it (config example file extension, etc.):
+
+```
+adapters/<framework>/
+├── README.md                    # overview + quick start + conformance status
+├── acs_adapter.py               # the adapter (same filename across all three)
+├── mapping.md                   # framework event → ACS step method table
+├── <config>.example             # drop-in framework-native config:
+│                                #   claude-code/settings.json.example
+│                                #   cursor/hooks.json.example
+│                                #   nat/workflow.yml.example
+└── tests/
+    ├── __init__.py
+    ├── test_adapter.py          # unit / integration tests against real types
+    ├── test_live.py             # automated live test (Cursor: skipped placeholder pointing at live_verification.md)
+    ├── example_payloads.md      # masked real-world payload examples
+    └── live_verification.md     # (Cursor only) manual reproduction procedure
+```
+
+Plus the shared:
+
+```
+adapters/example-guardian/
+├── README.md
+└── example_guardian.py          # used by all three adapters' tests
+```
 
 ---
 

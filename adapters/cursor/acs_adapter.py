@@ -22,7 +22,7 @@ single canonical field across all events).
 
 Usage in hooks.json:
   {
-    "command": "python3 /path/to/cursor_adapter.py preToolUse"
+    "command": "python3 /path/to/acs_adapter.py preToolUse"
   }
 
 Environment variables:
@@ -241,7 +241,7 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
 
 def main() -> int:
     if len(sys.argv) < 2:
-        sys.stderr.write("acs-adapter: missing event name argument (usage: cursor_adapter.py <event_name>)\n")
+        sys.stderr.write("acs-adapter: missing event name argument (usage: acs_adapter.py <event_name>)\n")
         return 1
     event_name = sys.argv[1]
 

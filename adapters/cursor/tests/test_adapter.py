@@ -22,7 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ADAPTER_DIR = HERE.parent
-ADAPTER = ADAPTER_DIR / "cursor_adapter.py"
+ADAPTER = ADAPTER_DIR / "acs_adapter.py"
 # Shared example Guardian (same ACS shape across all adapters)
 GUARDIAN = ADAPTER_DIR.parent / "example-guardian" / "example_guardian.py"
 

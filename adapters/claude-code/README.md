@@ -38,6 +38,8 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 - `settings.json.example` — Claude Code config that wires the adapter into every relevant hook.
 - `mapping.md` — Claude Code hook → ACS step method table, plus disposition translation.
 - `tests/test_adapter.py` — end-to-end round-trip tests. Run with `python3 -m unittest tests.test_adapter`.
+- `tests/test_live.py` — automated live integration test against a real `claude --print` session.
+- `tests/example_payloads.md` — masked real-world payload examples showing exactly what Claude Code emits.
 
 ## Configuration
 

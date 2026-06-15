@@ -24,7 +24,7 @@ Usage in NAT YAML:
 
   middleware:
     acs_guardian:
-      _type: acs_middleware
+      _type: acs_guardian
       guardian_url: http://127.0.0.1:8787/acs
       target_function_or_group: <tool-or-group-or-workflow-name>
       default_deny: true
