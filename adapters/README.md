@@ -1,0 +1,170 @@
+# ACS Adapters
+
+Reference implementations that wire popular agent frameworks to an ACS Guardian. The goal: a framework adopts ACS through **configuration only**, with no agent code changes.
+
+## Status
+
+| Adapter | Status | Mapping | Working adapter | Tests | Live verification |
+|---|---|---|---|---|---|
+| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | ✓ 13 unit + 2 live tests (`test_live_claude_code.py`) automate ALLOW + DENY against a real `claude --print` session | ✓ Automated in test suite |
+| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | ✓ 13 unit tests | ✓ Manual verification procedure documented in `tests/live_verification.md` (Cursor is a desktop app with no headless mode) |
+| [nat](./nat/) | Reference implementation | ✓ | ✓ | ✓ 7 unit + 5 live workflow tests (`test_live_nat_workflow.py`) exercise the real `function_middleware_invoke` orchestration path against `nvidia-nat-core` 1.7.0 | ✓ Automated in test suite |
+
+---
+
+## How adapters work
+
+The adapters are **translators**. Each one speaks its framework's hook protocol on one side and ACS JSON-RPC on the other. The framework's agent code is untouched. The Guardian's policy code is untouched. The adapter is the bilingual layer between them.
+
+### The general pattern (same for all three adapters)
+
+For each event the framework fires:
+
+```
+   framework                  adapter                   Guardian
+      │                          │                         │
+      │  hook event (framework   │                         │
+      │  native JSON / call)     │                         │
+      │ ───────────────────────► │                         │
+      │                          │  ACS JSON-RPC request   │
+      │                          │ ──────────────────────► │
+      │                          │                         │   evaluate
+      │                          │                         │   policy
+      │                          │  ACS decision           │
+      │                          │ ◄────────────────────── │
+      │   decision (framework    │                         │
+      │   native response shape) │                         │
+      │ ◄─────────────────────── │                         │
+      │                          │                         │
+      ▼                          ▼                         ▼
+   applies the                                          appends
+   decision                                           audit chain
+```
+
+Six steps:
+
+1. Framework fires its hook with a payload in its own format.
+2. Adapter receives that payload, translates to an ACS JSON-RPC request.
+3. Adapter POSTs to the Guardian endpoint.
+4. Guardian evaluates against policy, returns an ACS decision (`allow` / `deny` / `modify` / `ask` / `defer`).
+5. Adapter translates that decision back to whatever the framework expects to receive.
+6. Framework applies the decision (run / block / modify the action).
+
+### Concrete walkthrough: Claude Code, ALLOW path
+
+You ask Claude Code to `echo hello`.
+
+**Step 1.** Claude Code is about to call its Bash tool. Before it runs, Claude Code's hook system fires `PreToolUse`. Your `settings.json` configures `PreToolUse` to run `python3 acs_adapter.py`. Claude Code spawns that process and pipes the event to stdin:
+
+```json
+{
+  "session_id": "abc-123",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "echo hello"},
+  "tool_use_id": "...",
+  "cwd": "/tmp/...",
+  "permission_mode": "default"
+}
+```
+
+**Step 2.** The adapter reads that JSON, builds an ACS JSON-RPC request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "steps/toolCallRequest",
+  "params": {
+    "session_id": "abc-123",
+    "step_id": "<uuid>",
+    "tool": {"name": "Bash", "arguments": {"command": "echo hello"}}
+  },
+  "request_id": "<uuid>",
+  "timestamp": 1718450000000,
+  "acs_version": "0.1.0"
+}
+```
+
+**Step 3.** The adapter POSTs to the Guardian endpoint (`http://127.0.0.1:8787/acs`).
+
+**Step 4.** The Guardian evaluates. Our example Guardian's deterministic policy: `echo hello` doesn't match the destructive-Bash regex. Returns:
+
+```json
+{"jsonrpc": "2.0", "result": {"decision": "allow"}}
+```
+
+**Step 5.** The adapter translates back to Claude Code's expected shape:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+```
+
+**Step 6.** Claude Code reads stdout, sees `permissionDecision: "allow"`, executes the Bash tool. You see `hello` printed.
+
+The whole round-trip is ~10 ms. The agent doesn't know any of this happened.
+
+### DENY path differs only in steps 4–6
+
+Same as above, but with `command: "rm -rf /home/u"`:
+
+- **Step 4:** Guardian returns `{"decision": "deny", "reasoning": "destructive Bash pattern in: rm -rf /home/u"}`
+- **Step 5:** Adapter emits `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "destructive Bash pattern..."}}`
+- **Step 6:** Claude Code reads `permissionDecision: "deny"`, does not execute the Bash tool, and surfaces the reason: *"The command was blocked — a policy denied the Bash tool call, so it never ran."*
+
+### What changes across the three adapters
+
+The general pattern is identical. The framework-specific translation differs:
+
+| | Claude Code | Cursor | NAT |
+|---|---|---|---|
+| **Where the adapter lives** | Separate shell process spawned per hook | Separate shell process spawned per hook | In-process Python class, same memory space as the agent |
+| **How the framework sends the event** | JSON on stdin; event type is a field inside the JSON (`hook_event_name`) | JSON on stdin; event type passed as a CLI argument (one command per event in `hooks.json`) | Python method call: `pre_invoke(context)` with `context.function_context.name` |
+| **Native event field names** | `tool_name`, `tool_input`, `tool_response` | `tool_name`, `tool_input`, `tool_output`, `command` (for shell) | `context.function_context.name`, `context.modified_kwargs` |
+| **Native allow/deny output** | `{"hookSpecificOutput": {"permissionDecision": "allow"|"deny"}}` on stdout | `{"permission": "allow"|"deny"}` on stdout, or `exit 2` to block | Set `context.action = InvocationAction.SKIP` to block, or raise `ACSGuardianDenied` |
+| **Native modify mechanism** | `hookSpecificOutput.updatedInput` | `updated_input` | Mutate `context.modified_kwargs` (input) or `context.output` (output) |
+| **Process model** | OS spawns a Python process for every hook event | OS spawns a Python process for every hook event | Zero IPC; everything in the same Python interpreter |
+
+The Guardian-side wire format is **the same** for all three. The adapter is bilingual: it knows the framework's protocol on one side and ACS on the other.
+
+### Why the in-process NAT adapter blocks differently
+
+Claude Code and Cursor both use the shell-stdin pattern: the adapter is a separate process, the framework reads its stdout to learn what to do. Block by emitting a deny-shaped JSON.
+
+NAT is fundamentally different. The adapter runs inside the agent's process as a Python middleware class. When the Guardian denies, the adapter has two options:
+
+1. **Set `context.action = InvocationAction.SKIP`.** NAT's `function_middleware_invoke` checks the action after `pre_invoke` returns and skips the function call. Clean, no exception. Available on the NAT dev branch.
+
+2. **Raise an exception.** NAT's documented "Raises: Any exception to abort execution." Less clean (shows up in logs) but works on every NAT version including the public 1.7.0 release.
+
+The adapter feature-detects which is available and prefers the action-based path.
+
+### The behavior contract
+
+ACS-Core §6.4 requires the framework to **wait for the verdict and apply it before the action executes.** The adapter relies on this:
+
+- For Claude Code and Cursor, the hook subprocess has to return before the tool runs. The shell hook protocol guarantees this — the framework blocks on the subprocess.
+- For NAT, `pre_invoke` must complete before `call_next(...)` is invoked. NAT's `function_middleware_invoke` orchestration guarantees this.
+
+If a framework were to fire-and-forget the hook (run it asynchronously and continue the action without waiting), the adapter would still send to the Guardian and the audit chain would still record the decision — but the framework wouldn't actually apply it. That would be non-conformant. None of the three frameworks here does that.
+
+### The key insight
+
+ACS standardizes the wire format and the decision contract. Adapters live where the boundary is: between the framework and the Guardian. Each adapter:
+
+1. Knows the framework's hook protocol (the framework's JSON shape, response field names, exit codes).
+2. Knows ACS (always the same).
+3. Translates between them.
+
+The framework's agent code is untouched. The Guardian's policy code is untouched. The adapter is the bilingual translator that makes them speak. **One Guardian, one ACS contract, three adapters that translate three different protocols into that contract.** Add a new framework, write a new adapter, the Guardian doesn't change.
+
+---
+
+## Contributing a new adapter
+
+1. Create `adapters/<framework-name>/`.
+2. Write `mapping.md` documenting how the framework's hook events map to ACS `steps/*` methods, and how the framework's response shape relates to ACS dispositions.
+3. (Optional but encouraged) Write the adapter itself, plus tests. The Claude Code adapter is the template.
+4. Add a row to the status table above.
+5. Open a PR against `Agent-Control-Standard/ACS`.
+
+The bar for "reference implementation" status is: round-trip tests pass against the example Guardian, documented configuration for users, and an explicit conformance posture statement matching the format in the Claude Code adapter's README.
