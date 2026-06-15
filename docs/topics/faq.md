@@ -121,7 +121,7 @@ Implement **ACS-Core**, which has ten components:
 
 1. **Handshake** — `handshake/hello` with ClientHello and ServerHello capability negotiation
 2. **JSON-RPC 2.0 envelope** — with `request_id`, `timestamp`, `acs_version`, and `metadata` required on every request
-3. **Hook taxonomy minimum** — `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`
+3. **Hook taxonomy minimum** — `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`, `subagentStart`, `subagentStop`. The subagent hooks are mandatory because a sub-agent is itself an Observed Agent under delegated authority; frameworks without a sub-agent abstraction satisfy this vacuously (the hooks never fire).
 4. **Five dispositions** — `allow`, `deny`, `modify`, `ask`, `defer` with the required fields per disposition
 5. **SessionContext** — `session_id`, rolling `chain_hash` (SHA-256), append-only ContextEntry chain, with the Guardian publishing the chain head on content-bearing responses. Intent is optional in core but required for IBAC deployments.
 6. **Replay protection** — `request_id` (UUID) and `timestamp` on every request; Guardian MUST reject replays per §10.3
@@ -130,7 +130,7 @@ Implement **ACS-Core**, which has ten components:
 9. **Liveness** — `system/ping`
 10. **Wrapped MCP** — `protocols/MCP/*` for governing MCP tool calls under the same Guardian
 
-Additional hooks (`turnStart`/`turnEnd`, `preCompact`/`postCompact`, `subagentStart`/`subagentStop`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `skillRegister`/`skillLoad`/`skillUnload`) are normatively defined and SHOULD be implemented when the framework can observe the corresponding event. The handshake declares which methods the framework implements and the Guardian negotiates accordingly.
+Additional hooks (`turnStart`/`turnEnd`, `preCompact`/`postCompact`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `skillRegister`/`skillLoad`/`skillUnload`) are normatively defined and SHOULD be implemented when the framework can observe the corresponding event. The handshake declares which methods the framework implements and the Guardian negotiates accordingly.
 
 ACS-Core does NOT require field-level Provenance, Trace event emission, AgBOM, asymmetric or post-quantum signatures, or `request_hash` on ContextEntry. Those are organized as optional profiles deployments can layer on. See [Conformance Profiles](../spec/conformance.md).
 
