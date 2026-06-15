@@ -35,6 +35,25 @@ The full picture is in [Core Concepts](./core_concepts.md).
 
 Today, every agent framework logs differently, gates differently, and exposes a different set of interception points. An enterprise running agents across multiple coding assistants, IDE copilots, and runtime frameworks writes a custom integration per framework for one security policy. ACS removes that duplication: a single Guardian, written once against the standard, governs every framework that adopts it.
 
+### What is a hook?
+
+A hook is a **checkpoint** the framework pauses at whenever the agent is about to do something consequential: call a tool, read or write memory, send a message, hand off to a sub-agent, load a skill. At the checkpoint the framework sends the proposed action and its context to the Guardian, and waits for a decision before proceeding.
+
+The analogy: airport security. Every passenger crosses the same set of checkpoints before boarding. A passenger cannot bypass a checkpoint by being important or being in a hurry, and the framework cannot bypass a hook either. The checkpoint asks one question (should this proceed?), gets one decision (`allow` / `deny` / `modify` / `ask` / `defer`), and the journey continues based on the answer.
+
+ACS defines 22 such checkpoints across the agent lifecycle. The Guardian decides each one independently.
+
+### How does it all combine in one session?
+
+Four moves, in order:
+
+1. **Session starts.** The framework and Guardian shake hands and declare what each supports. The framework sends an Agent Bill of Materials (AgBOM) listing what the agent is composed of: models, tools, MCP servers, skills.
+2. **The agent runs.** Every consequential action fires a hook before it executes. The Guardian decides. The framework honors the decision.
+3. **Everything is recorded.** Every decision lands in a hash-chained audit log. Every step emits OpenTelemetry and OCSF events into the SIEM the security team already uses. If the agent picks up a new tool or loads a skill mid-session, the AgBOM updates and the Guardian sees it.
+4. **Session ends.** The audit chain is sealed and signed. The whole session is reconstructible from the record.
+
+That is the three pillars at work: **Instrument** (the hooks and decisions), **Trace** (the events flowing into the SIEM), **Inspect** (the AgBOM tracking what is there). One spec, one Guardian, one audit chain across whatever frameworks the deployment runs.
+
 ### Who needs ACS?
 
 Three groups, with different motivations:
