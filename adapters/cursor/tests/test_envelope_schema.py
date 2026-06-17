@@ -193,5 +193,67 @@ for _event_name, _schema, _fixture in HOOK_CASES:
             _make_payload_test(_event_name, _schema, _fixture))
 
 
+class UuidCoercionForNonUuidCursorIds(SpecValidationSetUp):
+    """Cursor's real conversation_id is not always a UUID — `conv-abc123`,
+    `chat_xyz`, etc. The adapter MUST coerce it to a valid UUID via uuid5
+    before emitting (request-envelope.json:66 requires `metadata.session_id`
+    to be `format: "uuid"`). Without coercion, format-checker validation
+    fails. These fixtures exercise that path — the canonical-UUID fixtures
+    in HOOK_CASES would pass through unchanged and miss the coercion bug.
+    """
+
+    NON_UUID_INPUTS = [
+        "conv-abc123def456",            # Cursor-style conversation id
+        "chat_2026_session_xyz",        # underscore-style
+        "test-cc-session",              # the string the round-trip tests use
+        "",                             # empty — adapter should refuse, see below
+    ]
+
+    def test_non_uuid_conversation_id_coerced(self) -> None:
+        """A non-UUID conversation_id MUST come out as a valid UUID in
+        metadata.session_id — otherwise envelope validation fails."""
+        import re
+        UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                             r"[0-9a-f]{4}-[0-9a-f]{12}$")
+        for non_uuid in self.NON_UUID_INPUTS:
+            if not non_uuid:
+                # Empty session_id: adapter refuses to build the envelope at all.
+                env = acs_adapter.build_request("preToolUse",
+                    {"session_id": non_uuid, "tool_name": "Read",
+                     "tool_input": {"file_path": "/tmp/x"}})
+                self.assertEqual(env, {},
+                    f"adapter must refuse to build envelope for empty session_id; got {env}")
+                continue
+
+            env = acs_adapter.build_request("preToolUse",
+                {"session_id": non_uuid, "tool_name": "Read",
+                 "tool_input": {"file_path": "/tmp/x"}})
+            session_id = env["params"]["metadata"]["session_id"]
+            self.assertTrue(UUID_RE.match(session_id),
+                f"adapter emitted non-UUID session_id {session_id!r} "
+                f"for input {non_uuid!r}; format-checker would reject")
+            # Also: the canonical schema (with format_checker) must accept it
+            errors = _validate(env, "request-envelope.json")
+            self.assertEqual(errors, [],
+                f"envelope for non-UUID input {non_uuid!r} fails canonical schema:\n  - "
+                + "\n  - ".join(errors))
+
+    def test_uuid_coercion_is_deterministic(self) -> None:
+        """The same non-UUID input MUST always coerce to the same UUID,
+        so subagentStart and a later subagentStop can both reference the
+        same subagent across hooks."""
+        env1 = acs_adapter.build_request("preToolUse",
+            {"session_id": "conv-stable-id", "tool_name": "Read",
+             "tool_input": {"file_path": "/tmp/x"}})
+        env2 = acs_adapter.build_request("preToolUse",
+            {"session_id": "conv-stable-id", "tool_name": "Read",
+             "tool_input": {"file_path": "/tmp/y"}})
+        self.assertEqual(env1["params"]["metadata"]["session_id"],
+                         env2["params"]["metadata"]["session_id"],
+                         "uuid5 coercion must be deterministic — different "
+                         "UUIDs for the same input means cross-hook correlation "
+                         "is broken")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

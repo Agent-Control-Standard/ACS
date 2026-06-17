@@ -40,6 +40,14 @@ Environment variables:
                       is not satisfied in dev mode.
   ACS_SKEW_WINDOW_MS  Timestamp skew tolerance (default 300_000 = 5 min).
   ACS_ALLOW_SUBAGENT  "1" allows the Task tool. Default "0" gates it.
+  ACS_GUARDIAN_STATE_DIR
+                      Directory where per-session state (chain head +
+                      seen request_ids) is persisted. Survives Guardian
+                      restart so §10.3 replay protection isn't reset by
+                      crashes / deploys / autoscaling. Defaults to
+                      ~/.cache/acs-guardian-state/. Set to "" to disable
+                      persistence (RAM-only; dev/test only — opens a
+                      replay window across restarts).
 """
 from __future__ import annotations
 
@@ -60,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 from acs_common import (  # noqa: E402
     ACS_VERSION,
     DEFAULT_SKEW_WINDOW_MS,
+    MAX_REQUEST_BODY_BYTES,
     derive_session_key,
     iso8601_now,
     jcs_canonicalize,
@@ -112,16 +121,82 @@ INFORMATIONAL_METHODS = {
 }
 
 
-# ----- Per-session state (replay + chain) -----
+# ----- Per-session state (replay + chain), persisted across restarts -----
+#
+# RAM-only state was a real production gap: a Guardian restart wiped the
+# seen-request-id set, opening a replay window for every previously-sent
+# envelope. §10.3 says Guardians MUST reject duplicates; that MUST
+# doesn't pause for the duration of a deploy. Per-session state now
+# persists to a small JSON file per session_id under ACS_GUARDIAN_STATE_DIR
+# so the seen set + chain head survive process restarts.
+
+_STATE_DIR_ENV = os.environ.get(
+    "ACS_GUARDIAN_STATE_DIR",
+    os.path.join(os.path.expanduser("~"), ".cache", "acs-guardian-state"),
+)
+PERSIST_ENABLED = bool(_STATE_DIR_ENV)
+STATE_DIR = Path(_STATE_DIR_ENV) if PERSIST_ENABLED else None
+
+
+def _state_path(session_id: str) -> Path | None:
+    if not PERSIST_ENABLED:
+        return None
+    key = hashlib.sha256(session_id.encode()).hexdigest()[:16]
+    return STATE_DIR / f"{key}.json"
+
 
 class SessionState:
-    """Holds the rolling chain head and replay protection per session_id."""
+    """Holds the rolling chain head and replay protection per session_id.
 
-    def __init__(self) -> None:
+    Persists to disk after every mutation so Guardian restart cannot
+    open a replay window. JSON file per session_id, mode 0600, in
+    STATE_DIR. Loading is best-effort: a corrupt file behaves like a
+    fresh session.
+    """
+
+    def __init__(self, session_id: str = "") -> None:
+        self.session_id = session_id
         self.previous_hash: str | None = None  # None for the first entry (§8.1)
         self.seen_request_ids: set[str] = set()
         self.seen_nonces: set[str] = set()
         self.lock = threading.Lock()
+        self._load()
+
+    def _load(self) -> None:
+        path = _state_path(self.session_id)
+        if path is None or not path.exists():
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            self.previous_hash = data.get("previous_hash")
+            self.seen_request_ids = set(data.get("seen_request_ids", []))
+            self.seen_nonces = set(data.get("seen_nonces", []))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def persist(self) -> None:
+        """Atomically write the current state. Must be called with self.lock held."""
+        path = _state_path(self.session_id)
+        if path is None:
+            return
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.chmod(STATE_DIR, 0o700)
+            except OSError:
+                pass
+            tmp = path.with_suffix(".json.tmp")
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({
+                    "previous_hash": self.previous_hash,
+                    "seen_request_ids": list(self.seen_request_ids),
+                    "seen_nonces": list(self.seen_nonces),
+                }, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
 
 class GuardianState:
@@ -135,7 +210,7 @@ class GuardianState:
         with self.lock:
             st = self.sessions.get(session_id)
             if st is None:
-                st = SessionState()
+                st = SessionState(session_id=session_id)
                 self.sessions[session_id] = st
             return st
 
@@ -195,6 +270,7 @@ def append_to_chain(session_id: str, method: str, request_id: str,
             entry["previous_hash"] = st.previous_hash
         new_head = compute_entry_hash(entry, st.previous_hash)
         st.previous_hash = new_head
+        st.persist()  # so a restart picks up the chain head
         return new_head
 
 
@@ -215,6 +291,7 @@ def check_replay(session_id: str, request_id: str) -> None:
         if request_id in st.seen_request_ids:
             raise GuardianError(-32005, f"REPLAY_DETECTED: request_id {request_id} already seen in session")
         st.seen_request_ids.add(request_id)
+        st.persist()  # so a restart doesn't re-accept this request_id
 
 
 def check_skew(timestamp: str) -> None:
@@ -384,7 +461,21 @@ def handle_request(request: dict) -> dict:
 
 class GuardianHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length", "0"))
+        # Reject oversized requests before reading the body. Defends
+        # against a DoS attacker who sets Content-Length to a huge value
+        # and expects us to allocate that much. MAX_REQUEST_BODY_BYTES
+        # matches the handshake's advertised max_payload_size_bytes.
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            self._respond(400, {"jsonrpc": "2.0", "id": None,
+                                "error": {"code": -32600, "message": "Invalid Content-Length"}})
+            return
+        if length > MAX_REQUEST_BODY_BYTES:
+            self._respond(413, {"jsonrpc": "2.0", "id": None,
+                                "error": {"code": -32600,
+                                          "message": f"Request body {length} bytes exceeds {MAX_REQUEST_BODY_BYTES} cap"}})
+            return
         body = self.rfile.read(length).decode("utf-8")
         try:
             request = json.loads(body)

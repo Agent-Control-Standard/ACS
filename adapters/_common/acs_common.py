@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 import sys
 import time
 import urllib.error
@@ -42,6 +43,16 @@ from typing import Any
 
 ACS_VERSION = "0.1.0"
 DEFAULT_SKEW_WINDOW_MS = 300_000
+
+# Maximum bytes the Guardian will read from a single HTTP POST body.
+# Matches the handshake's max_payload_size_bytes default. Defends against
+# memory exhaustion via a huge Content-Length.
+MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MiB
+
+# Maximum command string length to scan with destructive-pattern regexes.
+# Real shell commands are tiny; longer inputs are either non-shell data
+# routed through the wrong tool or a regex-DoS attempt.
+DESTRUCTIVE_SCAN_MAX_LEN = 8 * 1024  # 8 KiB
 
 
 # ----- Canonicalization -----
@@ -89,22 +100,51 @@ def derive_session_key(input_key_material: bytes, session_id: str) -> bytes:
     return t  # one 32-byte block is enough for HMAC-SHA256
 
 
+class SecretFilePermissionsError(RuntimeError):
+    """ACS_HMAC_SECRET_FILE exists but its permissions / ownership leak the secret."""
+
+
+def _check_secret_file_perms(path: str) -> None:
+    """Refuse to read the secret file if anything about its mode or
+    ownership would expose the key to another local user."""
+    # Reject symlinks — a symlink is an attack vector (replace target
+    # without changing the visible path).
+    if os.path.islink(path):
+        raise SecretFilePermissionsError(
+            f"ACS_HMAC_SECRET_FILE {path!r} is a symlink; refusing to follow")
+    st = os.stat(path)
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o077:
+        raise SecretFilePermissionsError(
+            f"ACS_HMAC_SECRET_FILE {path!r} mode {oct(mode)} is too permissive; "
+            f"must be 0600 or 0400 (no group/other access). "
+            f"Fix: chmod 600 {path}")
+    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+        raise SecretFilePermissionsError(
+            f"ACS_HMAC_SECRET_FILE {path!r} owned by uid {st.st_uid}, "
+            f"adapter is running as uid {os.geteuid()}; refusing")
+
+
 def load_hmac_secret() -> bytes:
     """Read the HMAC input keying material.
 
     Resolution order (first hit wins):
     1. `ACS_HMAC_SECRET_FILE` — path to a file containing the secret.
-       Preferred for production. Use `chmod 600` and own the file with
-       the same user the adapter/Guardian runs as. The file's full byte
-       content (stripped of trailing whitespace) is the secret.
+       Preferred for production. Permissions MUST be 0600 (or 0400) and
+       the file MUST be owned by the running user. The file's content
+       (stripped of trailing whitespace) is the secret. Symlinks are
+       rejected. Insecure permissions raise SecretFilePermissionsError —
+       the adapter refuses to use a leaked secret rather than silently
+       proceed.
     2. `ACS_HMAC_SECRET` — env-var fallback. Quick for dev, less secure
        (visible in `ps eauxw`, child-process envs, core dumps).
     3. Empty bytes — caller decides whether that means dev-mode or fail.
 
-    Generate a secret: `openssl rand -hex 32 > /etc/acs/hmac.key`
+    Generate a secret: `openssl rand -hex 32 > /etc/acs/hmac.key && chmod 600 /etc/acs/hmac.key`
     """
     path = os.environ.get("ACS_HMAC_SECRET_FILE", "").strip()
     if path:
+        _check_secret_file_perms(path)
         try:
             with open(path, "rb") as f:
                 return f.read().rstrip(b"\r\n\t ")
@@ -116,6 +156,65 @@ def load_hmac_secret() -> bytes:
 
 # Back-compat alias for internal callers.
 _signing_secret = load_hmac_secret
+
+
+# ----- URL scheme allowlist (defends against SSRF / file:// disclosure) -----
+
+_ALLOWED_GUARDIAN_SCHEMES = frozenset({"http", "https"})
+
+
+def validate_guardian_url(url: str) -> None:
+    """Reject Guardian URLs whose scheme is not http/https.
+
+    urllib.request.urlopen happily accepts file://, ftp://, data://, etc.
+    An attacker who controls ACS_GUARDIAN_URL could use file:// to read
+    arbitrary files the adapter user has access to, or data:// to feed
+    a crafted response. The adapter and any other code POSTing to the
+    Guardian MUST call this before urlopen.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in _ALLOWED_GUARDIAN_SCHEMES:
+        raise ValueError(
+            f"Guardian URL scheme {parsed.scheme!r} not allowed; "
+            f"only {sorted(_ALLOWED_GUARDIAN_SCHEMES)} permitted")
+
+
+# ----- Bounded regex scanning (defends against regex DoS / input bombing) -----
+
+def scan_destructive_bash_safely(cmd: str, *, max_len: int = DESTRUCTIVE_SCAN_MAX_LEN):
+    """Run destructive-pattern regex scanning ONLY if cmd is below max_len.
+
+    Returns:
+      None — command is short and matched no destructive pattern
+      a re.Pattern — command matched (caller decides what to do)
+      "input_too_large" — command exceeds max_len; caller MUST treat as
+        suspicious and MUST NOT silently allow (skipping the scan is
+        not the same as the scan returning "safe").
+
+    Caller pattern set is loaded lazily from example_guardian.DESTRUCTIVE_BASH_PATTERNS
+    to keep the canonical pattern set in one place.
+    """
+    if len(cmd) > max_len:
+        audit_event("destructive_scan_skipped_oversized",
+                    cmd_length=len(cmd), max_len=max_len)
+        return "input_too_large"
+    # Lazy import — _common doesn't directly own the pattern set, the
+    # Guardian does. Adapters that want to run the scan themselves can
+    # call this; the Guardian uses its own DESTRUCTIVE_BASH_PATTERNS
+    # directly. We import here so this function is callable without
+    # forcing example-guardian onto every adapter's path.
+    try:
+        eg_path = str(Path(__file__).resolve().parent.parent / "example-guardian")
+        if eg_path not in sys.path:
+            sys.path.insert(0, eg_path)
+        import example_guardian  # type: ignore[import-not-found]
+        for pat in example_guardian.DESTRUCTIVE_BASH_PATTERNS:
+            if pat.search(cmd):
+                return pat
+        return None
+    except ImportError:
+        return None
 
 
 def sign_envelope(envelope: dict, *, key: bytes | None = None,
@@ -292,6 +391,10 @@ def do_handshake(
     }
     sign_envelope(client_hello, session_id=session_id)
     try:
+        validate_guardian_url(guardian_url)
+    except ValueError:
+        return None
+    try:
         body = json.dumps(client_hello).encode("utf-8")
         req = urllib.request.Request(
             guardian_url, data=body,
@@ -299,15 +402,20 @@ def do_handshake(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             response = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
         return None
 
     result = response.get("result") or {}
     server_hello = result.get("payload")
     if server_hello:
         try:
-            _HANDSHAKE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            with open(cache, "w") as f:
+            _HANDSHAKE_CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.chmod(_HANDSHAKE_CACHE_DIR, 0o700)
+            except OSError:
+                pass
+            fd = os.open(str(cache), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
                 json.dump(server_hello, f)
         except OSError:
             pass
@@ -335,6 +443,10 @@ def ping(guardian_url: str, *, echo: str = "ping", timeout: float = 2.0) -> dict
         },
     }
     try:
+        validate_guardian_url(guardian_url)
+    except ValueError:
+        return None
+    try:
         body = json.dumps(request).encode("utf-8")
         req = urllib.request.Request(
             guardian_url, data=body,
@@ -342,7 +454,7 @@ def ping(guardian_url: str, *, echo: str = "ping", timeout: float = 2.0) -> dict
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8")).get("result")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError):
         return None
 
 
@@ -379,16 +491,34 @@ def load_session_state(session_id: str) -> dict:
 
 
 def save_session_state(session_id: str, state: dict) -> None:
-    """Persist the session-state dict atomically. No-op on session_id empty."""
+    """Persist the session-state dict atomically. No-op on session_id empty.
+
+    The directory is created with mode 0700 and the file with mode 0600
+    so other local users cannot read or poison adapter state. State
+    files contain step_id histories that an attacker could use to spoof
+    `parent_step_id` in subagentStart payloads — a security boundary
+    for the chain integrity properties of §8.
+    """
     if not session_id:
         return
     try:
-        _SESSION_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _SESSION_STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # mkdir(exist_ok=True) does not chmod an existing dir — enforce explicitly
+        try:
+            os.chmod(_SESSION_STATE_DIR, 0o700)
+        except OSError:
+            pass
         path = _session_state_path(session_id)
         tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
+        # Open with 0o600 from the start so the file is never group/world-readable
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(state, f)
         os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     except OSError:
         pass
 

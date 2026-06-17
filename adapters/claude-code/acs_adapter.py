@@ -48,6 +48,7 @@ from acs_common import (  # noqa: E402
     do_handshake,
     iso8601_now,
     sign_envelope,
+    validate_guardian_url,
     verify_signature,
 )
 
@@ -206,6 +207,7 @@ def _maybe_handshake(event: dict[str, Any]) -> None:
 
 
 def call_guardian(request: dict[str, Any]) -> dict[str, Any]:
+    validate_guardian_url(GUARDIAN_URL)  # SSRF: refuse file://, ftp://, etc.
     body = json.dumps(request).encode("utf-8")
     req = urllib.request.Request(
         GUARDIAN_URL, data=body,

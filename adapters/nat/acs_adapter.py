@@ -50,6 +50,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 import uuid
@@ -63,6 +64,7 @@ from acs_common import (  # noqa: E402
     do_handshake,
     iso8601_now as _common_iso8601_now,
     sign_envelope,
+    validate_guardian_url,
     verify_signature,
 )
 
@@ -223,6 +225,10 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         self._handshake_done = False
         self._lifecycle_subscribed = False
         self._lifecycle_subscription = None
+        # §3 bug fix: lock around the check-then-set in
+        # _ensure_lifecycle_subscribed. Without it, two parallel pre_invoke
+        # calls both see _lifecycle_subscribed=False and both subscribe.
+        self._lifecycle_lock = threading.Lock()
 
     def _ensure_handshake(self) -> None:
         if self._handshake_done or os.environ.get("ACS_HANDSHAKE", "1") != "1":
@@ -246,31 +252,37 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         """Subscribe to NAT's IntermediateStepManager so workflow-boundary
         events fire ACS sessionStart / userMessage / agentResponse / sessionEnd.
 
-        Idempotent within a single ACSMiddleware instance: only subscribes
-        once. The subscription is held in self._lifecycle_subscription to
-        keep it alive.
+        Idempotent and thread-safe: the lock around the check-then-set
+        prevents two parallel pre_invoke calls from double-subscribing.
+        Without the lock, every WORKFLOW event would fire its ACS hook
+        multiple times.
         """
         if self._lifecycle_subscribed or not _HAS_LIFECYCLE:
             return
-        try:
-            ctx = _NATContext.get()
-            mgr = ctx.intermediate_step_manager
-        except Exception:  # noqa: BLE001
-            # No active Context (e.g., direct middleware invocation in tests
-            # without a full workflow). Silent skip — function-call hooks
-            # still fire via FunctionMiddleware.
-            return
-        try:
-            self._lifecycle_subscription = mgr.subscribe(
-                on_next=self._on_intermediate_step,
-                on_error=lambda e: audit_event(
-                    "lifecycle_subscription_error",
-                    session_id=self._session_id, error=str(e)),
-            )
-            self._lifecycle_subscribed = True
-        except Exception as e:  # noqa: BLE001
-            audit_event("lifecycle_subscribe_failed",
-                        session_id=self._session_id, error=str(e))
+        with self._lifecycle_lock:
+            # Re-check inside the lock — another thread may have just won
+            # the race and completed the subscription.
+            if self._lifecycle_subscribed:
+                return
+            try:
+                ctx = _NATContext.get()
+                mgr = ctx.intermediate_step_manager
+            except Exception:  # noqa: BLE001
+                # No active Context (e.g., direct middleware invocation in
+                # tests without a full workflow). Silent skip — function-
+                # call hooks still fire via FunctionMiddleware.
+                return
+            try:
+                self._lifecycle_subscription = mgr.subscribe(
+                    on_next=self._on_intermediate_step,
+                    on_error=lambda e: audit_event(
+                        "lifecycle_subscription_error",
+                        session_id=self._session_id, error=str(e)),
+                )
+                self._lifecycle_subscribed = True
+            except Exception as e:  # noqa: BLE001
+                audit_event("lifecycle_subscribe_failed",
+                            session_id=self._session_id, error=str(e))
 
     def _on_intermediate_step(self, step) -> None:
         """Subscriber callback. Translates NAT's IntermediateStepType events
@@ -336,19 +348,30 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                         method=method, session_id=self._session_id, error=str(e))
 
     def _correlation_request_id(self, context) -> str:
-        """Deterministic UUID5 per (session, function-name, in-flight invocation
-        token) so the toolCallResult can populate request_id_ref pointing at
-        the toolCallRequest that triggered it."""
-        # NAT 1.7.0 doesn't expose an invocation token; derive one from
-        # (session, function, modified_kwargs hash). The same value flows
-        # through pre_invoke and post_invoke of one wrap.
-        fname = getattr(context.function_context, "name", "")
-        kwargs_bytes = json.dumps(
-            dict(getattr(context, "modified_kwargs", {}) or {}),
-            sort_keys=True, default=str,
-        ).encode()
-        key = f"{self._session_id}|{fname}|{hashlib.sha256(kwargs_bytes).hexdigest()[:16]}"
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+        """Return a request_id for this invocation that is unique per call
+        but stable across pre_invoke + post_invoke.
+
+        Earlier versions derived this deterministically from
+        (session, function-name, kwargs-hash). That broke as soon as the
+        same tool was called twice with the same args in one session —
+        both calls produced the same request_id, and the Guardian's
+        replay protection rejected the second call with REPLAY_DETECTED.
+
+        Fix: stash a fresh UUID4 on the context on the first call here.
+        pre_invoke and post_invoke share the same context object, so
+        post_invoke reads back the same value to populate request_id_ref.
+        """
+        existing = getattr(context, "_acs_correlation_request_id", None)
+        if existing:
+            return existing
+        rid = str(uuid.uuid4())
+        try:
+            context._acs_correlation_request_id = rid
+        except (AttributeError, TypeError):
+            # Frozen context — fall back to a uuid4 keyed by id(context)
+            # so pre and post on the same context still match.
+            rid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ctx:{id(context)}"))
+        return rid
 
     @property
     def enabled(self) -> bool:
@@ -552,6 +575,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         return envelope
 
     def _call_guardian(self, request: dict) -> dict:
+        validate_guardian_url(self._config.guardian_url)  # SSRF: refuse file://, ftp://, etc.
         body = json.dumps(request).encode("utf-8")
         req = urllib.request.Request(
             self._config.guardian_url,

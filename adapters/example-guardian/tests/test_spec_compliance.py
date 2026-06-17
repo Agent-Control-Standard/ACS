@@ -216,30 +216,65 @@ class RollingChain(GuardianHarness):
             "different sessions MUST have different chain heads")
 
     def test_chain_is_recomputable(self) -> None:
-        """§8.2: an external observer can recompute the chain. We do the
-        same computation the Guardian does (JCS + sha256) and check the
-        result matches what the Guardian published."""
-        sid = str(uuid.uuid4())
-        req = _make_envelope("steps/sessionStart", {}, sid)
-        resp = _post(self.url, req)["result"]
-        published = resp["chain_hash"]
+        """§8.2 (normative): an external observer that records the request
+        stream and the published `chain_hash` MUST be able to recompute
+        the chain byte-for-byte. Since the Guardian now stamps each
+        entry with the client's request timestamp (not its own), the
+        observer has every input it needs.
 
-        # Recompute as the Guardian does in compute_entry_hash
+        This test is what catches a "drop previous_hash from the chain"
+        mutation: even if entry hashes happen to differ per request
+        because contents differ, the EXTERNALLY recomputed hash will not
+        match the Guardian's unless `previous_hash` is actually folded in.
+        """
         import hashlib
-        entry_for_hash = {
-            "entry_id": req["params"]["request_id"],
-            "step_id": req["params"]["request_id"],
-            "step_type": "steps/sessionStart",
-            "request_hash": hashlib.sha256(
-                jcs_canonicalize(req["params"])
-            ).hexdigest(),
-            # timestamp is set by Guardian, we don't know it — so we can't
-            # fully recompute. Instead: assert format. (A real ACS-Audit
-            # deployment would record timestamp + reproduce externally.)
-        }
-        # Format check
-        self.assertRegex(published, r"^[0-9a-f]{64}$")
-        self.assertEqual(len(published), 64)
+        sid = str(uuid.uuid4())
+
+        def _expected_entry_hash(req: dict, prev_hash: str | None) -> str:
+            params = req["params"]
+            entry = {
+                "entry_id": params["request_id"],
+                "step_id": params["request_id"],
+                "step_type": req["method"],
+                "request_hash": hashlib.sha256(
+                    jcs_canonicalize(params)).hexdigest(),
+                "timestamp": params["timestamp"],
+            }
+            if prev_hash is not None:
+                entry["previous_hash"] = prev_hash
+            entry_for_hash = {k: v for k, v in entry.items()
+                              if k not in ("entry_hash", "previous_hash")}
+            content_bytes = jcs_canonicalize(entry_for_hash)
+            prev_bytes = bytes.fromhex(prev_hash) if prev_hash else b""
+            return hashlib.sha256(content_bytes + prev_bytes).hexdigest()
+
+        # Entry 1 (root): previous_hash = None
+        req1 = _make_envelope("steps/sessionStart", {}, sid)
+        published1 = _post(self.url, req1)["result"]["chain_hash"]
+        expected1 = _expected_entry_hash(req1, prev_hash=None)
+        self.assertEqual(published1, expected1,
+            "root chain_hash does not match externally-recomputed value")
+
+        # Entry 2: previous_hash = published1
+        req2 = _make_envelope("steps/toolCallRequest",
+            {"tool": {"name": "Read"},
+             "arguments": {"file_path": {"value": "/tmp/x"}}}, sid)
+        published2 = _post(self.url, req2)["result"]["chain_hash"]
+        expected2_correct = _expected_entry_hash(req2, prev_hash=published1)
+        expected2_broken_chain = _expected_entry_hash(req2, prev_hash=None)
+        self.assertEqual(published2, expected2_correct,
+            "second chain_hash does not match externally-recomputed value")
+        self.assertNotEqual(published2, expected2_broken_chain,
+            "chain_hash matches the 'no previous_hash' computation — "
+            "the chain is not actually chained!")
+
+        # Entry 3: previous_hash = published2 — proves the link transitively
+        req3 = _make_envelope("steps/userMessage",
+            {"content": [{"type": "text", "value": "hi"}]}, sid)
+        published3 = _post(self.url, req3)["result"]["chain_hash"]
+        expected3_correct = _expected_entry_hash(req3, prev_hash=published2)
+        self.assertEqual(published3, expected3_correct,
+            "third chain_hash break — chain links across 3 entries fail")
 
 
 # ----- §10.3 replay protection -----
