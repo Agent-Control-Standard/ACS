@@ -43,7 +43,7 @@ def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> None:
 def _claude_code_event(name: str, **extra) -> dict:
     """Construct a hook event matching Claude Code's documented schema."""
     base = {
-        "session_id": "test-cc-session",
+        "session_id": "00000000-0000-4000-8000-000000000001",
         "transcript_path": "/tmp/transcript.jsonl",
         "cwd": "/tmp/work",
         "hook_event_name": name,

@@ -123,6 +123,13 @@ def _session_id(event: dict[str, Any]) -> str:
     return coerce_uuid(raw, namespace_prefix="cursor") if raw else ""
 
 
+def _workspace(event: dict[str, Any]) -> str | None:
+    """Workspace identifier folded into the session-state file key so
+    two Cursor windows on different projects can't collide on a shared
+    non-UUID conversation_id."""
+    return event.get("workspace_path") or event.get("cwd") or None
+
+
 def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
     return {k: {"value": v} for k, v in (raw or {}).items()}
 
@@ -225,7 +232,7 @@ def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
         # where possible. See Cursor README "Per-hook honesty table".
         sub_raw = event.get("subagent_id", "")
         sid = _session_id(event)
-        st = load_session_state(sid)
+        st = load_session_state(sid, workspace=_workspace(event))
         # parent_step_id: last step_id seen in this session (adapter tracks
         # this via record_step on every step the framework fires). Falls
         # back to the session_id if no prior step (first event of session).
@@ -257,7 +264,7 @@ def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
         # something already observed). triggered_by uses Cursor's
         # `trigger` field when provided; defaults to framework_initiated.
         sid = _session_id(event)
-        st = load_session_state(sid)
+        st = load_session_state(sid, workspace=_workspace(event))
         seen = list(st.get("seen_step_ids") or [])
         if not seen:
             # No prior steps recorded — the adapter was wired without
@@ -441,7 +448,7 @@ def main() -> int:
             sid_for_state = _session_id(event)
             rid_for_state = request.get("params", {}).get("request_id")
             if sid_for_state and rid_for_state:
-                record_step(sid_for_state, rid_for_state)
+                record_step(sid_for_state, rid_for_state, workspace=_workspace(event))
         except Exception:  # noqa: BLE001
             pass
         response = call_guardian(request)

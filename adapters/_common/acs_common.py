@@ -171,6 +171,11 @@ def validate_guardian_url(url: str) -> None:
     arbitrary files the adapter user has access to, or data:// to feed
     a crafted response. The adapter and any other code POSTing to the
     Guardian MUST call this before urlopen.
+
+    Optionally also restricts the hostname against an operator-provided
+    `ACS_GUARDIAN_HOST_ALLOWLIST` (comma-separated). Defense in depth
+    against env-var attacks that smuggle a real http:// URL to an
+    internal service the adapter shouldn't reach.
     """
     from urllib.parse import urlparse
     parsed = urlparse(url)
@@ -178,6 +183,14 @@ def validate_guardian_url(url: str) -> None:
         raise ValueError(
             f"Guardian URL scheme {parsed.scheme!r} not allowed; "
             f"only {sorted(_ALLOWED_GUARDIAN_SCHEMES)} permitted")
+    allow = os.environ.get("ACS_GUARDIAN_HOST_ALLOWLIST", "").strip()
+    if allow:
+        allowed_hosts = {h.strip().lower() for h in allow.split(",") if h.strip()}
+        host = (parsed.hostname or "").lower()
+        if host not in allowed_hosts:
+            raise ValueError(
+                f"Guardian host {host!r} not in ACS_GUARDIAN_HOST_ALLOWLIST "
+                f"({sorted(allowed_hosts)})")
 
 
 # ----- Bounded regex scanning (defends against regex DoS / input bombing) -----
@@ -337,8 +350,16 @@ _HANDSHAKE_CACHE_DIR = Path(
 
 
 def _handshake_cache_path(session_id: str, guardian_url: str) -> Path:
-    key = hashlib.sha256((session_id + "|" + guardian_url).encode()).hexdigest()[:16]
+    # Full SHA-256 (no truncation) for the same reason as state files —
+    # avoid birthday collisions across the deployment's lifetime.
+    key = hashlib.sha256((session_id + "|" + guardian_url).encode()).hexdigest()
     return _HANDSHAKE_CACHE_DIR / f"{key}.json"
+
+
+# Cache TTL — default 1 hour. A Guardian config change (new
+# skew_window_ms, new accepted profiles) propagates to adapters within
+# this window. Override with ACS_HANDSHAKE_CACHE_TTL_SECONDS.
+_HANDSHAKE_CACHE_TTL_S = int(os.environ.get("ACS_HANDSHAKE_CACHE_TTL_SECONDS", "3600"))
 
 
 def do_handshake(
@@ -354,15 +375,17 @@ def do_handshake(
     """Perform handshake/hello with the Guardian; return ServerHello or None.
 
     Caches the ServerHello in a small JSON file keyed by (session_id,
-    guardian_url). Repeat calls within the same session reuse the cache;
-    a process spawned fresh for each shell-hook event will hit the cache
-    after the first call.
+    guardian_url) with a TTL (default 1h). Stale cache files are
+    ignored — operator Guardian-config changes propagate within the TTL.
     """
     cache = _handshake_cache_path(session_id, guardian_url)
     if cache.exists():
         try:
-            with open(cache) as f:
-                return json.load(f)
+            mtime = cache.stat().st_mtime
+            if (time.time() - mtime) <= _HANDSHAKE_CACHE_TTL_S:
+                with open(cache) as f:
+                    return json.load(f)
+            # Else: cache is stale, fall through to re-handshake
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -473,16 +496,36 @@ _SESSION_STATE_DIR = Path(
 )
 
 
-def _session_state_path(session_id: str) -> Path:
-    key = hashlib.sha256(session_id.encode()).hexdigest()[:16]
-    return _SESSION_STATE_DIR / f"{key}.json"
+def _session_state_path(session_id: str, *, workspace: str | None = None) -> Path:
+    """Path to the per-session state file.
+
+    Hash key is full 64-char SHA-256 (not [:16]) to eliminate birthday
+    collisions over the lifetime of a deployment. When `workspace` is
+    given, it is folded into the hash so two clients with the same
+    session_id but different workspaces (e.g., two Cursor windows
+    using `conv-default` as conversation_id) get distinct state files.
+    """
+    if not session_id:
+        # Empty session_id — return a path that won't collide with anything real
+        digest = hashlib.sha256(b"empty").hexdigest()
+        return _SESSION_STATE_DIR / f"{digest}.json"
+    if workspace:
+        digest = hashlib.sha256(
+            (workspace + "\x00" + session_id).encode()
+        ).hexdigest()
+    else:
+        digest = hashlib.sha256(session_id.encode()).hexdigest()
+    return _SESSION_STATE_DIR / f"{digest}.json"
 
 
-def load_session_state(session_id: str) -> dict:
-    """Return the session-state dict for `session_id`, or an empty dict."""
+def load_session_state(session_id: str, *, workspace: str | None = None) -> dict:
+    """Return the session-state dict for `session_id`, or an empty dict.
+
+    See `_session_state_path` for the workspace-namespacing rationale.
+    """
     if not session_id:
         return {}
-    path = _session_state_path(session_id)
+    path = _session_state_path(session_id, workspace=workspace)
     try:
         with open(path) as f:
             return json.load(f)
@@ -490,7 +533,7 @@ def load_session_state(session_id: str) -> dict:
         return {}
 
 
-def save_session_state(session_id: str, state: dict) -> None:
+def save_session_state(session_id: str, state: dict, *, workspace: str | None = None) -> None:
     """Persist the session-state dict atomically. No-op on session_id empty.
 
     The directory is created with mode 0700 and the file with mode 0600
@@ -508,7 +551,7 @@ def save_session_state(session_id: str, state: dict) -> None:
             os.chmod(_SESSION_STATE_DIR, 0o700)
         except OSError:
             pass
-        path = _session_state_path(session_id)
+        path = _session_state_path(session_id, workspace=workspace)
         tmp = path.with_suffix(".json.tmp")
         # Open with 0o600 from the start so the file is never group/world-readable
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -523,11 +566,11 @@ def save_session_state(session_id: str, state: dict) -> None:
         pass
 
 
-def record_step(session_id: str, step_id: str) -> None:
+def record_step(session_id: str, step_id: str, *, workspace: str | None = None) -> None:
     """Append step_id to the session's seen-list and update last_step_id."""
     if not session_id or not step_id:
         return
-    st = load_session_state(session_id)
+    st = load_session_state(session_id, workspace=workspace)
     seen = st.setdefault("seen_step_ids", [])
     if step_id not in seen:
         seen.append(step_id)
@@ -535,7 +578,7 @@ def record_step(session_id: str, step_id: str) -> None:
         if len(seen) > 1000:
             del seen[: len(seen) - 1000]
     st["last_step_id"] = step_id
-    save_session_state(session_id, st)
+    save_session_state(session_id, st, workspace=workspace)
 
 
 # ----- Sys-path bootstrap for adapters in sibling directories -----

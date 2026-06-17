@@ -229,6 +229,12 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         # _ensure_lifecycle_subscribed. Without it, two parallel pre_invoke
         # calls both see _lifecycle_subscribed=False and both subscribe.
         self._lifecycle_lock = threading.Lock()
+        # Edge case #6: WeakKeyDictionary fallback for frozen contexts.
+        # Plain id(context) would risk collisions after Python GC
+        # recycles object ids; WeakKey keys on identity not address.
+        import weakref
+        self._frozen_ctx_rids: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._frozen_ctx_lock = threading.Lock()
 
     def _ensure_handshake(self) -> None:
         if self._handshake_done or os.environ.get("ACS_HANDSHAKE", "1") != "1":
@@ -351,15 +357,17 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         """Return a request_id for this invocation that is unique per call
         but stable across pre_invoke + post_invoke.
 
-        Earlier versions derived this deterministically from
-        (session, function-name, kwargs-hash). That broke as soon as the
-        same tool was called twice with the same args in one session —
-        both calls produced the same request_id, and the Guardian's
-        replay protection rejected the second call with REPLAY_DETECTED.
+        Fast path: stash a fresh uuid4 on the context. pre_invoke and
+        post_invoke share the same context object, so post_invoke reads
+        back the same value to populate request_id_ref.
 
-        Fix: stash a fresh UUID4 on the context on the first call here.
-        pre_invoke and post_invoke share the same context object, so
-        post_invoke reads back the same value to populate request_id_ref.
+        Fallback for contexts that don't accept attribute assignment
+        (e.g., `__slots__`-frozen): use a WeakKeyDictionary keyed by
+        the context object itself. Using a WeakKey ensures the entry is
+        dropped when the context is GC'd, preventing id() recycling
+        from causing two distinct contexts to map to the same uuid.
+        (id() collisions after GC were a real concern; WeakKey avoids
+        the problem by keying on identity not address.)
         """
         existing = getattr(context, "_acs_correlation_request_id", None)
         if existing:
@@ -367,11 +375,28 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         rid = str(uuid.uuid4())
         try:
             context._acs_correlation_request_id = rid
+            return rid
         except (AttributeError, TypeError):
-            # Frozen context — fall back to a uuid4 keyed by id(context)
-            # so pre and post on the same context still match.
-            rid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ctx:{id(context)}"))
-        return rid
+            pass
+        # Frozen context — fall back to WeakKeyDictionary if the object
+        # supports weak references.
+        try:
+            with self._frozen_ctx_lock:
+                cached = self._frozen_ctx_rids.get(context)
+                if cached is not None:
+                    return cached
+                self._frozen_ctx_rids[context] = rid
+                return rid
+        except TypeError:
+            # Not weak-referenceable either (e.g., __slots__ without
+            # __weakref__). Last resort: return the fresh uuid4 each
+            # call. pre→post correlation (request_id_ref) is lost in
+            # this path, but the safer alternative — keying on
+            # id(context) — risks collisions after GC. Audit the
+            # degradation rather than introduce a silent bug.
+            audit_event("frozen_unweakrefable_context",
+                        session_id=self._session_id)
+            return rid
 
     @property
     def enabled(self) -> bool:

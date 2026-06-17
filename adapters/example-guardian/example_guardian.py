@@ -52,6 +52,8 @@ Environment variables:
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import hashlib
 import http.server
 import json
@@ -68,6 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 from acs_common import (  # noqa: E402
     ACS_VERSION,
     DEFAULT_SKEW_WINDOW_MS,
+    DESTRUCTIVE_SCAN_MAX_LEN,
     MAX_REQUEST_BODY_BYTES,
     derive_session_key,
     iso8601_now,
@@ -79,6 +82,38 @@ from acs_common import (  # noqa: E402
 )
 
 import datetime
+
+# Optional spec-schema validation. If jsonschema + a local clone of the
+# canonical schemas (ACS_SPEC_DIR) are present, the Guardian validates
+# every incoming envelope against request-envelope.json BEFORE policy
+# evaluation — so malformed payloads from a buggy adapter or hostile
+# input are rejected with INVALID_REQUEST instead of slipping into
+# downstream code.
+_SPEC_VALIDATION_AVAILABLE = False
+_REQUEST_ENVELOPE_VALIDATOR = None
+try:
+    from jsonschema import Draft202012Validator  # type: ignore[import-not-found]
+    from jsonschema.validators import RefResolver  # type: ignore[import-not-found]
+    _spec_dir_env = os.environ.get(
+        "ACS_SPEC_DIR",
+        "/tmp/acs-spec-source/specification/v0.1.0",
+    )
+    _spec_dir = Path(_spec_dir_env)
+    _envelope_schema_path = _spec_dir / "request-envelope.json"
+    if _envelope_schema_path.exists():
+        with open(_envelope_schema_path) as _f:
+            _schema_obj = json.load(_f)
+        _REQUEST_ENVELOPE_VALIDATOR = Draft202012Validator(
+            _schema_obj,
+            resolver=RefResolver(
+                base_uri=(_spec_dir.as_uri() + "/request-envelope.json"),
+                referrer=_schema_obj,
+            ),
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        )
+        _SPEC_VALIDATION_AVAILABLE = True
+except ImportError:
+    pass
 
 
 SKEW_WINDOW_MS = int(os.environ.get("ACS_SKEW_WINDOW_MS", str(DEFAULT_SKEW_WINDOW_MS)))
@@ -152,13 +187,17 @@ class SessionState:
     open a replay window. JSON file per session_id, mode 0600, in
     STATE_DIR. Loading is best-effort: a corrupt file behaves like a
     fresh session.
+
+    seen_request_ids is a dict {request_id: timestamp_seconds} so old
+    entries can be evicted by `evict_old_request_ids` — without
+    eviction, long-running sessions accumulate UUIDs without bound.
     """
 
     def __init__(self, session_id: str = "") -> None:
         self.session_id = session_id
         self.previous_hash: str | None = None  # None for the first entry (§8.1)
-        self.seen_request_ids: set[str] = set()
-        self.seen_nonces: set[str] = set()
+        self.seen_request_ids: dict[str, float] = {}
+        self.seen_nonces: dict[str, float] = {}
         self.lock = threading.Lock()
         self._load()
 
@@ -167,16 +206,46 @@ class SessionState:
         if path is None or not path.exists():
             return
         try:
+            # Backwards-compat: older state files stored seen_request_ids as a
+            # list. Treat any list entry as having timestamp 0 (will be evicted
+            # immediately if past the cutoff).
+            # Hold a shared (read) flock so we don't read a partially-written
+            # file from a concurrent persist() in another Guardian instance.
             with open(path) as f:
-                data = json.load(f)
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                except OSError:
+                    pass
+                try:
+                    data = json.load(f)
+                finally:
+                    try:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        pass
             self.previous_hash = data.get("previous_hash")
-            self.seen_request_ids = set(data.get("seen_request_ids", []))
-            self.seen_nonces = set(data.get("seen_nonces", []))
+            sr = data.get("seen_request_ids", {})
+            self.seen_request_ids = sr if isinstance(sr, dict) else {x: 0.0 for x in sr}
+            sn = data.get("seen_nonces", {})
+            self.seen_nonces = sn if isinstance(sn, dict) else {x: 0.0 for x in sn}
         except (OSError, json.JSONDecodeError):
             pass
 
     def persist(self) -> None:
-        """Atomically write the current state. Must be called with self.lock held."""
+        """Atomically write the current state, with file-locked
+        merge-on-write to support multiple Guardian instances sharing a
+        STATE_DIR (HA deploys). Must be called with self.lock held.
+
+        Algorithm:
+          1. Take an exclusive flock on a sidecar `.lock` file.
+          2. Re-read the on-disk state (another instance may have just
+             written it).
+          3. Merge the in-memory state into the on-disk state — union
+             of seen_request_ids/nonces, max-by-length of previous_hash
+             (chain forks across instances are a separate problem).
+          4. Atomically write the merged result.
+          5. Release the flock.
+        """
         path = _state_path(self.session_id)
         if path is None:
             return
@@ -186,17 +255,82 @@ class SessionState:
                 os.chmod(STATE_DIR, 0o700)
             except OSError:
                 pass
-            tmp = path.with_suffix(".json.tmp")
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump({
-                    "previous_hash": self.previous_hash,
-                    "seen_request_ids": list(self.seen_request_ids),
-                    "seen_nonces": list(self.seen_nonces),
-                }, f)
-            os.replace(tmp, path)
+            lock_path = path.with_suffix(".lock")
+            lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                except OSError as e:
+                    if e.errno != errno.ENOLCK:
+                        raise
+
+                # Re-read on-disk state for merge
+                merged_seen = dict(self.seen_request_ids)
+                merged_nonces = dict(self.seen_nonces)
+                merged_prev = self.previous_hash
+                if path.exists():
+                    try:
+                        with open(path) as rf:
+                            disk = json.load(rf)
+                        disk_seen = disk.get("seen_request_ids") or {}
+                        # Backwards-compat: tolerate list form from earlier versions
+                        if isinstance(disk_seen, list):
+                            disk_seen = {x: 0.0 for x in disk_seen}
+                        for k, v in disk_seen.items():
+                            # Keep the EARLIEST timestamp (so eviction works correctly)
+                            if k not in merged_seen or merged_seen[k] > v:
+                                merged_seen[k] = v
+                        disk_nonces = disk.get("seen_nonces") or {}
+                        if isinstance(disk_nonces, list):
+                            disk_nonces = {x: 0.0 for x in disk_nonces}
+                        for k, v in disk_nonces.items():
+                            if k not in merged_nonces or merged_nonces[k] > v:
+                                merged_nonces[k] = v
+                        # Chain head: keep whichever exists (in single-Guardian
+                        # mode both are identical; in HA mode, this is best-effort).
+                        if not merged_prev and disk.get("previous_hash"):
+                            merged_prev = disk["previous_hash"]
+                    except (OSError, json.JSONDecodeError):
+                        pass
+
+                self.seen_request_ids = merged_seen
+                self.seen_nonces = merged_nonces
+                self.previous_hash = merged_prev
+
+                tmp = path.with_suffix(".json.tmp")
+                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump({
+                        "previous_hash": self.previous_hash,
+                        "seen_request_ids": self.seen_request_ids,
+                        "seen_nonces": self.seen_nonces,
+                    }, f)
+                os.replace(tmp, path)
+            finally:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                os.close(lock_fd)
         except OSError:
             pass
+
+
+def evict_old_request_ids(st: "SessionState") -> int:
+    """Drop request_id entries older than 2 × skew_window.
+
+    Replay is impossible past the skew window — Guardian would reject
+    the request with TIMESTAMP_OUT_OF_WINDOW (-32006) before reaching
+    the replay check. We use 2 × skew as the cutoff for safety margin
+    against clock drift across processes. Caller must hold st.lock.
+
+    Returns the number of entries evicted.
+    """
+    cutoff = time.time() - 2 * (SKEW_WINDOW_MS / 1000.0)
+    old = [k for k, ts in st.seen_request_ids.items() if ts < cutoff]
+    for k in old:
+        del st.seen_request_ids[k]
+    return len(old)
 
 
 class GuardianState:
@@ -220,7 +354,19 @@ STATE = GuardianState()
 
 # ----- Helpers -----
 
-def _matches_destructive_bash(cmd: str) -> re.Pattern | None:
+def _matches_destructive_bash(cmd: str) -> str | re.Pattern | None:
+    """Returns:
+      None         — safe (no destructive pattern matched)
+      re.Pattern   — a destructive pattern matched
+      "too_large"  — input exceeds the regex-scan cap; caller MUST treat
+                     as suspicious (we don't know if it's destructive).
+
+    The cap (DESTRUCTIVE_SCAN_MAX_LEN = 8 KiB) defends against regex
+    DoS via crafted huge commands. Real shell commands are tiny;
+    multi-KB strings are tunneled data or an attack.
+    """
+    if len(cmd) > DESTRUCTIVE_SCAN_MAX_LEN:
+        return "too_large"
     for pat in DESTRUCTIVE_BASH_PATTERNS:
         if pat.search(cmd):
             return pat
@@ -288,10 +434,16 @@ def check_replay(session_id: str, request_id: str) -> None:
         return
     st = STATE.get(session_id)
     with st.lock:
+        # HA-mode: re-read on-disk state so we see what other Guardian
+        # instances have already accepted for this session.
+        st._load()
         if request_id in st.seen_request_ids:
             raise GuardianError(-32005, f"REPLAY_DETECTED: request_id {request_id} already seen in session")
-        st.seen_request_ids.add(request_id)
-        st.persist()  # so a restart doesn't re-accept this request_id
+        # Evict opportunistically — every 100 new request_ids
+        if len(st.seen_request_ids) % 100 == 0:
+            evict_old_request_ids(st)
+        st.seen_request_ids[request_id] = time.time()
+        st.persist()  # flock + merge — visible to other instances
 
 
 def check_skew(timestamp: str) -> None:
@@ -380,8 +532,14 @@ def evaluate_step(method: str, params: dict, request_id: str, chain_hash: str) -
                     "reason_codes": ["subagent_gated"]}
 
         if tool_name in ("Bash", "Shell"):
-            cmd = args.get("command", "")
-            if _matches_destructive_bash(cmd) is not None:
+            cmd = args.get("command", "") or ""
+            match = _matches_destructive_bash(cmd)
+            if match == "too_large":
+                return {**base, "decision": "deny",
+                        "reasoning": f"command length {len(cmd)} exceeds safe-scan cap "
+                                     f"({DESTRUCTIVE_SCAN_MAX_LEN}); cannot evaluate destructive patterns",
+                        "reason_codes": ["input_too_large"]}
+            if match is not None:
                 return {**base, "decision": "deny",
                         "reasoning": f"destructive Bash pattern in: {cmd[:120]}",
                         "reason_codes": ["destructive_command"]}
@@ -413,6 +571,23 @@ def handle_request(request: dict) -> dict:
     session_id = meta.get("session_id") or ""
     acs_request_id = params.get("request_id", "")
     timestamp = params.get("timestamp", "")
+
+    # Schema-validate the envelope (if jsonschema + ACS_SPEC_DIR available).
+    # Defense in depth: catches malformed envelopes from a buggy adapter
+    # or hostile input before they reach policy code. system/ping and
+    # handshake/hello are exempt because their payload shapes differ
+    # (handshake bootstraps the wire and ping is a transport primitive).
+    if (_SPEC_VALIDATION_AVAILABLE
+            and method not in ("system/ping", "handshake/hello")):
+        errors = list(_REQUEST_ENVELOPE_VALIDATOR.iter_errors(request))
+        if errors:
+            paths = "; ".join(
+                f"{'.'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}"
+                for e in errors[:5]
+            )
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32600,
+                              "message": f"Invalid Request: envelope failed schema: {paths}"}}
 
     # system/ping and handshake/hello are exempt from signature/chain/replay
     # constraints per §13 (ping) and §4.1 (handshake bootstraps signing).
