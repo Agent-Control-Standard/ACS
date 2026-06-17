@@ -1,0 +1,56 @@
+name: adapter-tests
+
+on:
+  push:
+    paths:
+      - 'adapters/**'
+      - '.github/workflows/adapter_tests.yml'
+  pull_request:
+    paths:
+      - 'adapters/**'
+      - '.github/workflows/adapter_tests.yml'
+
+jobs:
+  schema-and-round-trip:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [claude-code, cursor, nat]
+    steps:
+      - name: Checkout adapter repo
+        uses: actions/checkout@v4
+
+      - name: Checkout canonical ACS spec
+        uses: actions/checkout@v4
+        with:
+          repository: Agent-Control-Standard/ACS
+          path: acs-spec
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install shared test deps
+        run: pip install -r adapters/requirements-test.txt
+
+      - name: Install NAT runtime (NAT adapter only)
+        if: matrix.adapter == 'nat'
+        run: pip install -r adapters/nat/requirements.txt
+
+      - name: Run tests
+        env:
+          ACS_SPEC_DIR: ${{ github.workspace }}/acs-spec/specification/v0.1.0
+        run: |
+          cd adapters/${{ matrix.adapter }}
+          # Run every test file in tests/ explicitly so unittest reports
+          # passed / skipped per file. Failing or unexpected-skip = job fails.
+          python -m unittest discover -v tests 2>&1 | tee test_output.log
+          # Hard-fail if any test was skipped that the README claims is required.
+          # The schema test fails hard (not skips) on missing spec, so a skip
+          # here would point at the integration/live tests dropping on missing deps.
+          if grep -E "skipped=[1-9]" test_output.log; then
+            echo "::warning::Some tests were skipped — see test_output.log"
+          fi

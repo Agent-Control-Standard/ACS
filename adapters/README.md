@@ -4,11 +4,16 @@ Reference implementations that wire popular agent frameworks to an ACS Guardian.
 
 ## Status
 
-| Adapter | Status | Mapping | Working adapter | Tests | Live verification |
-|---|---|---|---|---|---|
-| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | ✓ 13 unit + 2 live tests (`test_live.py`) automate ALLOW + DENY against a real `claude --print` session | ✓ Automated in test suite |
-| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | ✓ 13 unit tests | ✓ Manual verification procedure documented in `tests/live_verification.md` (Cursor is a desktop app with no headless mode) |
-| [nat](./nat/) | Reference implementation | ✓ | ✓ | ✓ 7 unit + 5 live workflow tests (`test_live.py`) exercise the real `function_middleware_invoke` orchestration path against `nvidia-nat-core` 1.7.0 | ✓ Automated in test suite |
+| Adapter | Status | Mapping | Working adapter | Round-trip tests | Spec-schema tests | Live verification |
+|---|---|---|---|---|---|---|
+| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | 13 passed | 17 passed (every mapped hook's envelope + payload against canonical v0.1.0 schemas) | ✓ Automated `test_live.py` ALLOW + DENY against real `claude --print` |
+| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | 13 passed | 36 passed (every mapped hook's envelope + payload against canonical v0.1.0 schemas) | ✓ Manual procedure in `tests/live_verification.md` (Cursor is a desktop app, no headless mode) |
+| [nat](./nat/) | Reference implementation | ✓ | ✓ | 7 passed (require `nvidia-nat-core==1.7.0`) | 6 passed (work without NAT installed) | ✓ Automated `test_live.py` — 5 tests run `function_middleware_invoke`; deny tests assert `executed["count"] == 0` |
+
+Spec-schema tests load the canonical schemas from a local clone of
+`Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at
+`specification/v0.1.0/`). They are hard-FAIL if the schemas are
+missing — not skipped — because spec validation is non-negotiable.
 
 ---
 
@@ -68,29 +73,49 @@ You ask Claude Code to `echo hello`.
 }
 ```
 
-**Step 2.** The adapter reads that JSON, builds an ACS JSON-RPC request:
+**Step 2.** The adapter reads that JSON, builds an ACS JSON-RPC request conforming to v0.1.0 `request-envelope.json` and `hooks/tool-call-request.json`:
 
 ```json
 {
   "jsonrpc": "2.0",
+  "id": "<uuid>",
   "method": "steps/toolCallRequest",
   "params": {
-    "session_id": "abc-123",
-    "step_id": "<uuid>",
-    "tool": {"name": "Bash", "arguments": {"command": "echo hello"}}
-  },
-  "request_id": "<uuid>",
-  "timestamp": 1718450000000,
-  "acs_version": "0.1.0"
+    "acs_version": "0.1.0",
+    "request_id": "<uuid>",
+    "timestamp": "2026-06-17T12:34:56.789Z",
+    "metadata": {
+      "agent_id": "claude-code:a1b2c3d4",
+      "session_id": "abc-123",
+      "cwd": "/tmp/...",
+      "platform": "claude-code"
+    },
+    "payload": {
+      "tool": {"name": "Bash"},
+      "arguments": {"command": {"value": "echo hello"}}
+    }
+  }
 }
 ```
 
+Notice the shape: `acs_version` / `request_id` / `timestamp` / `metadata` live inside `params`, not at the envelope root (the envelope schema's `additionalProperties: false` rejects unknown top-level keys). Each tool argument is wrapped as `{value: ...}` so ACS-Provenance can attach provenance per-argument without changing the schema.
+
 **Step 3.** The adapter POSTs to the Guardian endpoint (`http://127.0.0.1:8787/acs`).
 
-**Step 4.** The Guardian evaluates. Our example Guardian's deterministic policy: `echo hello` doesn't match the destructive-Bash regex. Returns:
+**Step 4.** The Guardian evaluates. Our example Guardian's deterministic policy: `echo hello` doesn't match the destructive-Bash regex. Returns a response conforming to `response-envelope.json`:
 
 ```json
-{"jsonrpc": "2.0", "result": {"decision": "allow"}}
+{
+  "jsonrpc": "2.0",
+  "id": "<uuid>",
+  "result": {
+    "type": "final",
+    "acs_version": "0.1.0",
+    "request_id": "<uuid>",
+    "decision": "allow",
+    "chain_hash": "..."
+  }
+}
 ```
 
 **Step 5.** The adapter translates back to Claude Code's expected shape:

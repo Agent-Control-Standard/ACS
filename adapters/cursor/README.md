@@ -121,13 +121,16 @@ Cursor is a desktop application without a documented headless mode. The live int
 
 ## Conformance status
 
-| ACS-Core item | Status in this adapter |
+Honest, MUST-by-MUST against `docs/spec/conformance.md`:
+
+| ACS-Core item | Status |
 |---|---|
-| Handshake | Assumed (no per-session negotiation in the minimal adapter) |
-| JSON-RPC envelope | ✓ |
-| Hook taxonomy (6 minimum) | ✓ all six covered via Cursor's events; many additional Cursor events also mapped |
+| Handshake | ✗ not implemented |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (36 tests in `test_envelope_schema.py`) |
+| Hook taxonomy (6 minimum) | ✓ all six covered via Cursor's events; 18 Cursor events mapped total |
 | Dispositions | ALLOW / DENY / ASK supported on permission events. DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. |
-| SessionContext | session_id passed every request; Guardian-side audit chain accumulates against it |
-| Replay protection | ✓ (UUID + timestamp) |
-| Baseline integrity | ⚠ Deferred to transport layer in this minimal adapter |
-| Decision honoring | ✓ (Cursor blocks on permission deny; adapter uses exit-2 where stdout JSON is not available) |
+| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts |
+| SessionContext | session_id propagated (coerced to UUID via `uuid.uuid5` when Cursor's id is not already a UUID) |
+| Baseline integrity (HMAC-SHA256 signature on envelope) | ✗ not implemented — Core MUST per `conformance.md:28` |
+| Replay-prevention nonce | ✗ optional field not yet emitted |
+| Decision honoring (§6.4) | ✓ (Cursor blocks on permission deny; adapter uses exit-2 where stdout JSON is not available) |

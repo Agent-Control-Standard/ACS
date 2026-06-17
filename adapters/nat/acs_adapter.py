@@ -6,7 +6,9 @@ function (tool / sub-workflow / LLM / etc.) call configured to use this
 middleware, sends an ACS JSON-RPC request to the Guardian, and applies
 the verdict to NAT's invocation context.
 
-Schema source: NAT public repo `packages/nvidia_nat_core/src/nat/middleware/`.
+Schema sources:
+  - NAT public repo `packages/nvidia_nat_core/src/nat/middleware/`
+  - Agent-Control-Standard/ACS `specification/v0.1.0/`
 
 Requires:
   pip install nvidia-nat-core
@@ -19,6 +21,10 @@ Compatibility:
   - Future versions that expose InvocationAction.SKIP are also supported:
     if the symbol is importable, the adapter sets context.action instead
     of raising, which produces cleaner traces.
+
+Environment variables:
+  ACS_AGENT_ID    Explicit agent_id for metadata. If unset, derived from
+                  config.target_function_or_group, falling back to "nat".
 
 Usage in NAT YAML:
 
@@ -39,9 +45,10 @@ Usage in NAT YAML:
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
 import os
-import time
 import urllib.error
 import urllib.request
 import uuid
@@ -74,9 +81,8 @@ except ImportError:
     _HAS_REGISTRATION = False
 
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import Field
 except ImportError:
-    BaseModel = object  # type: ignore[assignment, misc]
     Field = lambda **kw: None  # type: ignore[assignment, misc]
 
 
@@ -100,9 +106,7 @@ if _NAT_AVAILABLE:
     class ACSMiddlewareConfig(FunctionMiddlewareBaseConfig, name="acs_guardian"):  # type: ignore[misc, valid-type, call-arg]
         """Config schema for the ACS NAT middleware.
 
-        Registered with NAT under `_type: acs_guardian` (the `name=` class kwarg
-        is NAT's TypedBaseModel registration mechanism — see
-        `nat/data_models/common.py`).
+        Registered with NAT under `_type: acs_guardian`.
         """
         guardian_url: str = Field(
             default="http://127.0.0.1:8787/acs",
@@ -110,11 +114,11 @@ if _NAT_AVAILABLE:
         )
         default_deny: bool = Field(
             default=True,
-            description="Block the call when the Guardian is unreachable or returns malformed responses.",
+            description="Block the call when the Guardian is unreachable, returns malformed responses, or returns an unknown disposition.",
         )
         session_id: Optional[str] = Field(
             default=None,
-            description="Session id sent on every request. Auto-generated per-process if absent.",
+            description="Session id sent on every request. Auto-generated per-process if absent. Coerced to UUID format.",
         )
         timeout_s: float = Field(
             default=5.0,
@@ -122,6 +126,36 @@ if _NAT_AVAILABLE:
         )
         target_function_or_group: Optional[str] = None
         target_location: str = "input"
+
+
+# ----- Helpers (module-scope so tests can exercise them without instantiating the middleware) -----
+
+
+def _iso8601_now() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _coerce_uuid(raw: str | None) -> str:
+    """request-envelope.json:66 wants session_id as UUID. Accept a UUID
+    directly; otherwise derive a stable UUID5 from whatever NAT gave us."""
+    if not raw:
+        return str(uuid.uuid4())
+    try:
+        return str(uuid.UUID(raw))
+    except (ValueError, AttributeError, TypeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"nat:{raw}"))
+
+
+def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
+    """tool-call-request.json:26-37 — each arg is {value, provenance?}."""
+    return {k: {"value": v} for k, v in (raw or {}).items()}
+
+
+KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
 
 
 # ----- Middleware class -----
@@ -133,11 +167,11 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         if _NAT_AVAILABLE:
             super().__init__()
         self._config = config
-        self._session_id = (
-            getattr(config, "session_id", None)
-            or os.environ.get("ACS_SESSION_ID")
-            or f"nat-{uuid.uuid4().hex[:16]}"
+        self._session_id = _coerce_uuid(
+            getattr(config, "session_id", None) or os.environ.get("ACS_SESSION_ID")
         )
+        target = getattr(config, "target_function_or_group", None) or "nat"
+        self._agent_id = os.environ.get("ACS_AGENT_ID") or f"nat:{hashlib.sha256(target.encode()).hexdigest()[:8]}"
 
     @property
     def enabled(self) -> bool:
@@ -145,25 +179,29 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
 
     async def pre_invoke(self, context):
         """Gate the function call. Block via raising or InvocationAction.SKIP; modify args in place."""
-        request = self._build_request(
-            method="steps/toolCallRequest",
-            tool_name=context.function_context.name,
-            tool_arguments=dict(context.modified_kwargs or {}),
-        )
-
         try:
+            request = self._build_request(
+                method="steps/toolCallRequest",
+                tool_name=context.function_context.name,
+                tool_arguments=dict(context.modified_kwargs or {}),
+            )
             response = self._call_guardian(request)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
             if self._config.default_deny:
                 return self._block(context, f"Guardian unreachable: {e}")
-            return None  # fail-open: proceed
+            return None
+        except Exception as e:  # noqa: BLE001
+            # Build-request failures or anything else: same fail posture as transport errors.
+            if self._config.default_deny:
+                return self._block(context, f"adapter error: {e}")
+            return None
 
         result = (response or {}).get("result", {})
         decision = (result.get("decision") or "").lower()
         reasoning = result.get("reasoning", "")
 
         if decision == "allow":
-            return None  # proceed unchanged
+            return None
         if decision == "deny":
             return self._block(context, reasoning or "denied by Guardian")
         if decision == "modify":
@@ -176,38 +214,60 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         if decision in ("ask", "defer"):
             # NAT has no native pause-and-resume primitive on the middleware
             # boundary. Substitute block; deployments wanting ASK/DEFER
-            # should compose with NAT's HITL middleware
-            # (nat.middleware.hitl) and have the Guardian resolve before
-            # responding.
+            # should compose with NAT's HITL middleware.
             return self._block(context, f"{decision}: {reasoning}")
 
-        # Unknown decision: apply fail posture
+        # Unknown disposition: fail posture
         if self._config.default_deny:
             return self._block(context, f"unknown disposition: {decision}")
         return None
 
     async def post_invoke(self, context):
-        """Record the result. Optionally modify the output."""
-        request = self._build_request(
-            method="steps/toolCallResult",
-            tool_name=context.function_context.name,
-            tool_arguments=dict(context.modified_kwargs or {}),
-            result=context.output,
-        )
+        """Record the result. Apply Guardian's verdict to the output.
 
+        - allow: pass through.
+        - modify (with modified_content): replace context.output.
+        - deny: clear context.output to None and tag with reasoning. The
+          tool already ran (post_invoke fires after execution), so the
+          side effect cannot be undone — but downstream consumers see no
+          output. This matches Specification §6.4's output-redaction gate.
+        - unknown: respect default_deny — drop output if true.
+        """
         try:
+            request = self._build_request(
+                method="steps/toolCallResult",
+                tool_name=context.function_context.name,
+                tool_arguments=dict(context.modified_kwargs or {}),
+                result=context.output,
+            )
             response = self._call_guardian(request)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-            return None  # post-hoc is best-effort
+            return None  # post-hoc transport failure: best-effort
+        except Exception:  # noqa: BLE001
+            return None
 
         result = (response or {}).get("result", {})
         decision = (result.get("decision") or "").lower()
+        reasoning = result.get("reasoning", "")
+
+        if decision == "deny":
+            # Post-hoc redaction: the tool already executed, but we
+            # prevent the (potentially sensitive) output from flowing.
+            context.output = None
+            context.acs_post_invoke_redacted = True
+            context.acs_post_invoke_reason = reasoning or "output redacted by Guardian"
+            return context
         if decision == "modify":
             mods = result.get("modifications", {})
             modified_content = mods.get("modified_content")
             if modified_content is not None:
                 context.output = modified_content
                 return context
+        if decision not in KNOWN_DECISIONS and self._config.default_deny:
+            context.output = None
+            context.acs_post_invoke_redacted = True
+            context.acs_post_invoke_reason = f"unknown disposition '{decision}' (default-deny)"
+            return context
         return None
 
     # ----- helpers -----
@@ -217,6 +277,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         fall back to raising for NAT releases that don't expose it."""
         if _HAS_INVOCATION_ACTION:
             context.action = InvocationAction.SKIP  # type: ignore[attr-defined]
+            context.acs_block_reason = reason
             return context
         raise ACSGuardianDenied(reason)
 
@@ -227,22 +288,42 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         tool_arguments: dict,
         result: Any = None,
     ) -> dict:
-        params: dict[str, Any] = {
+        """Build an ACS request envelope matching request-envelope.json."""
+        metadata = {
+            "agent_id": self._agent_id,
             "session_id": self._session_id,
-            "step_id": str(uuid.uuid4()),
-            "tool": {"name": tool_name, "arguments": tool_arguments},
+            "platform": "nat",
         }
-        if result is not None:
-            params["result"] = result if isinstance(result, (str, int, float, bool, dict, list)) else str(result)
+        if method == "steps/toolCallRequest":
+            payload: dict[str, Any] = {
+                "tool": {"name": tool_name},
+                "arguments": _wrap_arguments(tool_arguments),
+            }
+        else:
+            # steps/toolCallResult — required tool, exit_status, outputs
+            if result is None:
+                outputs: list[dict[str, Any]] = []
+            elif isinstance(result, (str, int, float, bool, dict, list)):
+                outputs = [{"value": result}]
+            else:
+                outputs = [{"value": str(result)}]
+            payload = {
+                "tool": {"name": tool_name},
+                "exit_status": "success",
+                "outputs": outputs,
+            }
+
         return {
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
             "method": method,
-            "params": params,
-            "acs_version": ACS_VERSION,
-            "request_id": str(uuid.uuid4()),
-            "timestamp": int(time.time() * 1000),
-            "metadata": {"source": "acs-adapter-nat"},
+            "params": {
+                "acs_version": ACS_VERSION,
+                "request_id": str(uuid.uuid4()),
+                "timestamp": _iso8601_now(),
+                "metadata": metadata,
+                "payload": payload,
+            },
         }
 
     def _call_guardian(self, request: dict) -> dict:

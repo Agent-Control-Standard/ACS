@@ -1,0 +1,5 @@
+# Runtime dependency for the NAT adapter.
+# Pinned to the public release that ships ACSMiddlewareConfig's required
+# base classes. The adapter feature-detects InvocationAction.SKIP and falls
+# back to raising ACSGuardianDenied on releases that don't expose it.
+nvidia-nat-core==1.7.0

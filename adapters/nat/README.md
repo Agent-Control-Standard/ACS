@@ -79,16 +79,20 @@ The adapter works across multiple NAT releases by feature-detecting the block me
 
 ## Conformance status
 
-| ACS-Core item | Status in this adapter |
+Honest, MUST-by-MUST against `docs/spec/conformance.md`:
+
+| ACS-Core item | Status |
 |---|---|
-| Handshake | Assumed (per-session negotiation not implemented in the minimal adapter) |
-| JSON-RPC envelope | ✓ |
-| Hook taxonomy minimum | ✓ via NAT's function-wrapping (every tool/LLM/retriever call surfaces as a `steps/toolCallRequest` + `steps/toolCallResult` pair) |
-| Dispositions | ALLOW (pass-through) / DENY (block) / MODIFY (mutate context.modified_kwargs or context.output) supported. ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). |
-| SessionContext | session_id sent on every request (auto-generated per process unless configured) |
-| Replay protection | ✓ (UUID + timestamp) |
-| Baseline integrity | ⚠ Deferred to transport layer in this minimal adapter |
-| Decision honoring | ✓ (NAT's middleware contract guarantees the function will not execute if `pre_invoke` raises or sets SKIP) |
+| Handshake | ✗ not implemented |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py` — runs without `nvidia-nat-core` installed) |
+| Hook taxonomy minimum | ⚠ `steps/toolCallRequest` + `steps/toolCallResult` only. NAT's middleware boundary is the function call; session/turn/user-message hooks would need composition with a NAT runtime middleware. |
+| Dispositions | ALLOW / DENY / MODIFY supported. ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). |
+| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts, in both `pre_invoke` and `post_invoke` |
+| Post-tool deny | ✓ `post_invoke` clears `context.output` and sets `acs_post_invoke_redacted=True` on deny verdict |
+| SessionContext | session_id propagated (coerced to UUID format; auto-generated per process unless configured) |
+| Baseline integrity (HMAC-SHA256 signature on envelope) | ✗ not implemented — Core MUST per `conformance.md:28` |
+| Replay-prevention nonce | ✗ optional field not yet emitted |
+| Decision honoring (§6.4) | ✓ NAT's middleware contract guarantees the function will not execute if `pre_invoke` raises or sets SKIP — verified in `test_live.py` (deny tests assert `executed["count"] == 0`) |
 
 ## How NAT's defense middleware composes with this
 
