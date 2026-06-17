@@ -190,46 +190,56 @@ class AdapterRoundTrip(unittest.TestCase):
     # ----- Fail posture -----
 
     def test_guardian_unreachable_default_deny_pretoolue(self) -> None:
-        """PreToolUse with Guardian down: emit deny in PreToolUse output shape."""
-        rc, out, _ = self._run_adapter(
+        """PreToolUse with Guardian down + DEFAULT_DENY=1: emit deny in PreToolUse output shape."""
+        rc, out, err = self._run_adapter(
             _claude_code_event(
                 "PreToolUse", tool_name="Read",
                 tool_input={"file_path": "/tmp/x"},
             ),
-            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead"},
+            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
+                           "ACS_DEFAULT_DENY": "1",
+                           "ACS_HANDSHAKE": "0"},
         )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("unreachable", payload["hookSpecificOutput"]["permissionDecisionReason"].lower())
+        self.assertIn("decision-failure", payload["hookSpecificOutput"]["permissionDecisionReason"].lower())
+        # §6.4: every decision-failure path must produce an audit event
+        self.assertIn("ACS_AUDIT", err)
+        self.assertIn("decision_failure_fail_closed", err)
 
     def test_guardian_unreachable_default_deny_posttool(self) -> None:
-        """PostToolUse with Guardian down: top-level decision: block."""
-        rc, out, _ = self._run_adapter(
+        """PostToolUse with Guardian down + DEFAULT_DENY=1: top-level decision: block."""
+        rc, out, err = self._run_adapter(
             _claude_code_event(
                 "PostToolUse", tool_name="Read",
                 tool_input={"file_path": "/tmp/x"}, tool_output="x",
             ),
-            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead"},
+            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
+                           "ACS_DEFAULT_DENY": "1",
+                           "ACS_HANDSHAKE": "0"},
         )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["decision"], "block")
-        self.assertIn("unreachable", payload["reason"].lower())
+        self.assertIn("decision-failure", payload["reason"].lower())
+        self.assertIn("ACS_AUDIT", err)
 
-    def test_guardian_unreachable_fail_open(self) -> None:
-        rc, out, _ = self._run_adapter(
+    def test_guardian_unreachable_fail_open_default_is_audit(self) -> None:
+        """Spec default per §6.4: fail-open, every bypass recorded as an audit event."""
+        rc, out, err = self._run_adapter(
             _claude_code_event(
                 "PreToolUse", tool_name="Read",
                 tool_input={"file_path": "/tmp/x"},
             ),
-            env_overrides={
-                "ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
-                "ACS_DEFAULT_DENY": "0",
-            },
+            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
+                           "ACS_HANDSHAKE": "0"},
         )
-        self.assertEqual(rc, 0)
-        self.assertEqual(out, "")  # proceed
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "")  # proceed (fail-open)
+        # §6.4: 'Every step that proceeds without a decision MUST be recorded as an audit event'
+        self.assertIn("ACS_AUDIT", err, "fail-open MUST emit an audit event per §6.4")
+        self.assertIn("fail_open_bypass", err)
 
 
 if __name__ == "__main__":

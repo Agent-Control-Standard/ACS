@@ -4,16 +4,30 @@ Reference implementations that wire popular agent frameworks to an ACS Guardian.
 
 ## Status
 
-| Adapter | Status | Mapping | Working adapter | Round-trip tests | Spec-schema tests | Live verification |
+| Adapter | Status | Mapping | Working adapter | Round-trip | Spec-schema | Live |
 |---|---|---|---|---|---|---|
-| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | 13 passed | 17 passed (every mapped hook's envelope + payload against canonical v0.1.0 schemas) | ✓ Automated `test_live.py` ALLOW + DENY against real `claude --print` |
-| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | 13 passed | 36 passed (every mapped hook's envelope + payload against canonical v0.1.0 schemas) | ✓ Manual procedure in `tests/live_verification.md` (Cursor is a desktop app, no headless mode) |
-| [nat](./nat/) | Reference implementation | ✓ | ✓ | 7 passed (require `nvidia-nat-core==1.7.0`) | 6 passed (work without NAT installed) | ✓ Automated `test_live.py` — 5 tests run `function_middleware_invoke`; deny tests assert `executed["count"] == 0` |
+| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | 13 passed | 17 passed | ✓ `test_live.py` ALLOW + DENY against real `claude --print` |
+| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | 13 passed | 36 passed | ✓ Manual procedure in `tests/live_verification.md` (Cursor is a desktop app, no headless mode) |
+| [nat](./nat/) | **Partial reference** — see note | ✓ | ✓ | 7 passed (require `nvidia-nat-core==1.7.0`) | 6 passed (work without NAT) | ✓ `test_live.py` — 5 tests run `function_middleware_invoke`; deny tests assert `executed["count"] == 0` |
+| [example-guardian](./example-guardian/) | Test substrate (not a production Guardian) | — | — | — | — | 20 spec-compliance tests in `tests/test_spec_compliance.py` covering §4, §6.4, §8.2, §10, §10.3, §13 |
 
-Spec-schema tests load the canonical schemas from a local clone of
+**NAT caveat:** the NAT middleware boundary is the function call. NAT
+alone emits `steps/toolCallRequest` + `steps/toolCallResult` only —
+not the session/turn/user-message hooks ACS-Core requires at minimum
+(`conformance.md:19`). A NAT deployment using ONLY this adapter is not
+ACS-Core conformant on its own. See `adapters/nat/README.md`.
+
+**Spec-schema tests** load the canonical schemas from a local clone of
 `Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at
 `specification/v0.1.0/`). They are hard-FAIL if the schemas are
 missing — not skipped — because spec validation is non-negotiable.
+Format checking (`uuid`, `date-time`) is enforced.
+
+**Spec-compliance tests** in `example-guardian/tests/test_spec_compliance.py`
+exercise: rolling chain hash per §8.2, REPLAY_DETECTED + TIMESTAMP_OUT_OF_WINDOW
+per §10.3, HMAC-SHA256 sign/verify per §10, handshake/hello per §4,
+system/ping per §13, and response-envelope schema validation for every
+response shape (allow, deny, handshake, ping, error).
 
 ---
 

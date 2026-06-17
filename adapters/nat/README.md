@@ -79,20 +79,24 @@ The adapter works across multiple NAT releases by feature-detecting the block me
 
 ## Conformance status
 
+**Important conformance posture**: this adapter is a **partial reference**, not a full ACS-Core deployment on its own. The NAT middleware boundary is the function call; session/turn/user-message hooks live above the middleware layer. A NAT deployment that uses ONLY this adapter does NOT satisfy the ACS-Core hook taxonomy minimum (`conformance.md:19` requires `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`). To be ACS-Core conformant, compose this with a NAT runtime middleware that emits the lifecycle hooks — or run NAT inside a larger harness (orchestrator, IDE plugin) whose adapter emits them.
+
 Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
-| ACS-Core item | Status |
+| ACS-Core item | Status in this adapter |
 |---|---|
-| Handshake | ✗ not implemented |
-| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py` — runs without `nvidia-nat-core` installed) |
-| Hook taxonomy minimum | ⚠ `steps/toolCallRequest` + `steps/toolCallResult` only. NAT's middleware boundary is the function call; session/turn/user-message hooks would need composition with a NAT runtime middleware. |
+| Handshake (`handshake/hello`) | ✓ on first `pre_invoke` (cached per session) |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py`, runs without NAT) |
+| **Hook taxonomy minimum** | **✗ INCOMPLETE: only `steps/toolCallRequest` + `steps/toolCallResult`. Missing: sessionStart, userMessage/agentTrigger, agentResponse, sessionEnd. See note above.** |
 | Dispositions | ALLOW / DENY / MODIFY supported. ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). |
-| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts, in both `pre_invoke` and `post_invoke` |
-| Post-tool deny | ✓ `post_invoke` clears `context.output` and sets `acs_post_invoke_redacted=True` on deny verdict |
-| SessionContext | session_id propagated (coerced to UUID format; auto-generated per process unless configured) |
-| Baseline integrity (HMAC-SHA256 signature on envelope) | ✗ not implemented — Core MUST per `conformance.md:28` |
-| Replay-prevention nonce | ✗ optional field not yet emitted |
-| Decision honoring (§6.4) | ✓ NAT's middleware contract guarantees the function will not execute if `pre_invoke` raises or sets SKIP — verified in `test_live.py` (deny tests assert `executed["count"] == 0`) |
+| Unknown-disposition fail posture | ✓ |
+| Post-tool deny redaction | ✓ `post_invoke` clears `context.output` and sets `acs_post_invoke_redacted=True` per §6.4 output-redaction gate |
+| SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling chain |
+| Replay protection | ✓ Guardian enforcement; adapter sends UUID `request_id` + ISO-8601 `timestamp` |
+| Baseline integrity (HMAC-SHA256) | ✓ when `ACS_HMAC_SECRET` is set; signed responses verified by adapter (`pre_invoke` and `post_invoke` reject SIGNATURE_INVALID) |
+| Decision honoring (§6.4) | ✓ NAT's middleware contract guarantees the function will not execute if `pre_invoke` raises or sets SKIP — verified in `test_live.py` (deny tests assert `executed["count"] == 0`); fail-open emits `ACS_AUDIT` events |
+| Liveness `system/ping` | ✓ Guardian-side |
+| `request_id_ref` correlation | ✓ `post_invoke` populates with a deterministic uuid5 derived from session + function + kwargs, linking result to request |
 
 ## How NAT's defense middleware composes with this
 

@@ -39,7 +39,10 @@ def _validate(payload: dict, schema_name: str) -> list:
         base_uri=(SPEC_DIR.as_uri() + "/" + schema_name),
         referrer=schema,
     )
-    validator = Draft202012Validator(schema, resolver=resolver)
+    validator = Draft202012Validator(
+        schema, resolver=resolver,
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    )
     return [
         f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
         for err in validator.iter_errors(payload)

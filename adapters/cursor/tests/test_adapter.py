@@ -160,38 +160,43 @@ class CursorAdapter(unittest.TestCase):
 
     # ----- Fail posture -----
     def test_guardian_unreachable_default_deny_on_permission_event(self) -> None:
-        rc, out, _ = self._run("preToolUse",
+        rc, out, err = self._run("preToolUse",
             {"session_id": "cur-10", "tool_name": "Read",
              "tool_input": {"file_path": "/tmp/x"}},
-            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead"},
+            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
+                           "ACS_DEFAULT_DENY": "1",
+                           "ACS_HANDSHAKE": "0"},
         )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["permission"], "deny")
-        self.assertIn("unreachable", payload["user_message"].lower())
+        self.assertIn("decision-failure", payload["user_message"].lower())
+        self.assertIn("ACS_AUDIT", err)
+        self.assertIn("decision_failure_fail_closed", err)
 
-    def test_guardian_unreachable_fail_open(self) -> None:
-        rc, out, _ = self._run("preToolUse",
+    def test_guardian_unreachable_fail_open_default_is_audit(self) -> None:
+        """§6.4 spec default: fail-open with audit event."""
+        rc, out, err = self._run("preToolUse",
             {"session_id": "cur-11", "tool_name": "Read",
              "tool_input": {"file_path": "/tmp/x"}},
             env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
-                           "ACS_DEFAULT_DENY": "0"},
+                           "ACS_HANDSHAKE": "0"},
         )
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
+        self.assertIn("ACS_AUDIT", err, "fail-open MUST emit an audit event per §6.4")
+        self.assertIn("fail_open_bypass", err)
 
     def test_before_submit_prompt_block_via_exit_code(self) -> None:
-        """beforeSubmitPrompt blocks via exit code 2, not stdout."""
-        # Synthesize a deny by routing through Guardian with a payload it
-        # treats as unknown method (which the example Guardian denies).
-        # Easier: pretend the Guardian is unreachable; default-deny posture
-        # for beforeSubmitPrompt should exit 2.
+        """beforeSubmitPrompt blocks via exit code 2, not stdout (fail-closed mode)."""
         rc, _, err = self._run("beforeSubmitPrompt",
             {"session_id": "cur-12", "prompt": "anything"},
-            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead"},
+            env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
+                           "ACS_DEFAULT_DENY": "1",
+                           "ACS_HANDSHAKE": "0"},
         )
         self.assertEqual(rc, 2)
-        self.assertIn("prompt blocked", err.lower())
+        self.assertIn("decision-failure", err.lower())
 
 
 if __name__ == "__main__":

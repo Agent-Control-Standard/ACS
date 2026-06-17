@@ -125,12 +125,26 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
 | ACS-Core item | Status |
 |---|---|
-| Handshake | ✗ not implemented |
-| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (36 tests in `test_envelope_schema.py`) |
-| Hook taxonomy (6 minimum) | ✓ all six covered via Cursor's events; 18 Cursor events mapped total |
+| Handshake (`handshake/hello`) | ✓ on first session call; cached per-session |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (36 tests) with format checking |
+| Hook taxonomy (6 minimum) | ✓ all six covered; 18 Cursor events mapped total |
 | Dispositions | ALLOW / DENY / ASK supported on permission events. DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. |
-| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts |
-| SessionContext | session_id propagated (coerced to UUID via `uuid.uuid5` when Cursor's id is not already a UUID) |
-| Baseline integrity (HMAC-SHA256 signature on envelope) | ✗ not implemented — Core MUST per `conformance.md:28` |
-| Replay-prevention nonce | ✗ optional field not yet emitted |
-| Decision honoring (§6.4) | ✓ (Cursor blocks on permission deny; adapter uses exit-2 where stdout JSON is not available) |
+| Unknown-disposition fail posture | ✓ |
+| SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling SHA-256 chain |
+| Replay protection | ✓ Guardian enforcement (REPLAY_DETECTED -32005, TIMESTAMP_OUT_OF_WINDOW -32006) |
+| Baseline integrity (HMAC-SHA256) | ✓ when `ACS_HMAC_SECRET` is set; SIGNATURE_INVALID -32004 on tamper |
+| Decision honoring (§6.4) | ✓ (Cursor blocks on permission deny; adapter uses exit-2 where stdout JSON is not available); fail-open emits `ACS_AUDIT` event |
+| Liveness `system/ping` | ✓ Guardian-side |
+| Wrapped MCP `protocols/MCP/*` | ⚠ partial — Cursor's `beforeMCPExecution` is mapped to `steps/toolCallRequest`, not to the `protocols/MCP/*` wrapped form. Real wrapping requires forwarding the full MCP request shape, not flattening it; this adapter does not do that. |
+
+### Per-hook honesty table
+
+Cursor does not expose every field the ACS v0.1.0 hook schemas require. Where the schema is strict and Cursor is silent, the adapter emits a deterministic synthetic value to keep the payload schema-valid. **Synthetic values satisfy the schema but do not carry the meaning the spec requires.** A Guardian seeing them gets a placeholder, not a real subagent boundary or compaction record. This is a Cursor schema gap that ACS cannot close on its side.
+
+| Cursor event → ACS hook | Real Cursor data | Synthetic in payload | Semantic gap |
+|---|---|---|---|
+| `subagentStart` → `steps/subagentStart` | `subagent_id`, `subagent_type` (optional) | `subagent_session_id` (uuid5 of `subagent_id`), `parent_session_id` (uuid5 of session), `parent_step_id` (uuid4), `intent_derivation` (always `derived_from_parent`) | Subagent IDs do not correspond to anything observable on the Cursor side; intent_derivation is a guess |
+| `subagentStop` → `steps/subagentStop` | `subagent_id`, optional `outcome` | `final_chain_hash` (`sha256(subagent_id || timestamp)`) | Hash is fabricated; does not commit to any real chain |
+| `preCompact` → `steps/preCompact` | `trigger` (optional) | `entries_to_compact` = `[session_id]` (single-element placeholder) | The actual step_ids being compacted are not available |
+
+These hooks are emitted only when Cursor's `hooks.json` wires them to the adapter. Removing them from your `hooks.json` removes the synthetic emission entirely; the gap is in the data, not in the adapter's correctness.

@@ -2,38 +2,34 @@
 """
 ACS adapter for Cursor hooks.
 
-Translates a Cursor hook event (read from stdin as JSON) into an ACS
-JSON-RPC request, sends it to a Guardian, and translates the ACS
-response back to Cursor's expected output format.
+Translates a Cursor hook event into a signed ACS JSON-RPC request,
+sends it to a Guardian, and translates the ACS response back to
+Cursor's expected output format.
 
-Schema source: Cursor `create-hook` skill (~/.cursor/skills-cursor/create-hook/SKILL.md).
-ACS schema source: Agent-Control-Standard/ACS specification/v0.1.0/
+Wire-format ground truth: Agent-Control-Standard/ACS specification/v0.1.0/
 
-Cursor's hook protocol:
-  - Per-event-name configuration in .cursor/hooks.json (or ~/.cursor/hooks.json)
-  - JSON event piped to stdin
-  - JSON response on stdout (event-specific output keys)
-  - Exit 0 = success, exit 2 = block, other nonzero = fail-open unless failClosed
-  - Per-hook `failClosed: true` makes adapter errors block the action
-
-Because Cursor wires each hook to a specific event name in hooks.json, the
-adapter takes the event name as argv[1] rather than relying on a field in
-the stdin JSON.
+Note on payload completeness: Cursor does not expose all fields the
+ACS v0.1.0 hook schemas require for subagentStart, subagentStop, and
+preCompact. The adapter emits schema-valid payloads using deterministic
+uuid5/sha256 derivations for the missing required fields. These are
+syntactically valid but semantically synthetic — a Guardian seeing
+them gets a placeholder, not a real subagent or compaction record.
+This is a Cursor schema gap that ACS cannot close on its side. See
+the README for the full per-hook honesty table.
 
 Usage in hooks.json:
   { "command": "python3 /path/to/acs_adapter.py preToolUse" }
 
-Environment variables:
+Environment variables (same defaults / semantics as the Claude Code adapter):
   ACS_GUARDIAN_URL    Guardian endpoint (default: http://127.0.0.1:8787/acs)
-  ACS_DEFAULT_DENY    If "1", emit deny on adapter error or unknown
-                      Guardian disposition. Default: "1".
-                      (Cursor also honors `failClosed: true` in hooks.json.)
-  ACS_AGENT_ID        Explicit agent_id for metadata. If unset, derived
-                      from workspace path as `cursor:<sha8(cwd)>`.
+  ACS_DEFAULT_DENY    "1" = fail-closed. Default "0" (spec default per §6.4).
+                      Cursor also honors per-hook `failClosed: true` in hooks.json.
+  ACS_HMAC_SECRET     Shared secret for HMAC-SHA256 signing per §10. Unset = no signing (local dev).
+  ACS_AGENT_ID        Explicit agent_id; defaults to cursor:<sha8(workspace)>.
+  ACS_HANDSHAKE       "0" disables handshake. Default "1".
 """
 from __future__ import annotations
 
-import datetime
 import hashlib
 import json
 import os
@@ -41,21 +37,27 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
+from acs_common import (  # noqa: E402
+    ACS_VERSION,
+    audit_event,
+    coerce_uuid,
+    do_handshake,
+    iso8601_now,
+    sign_envelope,
+    verify_signature,
+)
+
+
 GUARDIAN_URL = os.environ.get("ACS_GUARDIAN_URL", "http://127.0.0.1:8787/acs")
-DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "1") == "1"
-ACS_VERSION = "0.1.0"
+DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "0") == "1"
+HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
 
 
-# Cursor hook event -> ACS step method.
-# beforeReadFile / beforeTabFileRead intentionally NOT mapped to
-# steps/knowledgeRetrieval: that hook's payload schema requires
-# {query, results}, neither of which a file-read event exposes. A
-# future ACS hook (e.g. steps/fileAccess) would be the right home; for
-# now, the adapter does not forward these and Cursor's hooks.json
-# should not wire the adapter to them.
 HOOK_MAP: dict[str, str] = {
     "sessionStart": "steps/sessionStart",
     "sessionEnd": "steps/sessionEnd",
@@ -78,29 +80,11 @@ HOOK_MAP: dict[str, str] = {
 }
 
 
-PERMISSION_EVENTS = {
-    "preToolUse",
-    "subagentStart",
-    "beforeShellExecution",
-    "beforeMCPExecution",
-}
-
+PERMISSION_EVENTS = {"preToolUse", "subagentStart", "beforeShellExecution", "beforeMCPExecution"}
 POST_TOOL_EVENTS = {
-    "postToolUse",
-    "postToolUseFailure",
-    "afterMCPExecution",
-    "afterShellExecution",
-    "afterFileEdit",
-    "afterTabFileEdit",
+    "postToolUse", "postToolUseFailure", "afterMCPExecution",
+    "afterShellExecution", "afterFileEdit", "afterTabFileEdit",
 }
-
-
-def _iso8601_now() -> str:
-    return (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
 
 
 def _agent_id(event: dict[str, Any]) -> str:
@@ -114,19 +98,8 @@ def _agent_id(event: dict[str, Any]) -> str:
 
 
 def _session_id(event: dict[str, Any]) -> str:
-    """Cursor exposes session_id or conversation_id depending on event.
-
-    request-envelope.json:66 wants UUID format. We derive a stable UUID5
-    from whatever Cursor gives us so the same conversation always maps
-    to the same UUID. If Cursor sends a UUID directly, we use it as-is.
-    """
     raw = event.get("session_id") or event.get("conversation_id") or ""
-    if not raw:
-        return ""
-    try:
-        return str(uuid.UUID(raw))
-    except (ValueError, AttributeError, TypeError):
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor:{raw}"))
+    return coerce_uuid(raw, namespace_prefix="cursor") if raw else ""
 
 
 def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +107,6 @@ def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _outputs_list(raw: Any) -> list[dict[str, Any]]:
-    """tool-call-result.json wants outputs as array of {value, provenance?}."""
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -142,12 +114,13 @@ def _outputs_list(raw: Any) -> list[dict[str, Any]]:
     return [{"value": raw}]
 
 
-def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
-    """Build the hook-specific payload (params.payload).
+def _tool_use_request_id(tool_call_id: str | None) -> str | None:
+    if not tool_call_id:
+        return None
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor:tool_use:{tool_call_id}"))
 
-    Each branch returns a payload that validates against the
-    corresponding `specification/v0.1.0/hooks/<hook>.json` schema.
-    """
+
+def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
     if event_name == "preToolUse":
         return {
             "tool": {"name": event.get("tool_name") or event.get("tool", "")},
@@ -162,37 +135,44 @@ def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
 
     if event_name == "beforeMCPExecution":
         return {
-            "tool": {
-                "name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
-                "provider": event.get("mcp_server", ""),
-            },
+            "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
+                     "provider": event.get("mcp_server", "")},
             "arguments": _wrap_arguments(event.get("tool_input") or event.get("arguments") or {}),
         }
 
     if event_name in ("postToolUse", "postToolUseFailure"):
-        exit_status = "failure" if event_name == "postToolUseFailure" else "success"
-        return {
+        payload = {
             "tool": {"name": event.get("tool_name") or event.get("tool", "")},
-            "exit_status": exit_status,
+            "exit_status": "failure" if event_name == "postToolUseFailure" else "success",
             "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
         }
+        ref = _tool_use_request_id(event.get("tool_call_id") or event.get("tool_use_id"))
+        if ref:
+            payload["request_id_ref"] = ref
+        return payload
 
     if event_name == "afterShellExecution":
-        return {
+        payload = {
             "tool": {"name": "Shell"},
             "exit_status": "failure" if event.get("exit_code", 0) else "success",
             "outputs": _outputs_list(event.get("output") or event.get("result")),
         }
+        ref = _tool_use_request_id(event.get("execution_id"))
+        if ref:
+            payload["request_id_ref"] = ref
+        return payload
 
     if event_name == "afterMCPExecution":
-        return {
-            "tool": {
-                "name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
-                "provider": event.get("mcp_server", ""),
-            },
+        payload = {
+            "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
+                     "provider": event.get("mcp_server", "")},
             "exit_status": "success",
             "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
         }
+        ref = _tool_use_request_id(event.get("call_id"))
+        if ref:
+            payload["request_id_ref"] = ref
+        return payload
 
     if event_name in ("afterFileEdit", "afterTabFileEdit"):
         return {
@@ -202,69 +182,56 @@ def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
         }
 
     if event_name == "beforeSubmitPrompt":
-        # user-message.json: content array of {type, value, provenance?}
-        return {
-            "content": [
-                {"type": "text", "value": event.get("prompt") or event.get("user_message", "")}
-            ],
-        }
+        return {"content": [{"type": "text",
+                             "value": event.get("prompt") or event.get("user_message", "")}]}
 
     if event_name in ("afterAgentResponse", "afterAgentThought"):
-        return {
-            "content": [
-                {"type": "text", "value": event.get("response") or event.get("thought", "")}
-            ],
-        }
+        return {"content": [{"type": "text",
+                             "value": event.get("response") or event.get("thought", "")}]}
 
     if event_name == "sessionStart":
         out: dict[str, Any] = {}
         if event.get("workspace_path") or event.get("cwd"):
-            out["platform_context"] = {
-                "workspace_path": event.get("workspace_path") or event.get("cwd")
-            }
+            out["platform_context"] = {"workspace_path": event.get("workspace_path") or event.get("cwd")}
         return out
 
     if event_name in ("sessionEnd", "stop"):
-        # session-end.json: reason enum
         raw = (event.get("reason") or "").lower()
         return {"reason": raw if raw in {"completed", "cancelled", "error", "timeout", "abandoned"} else "completed"}
 
     if event_name == "subagentStart":
-        # subagent-start.json requires subagent_session_id, parent_session_id,
-        # parent_step_id, intent_derivation. Cursor exposes subagent_id, not
-        # all of these — emit a degraded but schema-valid payload using uuid5
-        # for the synthetic IDs the framework doesn't provide.
+        # SYNTHETIC: Cursor does not expose these required ACS fields. The
+        # payload satisfies the schema using deterministic uuid5 derivations
+        # but does not carry real subagent-boundary semantics. Documented
+        # in adapters/cursor/README.md "Per-hook honesty table".
         sub_raw = event.get("subagent_id", "")
         parent_raw = event.get("parent_session_id") or _session_id(event) or "unknown-parent"
+        parent_session = parent_raw if _looks_like_uuid(parent_raw) else str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"cursor-parent:{parent_raw}"))
         return {
-            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor-subagent:{sub_raw or uuid.uuid4()}")),
-            "parent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor-parent:{parent_raw}")) if not _looks_like_uuid(parent_raw) else parent_raw,
+            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                  f"cursor-subagent:{sub_raw or 'unknown'}")),
+            "parent_session_id": parent_session,
             "parent_step_id": str(uuid.uuid4()),
             "intent_derivation": "derived_from_parent",
-            "subagent_descriptor": {
-                "agent_id": sub_raw,
-                "agent_name": event.get("subagent_type", ""),
-            } if sub_raw else {},
+            "subagent_descriptor": ({"agent_id": sub_raw, "agent_name": event.get("subagent_type", "")}
+                                    if sub_raw else {}),
         }
 
     if event_name == "subagentStop":
-        # subagent-stop.json requires subagent_session_id, outcome, final_chain_hash.
+        # SYNTHETIC: final_chain_hash is fabricated; Cursor does not expose one.
         sub_raw = event.get("subagent_id", "")
-        # Synthetic final_chain_hash because Cursor doesn't expose one — it's
-        # a sha256 of (subagent_id || timestamp) so it satisfies the 64-hex
-        # pattern. Real deployments compute this from the actual ContextEntry chain.
-        synthetic_hash = hashlib.sha256(f"cursor:{sub_raw}:{_iso8601_now()}".encode()).hexdigest()
+        synthetic_hash = hashlib.sha256(f"cursor:{sub_raw}:{iso8601_now()}".encode()).hexdigest()
         return {
-            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor-subagent:{sub_raw or uuid.uuid4()}")),
+            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                  f"cursor-subagent:{sub_raw or 'unknown'}")),
             "outcome": (event.get("outcome") or "completed"),
             "final_chain_hash": synthetic_hash,
         }
 
     if event_name == "preCompact":
-        # pre-compact.json requires entries_to_compact (min 1), triggered_by.
-        # Cursor's preCompact does not expose step_ids; emit a single
-        # placeholder entry so the payload validates and the Guardian sees
-        # the compaction is happening.
+        # SYNTHETIC: entries_to_compact is a placeholder (Cursor does not
+        # expose the step_ids being compacted).
         return {
             "entries_to_compact": [event.get("session_id") or "unknown"],
             "triggered_by": (event.get("trigger") or "framework_initiated"),
@@ -299,49 +266,59 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
     if event.get("cwd") or event.get("workspace_path"):
         metadata["workspace_path"] = event.get("cwd") or event.get("workspace_path")
 
-    return {
+    if method == "steps/toolCallRequest":
+        ref = _tool_use_request_id(event.get("tool_call_id") or event.get("tool_use_id")
+                                   or event.get("execution_id"))
+        request_id = ref or str(uuid.uuid4())
+    else:
+        request_id = str(uuid.uuid4())
+
+    envelope = {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4()),
         "method": method,
         "params": {
             "acs_version": ACS_VERSION,
-            "request_id": str(uuid.uuid4()),
-            "timestamp": _iso8601_now(),
+            "request_id": request_id,
+            "timestamp": iso8601_now(),
             "metadata": metadata,
             "payload": build_payload(event_name, event),
         },
     }
+    sign_envelope(envelope, session_id=session_id)
+    return envelope
+
+
+def _maybe_handshake(event: dict[str, Any]) -> None:
+    if not HANDSHAKE_ENABLED:
+        return
+    sid = _session_id(event)
+    if not sid:
+        return
+    do_handshake(
+        guardian_url=GUARDIAN_URL,
+        session_id=sid,
+        agent_id=_agent_id(event),
+        platform="cursor",
+        methods_implemented=list(HOOK_MAP.values()),
+    )
 
 
 def call_guardian(request: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(request).encode("utf-8")
     req = urllib.request.Request(
-        GUARDIAN_URL,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        GUARDIAN_URL, data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(req, timeout=5.0) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-PERMISSION_MAP: dict[str, str] = {
-    "allow": "allow",
-    "deny": "deny",
-    "ask": "ask",
-    "defer": "ask",  # Cursor has no native defer; closest equivalent is ask
-}
-
+PERMISSION_MAP: dict[str, str] = {"allow": "allow", "deny": "deny", "ask": "ask", "defer": "ask"}
 KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
 
 
 def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[str, Any]:
-    """Translate an ACS decision envelope to Cursor's expected output.
-
-    Unknown / missing decisions respect ACS_DEFAULT_DENY: on True, the
-    adapter emits a deny in the event's native shape rather than silently
-    proceeding.
-    """
     result = acs_response.get("result", {})
     decision = (result.get("decision") or "").lower()
     reasoning = result.get("reasoning", "")
@@ -370,11 +347,9 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
                 if reasoning:
                     out["user_message"] = reasoning
                 return out
-            return {
-                "permission": "deny",
-                "user_message": f"MODIFY substituted to DENY: {reasoning}",
-                "agent_message": f"MODIFY substituted to DENY: {reasoning}",
-            }
+            return {"permission": "deny",
+                    "user_message": f"MODIFY substituted to DENY: {reasoning}",
+                    "agent_message": f"MODIFY substituted to DENY: {reasoning}"}
         return {}
 
     if event_name in POST_TOOL_EVENTS:
@@ -394,10 +369,8 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
         return {}
 
     if event_name == "beforeSubmitPrompt":
-        return {
-            "__exit_code": 2 if decision == "deny" else 0,
-            "_reasoning": reasoning if decision == "deny" else None,
-        }
+        return {"__exit_code": 2 if decision == "deny" else 0,
+                "_reasoning": reasoning if decision == "deny" else None}
 
     return {}
 
@@ -420,19 +393,29 @@ def main() -> int:
     if event_name not in HOOK_MAP:
         return 0
 
+    _maybe_handshake(event)
+
+    request = None
     try:
         request = build_request(event_name, event)
         if not request:
             sys.stderr.write(f"acs-adapter: could not build request for {event_name}\n")
-            return _fail(event_name)
+            return _fail(event_name, _session_id(event))
         response = call_guardian(request)
+
+        if not verify_signature(response, session_id=_session_id(event)):
+            sys.stderr.write("acs-adapter: response signature invalid\n")
+            return _fail(event_name, _session_id(event))
+
         out = translate_response(response, event_name)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         sys.stderr.write(f"acs-adapter: Guardian unreachable: {e}\n")
-        return _fail(event_name)
+        return _fail(event_name, _session_id(event),
+                     request_id=(request or {}).get("params", {}).get("request_id"),
+                     method=(request or {}).get("method"))
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"acs-adapter: adapter error: {e}\n")
-        return _fail(event_name)
+        return _fail(event_name, _session_id(event))
 
     if event_name == "beforeSubmitPrompt":
         exit_code = out.pop("__exit_code", 0)
@@ -447,20 +430,26 @@ def main() -> int:
     return 0
 
 
-def _fail(event_name: str = "") -> int:
-    if not DEFAULT_DENY:
+def _fail(event_name: str = "", session_id: str | None = None, **audit_extras) -> int:
+    if DEFAULT_DENY:
+        msg = "ACS adapter: decision-failure (default-deny)"
+        if event_name in PERMISSION_EVENTS:
+            json.dump({"permission": "deny", "user_message": msg, "agent_message": msg}, sys.stdout)
+            sys.stdout.write("\n")
+            audit_event("decision_failure_fail_closed",
+                        event=event_name, session_id=session_id, **audit_extras)
+            return 0
+        if event_name == "beforeSubmitPrompt":
+            sys.stderr.write("acs-adapter: prompt blocked (decision-failure)\n")
+            audit_event("decision_failure_fail_closed",
+                        event=event_name, session_id=session_id, **audit_extras)
+            return 2
+        audit_event("decision_failure_fail_closed",
+                    event=event_name, session_id=session_id, **audit_extras)
         return 0
-    if event_name in PERMISSION_EVENTS:
-        json.dump(
-            {"permission": "deny", "user_message": "ACS adapter: Guardian unreachable",
-             "agent_message": "ACS adapter: Guardian unreachable"},
-            sys.stdout,
-        )
-        sys.stdout.write("\n")
-        return 0
-    if event_name == "beforeSubmitPrompt":
-        sys.stderr.write("acs-adapter: prompt blocked (Guardian unreachable)\n")
-        return 2
+
+    audit_event("fail_open_bypass",
+                event=event_name, session_id=session_id, **audit_extras)
     return 0
 
 

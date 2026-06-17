@@ -75,14 +75,15 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
 | ACS-Core item | Status |
 |---|---|
-| Handshake | ✗ not implemented (production wrapper performs `handshake/hello`) |
-| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`test_envelope_schema.py`) |
+| Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. Disable with `ACS_HANDSHAKE=0`. |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`test_envelope_schema.py`); format checking enforces `uuid` and `date-time` |
 | Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd` |
 | Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on all hooks; MODIFY partial (`PreToolUse` with `parameter_overrides` only) |
-| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts, not only on transport errors |
-| SessionContext | session_id propagated; Guardian maintains chain_hash |
-| Baseline integrity (HMAC-SHA256 signature on envelope) | ✗ not implemented — `conformance.md:28` and `:67` make this a Core MUST that transport security does not satisfy. Tracked. |
-| Replay-prevention nonce | ✗ `nonce` field is optional in the envelope; not yet emitted |
-| Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; framework cannot run the tool until the adapter exits |
-| Liveness `system/ping` | ✗ not implemented (SHOULD under slim-Core) |
-| Wrapped MCP | ✗ not implemented (Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path) |
+| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts (when `ACS_DEFAULT_DENY=1`); spec-default fail-open path emits audit event |
+| SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`tests/test_spec_compliance.py`) |
+| Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3 |
+| Baseline integrity (HMAC-SHA256 signature) | ✓ HKDF-derived per-session key signs every request and response when `ACS_HMAC_SECRET` is set; Guardian rejects unsigned/tampered with SIGNATURE_INVALID -32004 |
+| Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; spec-default fail-open posture emits structured `ACS_AUDIT` event on every bypass |
+| Liveness `system/ping` | ✓ Guardian implements always-allow ping that bypasses chain/replay/signature checks per §13 |
+| `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1 |
+| Wrapped MCP `protocols/MCP/*` | ✗ not implemented; Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path |

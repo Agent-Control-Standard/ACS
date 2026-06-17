@@ -49,10 +49,22 @@ import datetime
 import hashlib
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any, Optional
+
+# Bootstrap shared helpers from sibling adapters/_common/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
+from acs_common import (  # noqa: E402
+    audit_event,
+    do_handshake,
+    iso8601_now as _common_iso8601_now,
+    sign_envelope,
+    verify_signature,
+)
 
 try:
     from nat.middleware.function_middleware import FunctionMiddleware
@@ -113,8 +125,8 @@ if _NAT_AVAILABLE:
             description="ACS Guardian endpoint to POST requests to.",
         )
         default_deny: bool = Field(
-            default=True,
-            description="Block the call when the Guardian is unreachable, returns malformed responses, or returns an unknown disposition.",
+            default=False,
+            description="If True, block the call when the Guardian is unreachable, returns malformed responses, or returns an unknown disposition. Default False matches the ACS spec default (§6.4 fail-open with audit event); set True for deployments that prefer fail-closed availability tradeoff.",
         )
         session_id: Optional[str] = Field(
             default=None,
@@ -132,11 +144,7 @@ if _NAT_AVAILABLE:
 
 
 def _iso8601_now() -> str:
-    return (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    return _common_iso8601_now()
 
 
 def _coerce_uuid(raw: str | None) -> str:
@@ -172,6 +180,34 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         )
         target = getattr(config, "target_function_or_group", None) or "nat"
         self._agent_id = os.environ.get("ACS_AGENT_ID") or f"nat:{hashlib.sha256(target.encode()).hexdigest()[:8]}"
+        self._handshake_done = False
+
+    def _ensure_handshake(self) -> None:
+        if self._handshake_done or os.environ.get("ACS_HANDSHAKE", "1") != "1":
+            return
+        do_handshake(
+            guardian_url=self._config.guardian_url,
+            session_id=self._session_id,
+            agent_id=self._agent_id,
+            platform="nat",
+            methods_implemented=["steps/toolCallRequest", "steps/toolCallResult"],
+        )
+        self._handshake_done = True
+
+    def _correlation_request_id(self, context) -> str:
+        """Deterministic UUID5 per (session, function-name, in-flight invocation
+        token) so the toolCallResult can populate request_id_ref pointing at
+        the toolCallRequest that triggered it."""
+        # NAT 1.7.0 doesn't expose an invocation token; derive one from
+        # (session, function, modified_kwargs hash). The same value flows
+        # through pre_invoke and post_invoke of one wrap.
+        fname = getattr(context.function_context, "name", "")
+        kwargs_bytes = json.dumps(
+            dict(getattr(context, "modified_kwargs", {}) or {}),
+            sort_keys=True, default=str,
+        ).encode()
+        key = f"{self._session_id}|{fname}|{hashlib.sha256(kwargs_bytes).hexdigest()[:16]}"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
     @property
     def enabled(self) -> bool:
@@ -179,21 +215,50 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
 
     async def pre_invoke(self, context):
         """Gate the function call. Block via raising or InvocationAction.SKIP; modify args in place."""
+        self._ensure_handshake()
+        correlation_id = self._correlation_request_id(context)
         try:
             request = self._build_request(
                 method="steps/toolCallRequest",
                 tool_name=context.function_context.name,
                 tool_arguments=dict(context.modified_kwargs or {}),
+                request_id=correlation_id,
             )
             response = self._call_guardian(request)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
             if self._config.default_deny:
+                audit_event("decision_failure_fail_closed",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest",
+                            error=str(e))
                 return self._block(context, f"Guardian unreachable: {e}")
+            audit_event("fail_open_bypass",
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest",
+                        error=str(e))
             return None
         except Exception as e:  # noqa: BLE001
-            # Build-request failures or anything else: same fail posture as transport errors.
             if self._config.default_deny:
+                audit_event("decision_failure_fail_closed",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest",
+                            error=str(e))
                 return self._block(context, f"adapter error: {e}")
+            audit_event("fail_open_bypass",
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest",
+                        error=str(e))
+            return None
+
+        if not verify_signature(response, session_id=self._session_id):
+            if self._config.default_deny:
+                audit_event("response_signature_invalid",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest")
+                return self._block(context, "response signature invalid")
+            audit_event("fail_open_unverified_response",
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest")
             return None
 
         result = (response or {}).get("result", {})
@@ -233,17 +298,30 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
           output. This matches Specification §6.4's output-redaction gate.
         - unknown: respect default_deny — drop output if true.
         """
+        # request_id_ref points at the originating toolCallRequest so the
+        # Guardian can correlate result with request (tool-call-result.json:19-23).
+        correlation_id = self._correlation_request_id(context)
         try:
             request = self._build_request(
                 method="steps/toolCallResult",
                 tool_name=context.function_context.name,
                 tool_arguments=dict(context.modified_kwargs or {}),
                 result=context.output,
+                request_id_ref=correlation_id,
             )
             response = self._call_guardian(request)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-            return None  # post-hoc transport failure: best-effort
+            audit_event("post_invoke_unreachable",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult")
+            return None
         except Exception:  # noqa: BLE001
+            return None
+
+        if not verify_signature(response, session_id=self._session_id):
+            audit_event("post_invoke_signature_invalid",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult")
             return None
 
         result = (response or {}).get("result", {})
@@ -287,8 +365,10 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         tool_name: str,
         tool_arguments: dict,
         result: Any = None,
+        request_id: str | None = None,
+        request_id_ref: str | None = None,
     ) -> dict:
-        """Build an ACS request envelope matching request-envelope.json."""
+        """Build a signed ACS request envelope matching request-envelope.json."""
         metadata = {
             "agent_id": self._agent_id,
             "session_id": self._session_id,
@@ -300,7 +380,6 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 "arguments": _wrap_arguments(tool_arguments),
             }
         else:
-            # steps/toolCallResult — required tool, exit_status, outputs
             if result is None:
                 outputs: list[dict[str, Any]] = []
             elif isinstance(result, (str, int, float, bool, dict, list)):
@@ -312,19 +391,23 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 "exit_status": "success",
                 "outputs": outputs,
             }
+            if request_id_ref:
+                payload["request_id_ref"] = request_id_ref
 
-        return {
+        envelope = {
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
             "method": method,
             "params": {
                 "acs_version": ACS_VERSION,
-                "request_id": str(uuid.uuid4()),
+                "request_id": request_id or str(uuid.uuid4()),
                 "timestamp": _iso8601_now(),
                 "metadata": metadata,
                 "payload": payload,
             },
         }
+        sign_envelope(envelope, session_id=self._session_id)
+        return envelope
 
     def _call_guardian(self, request: dict) -> dict:
         body = json.dumps(request).encode("utf-8")
