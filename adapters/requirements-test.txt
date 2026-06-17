@@ -1,4 +1,6 @@
 # Test dependencies shared across all reference adapters.
-# Production adapter runtime needs only stdlib; tests need jsonschema for
-# canonical spec validation.
+# Production adapter runtime needs only stdlib + rfc8785 (for full JCS
+# canonicalization per RFC 8785). Tests additionally need jsonschema
+# for canonical spec validation.
 jsonschema>=4.20,<5
+rfc8785>=0.1,<1

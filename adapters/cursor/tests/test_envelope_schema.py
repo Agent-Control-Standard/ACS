@@ -130,10 +130,9 @@ HOOK_CASES = [
         "subagent_id": "sub-1",
         "subagent_type": "researcher",
     }),
-    ("subagentStop", "hooks/subagent-stop.json", {
-        "session_id": SESSION_UUID,
-        "subagent_id": "sub-1",
-    }),
+    # subagentStop intentionally NOT in HOOK_MAP — `final_chain_hash` is
+    # genuinely unknowable from Cursor (no chain on its side). Documented
+    # in the Cursor README per-hook honesty table.
     ("preCompact", "hooks/pre-compact.json", {
         "session_id": SESSION_UUID,
         "trigger": "size_threshold",

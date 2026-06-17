@@ -7,25 +7,23 @@ Lives in `adapters/_common/`. Each adapter prepends this directory to
 
 What's in here:
 
-- `jcs_canonicalize` — minimal RFC 8785 (JCS) canonicalization sufficient
-  for the JSON shapes ACS envelopes carry. Production deployments
-  needing full JCS (very small floats, Unicode normalization edges)
-  should drop in the `rfc8785` package; the entry-point signature is
-  the same.
-- `derive_session_key` — HKDF-SHA256 per-session key derivation from
-  shared input keying material (`ACS_HMAC_SECRET`) and `session_id`,
-  per Specification §10.
+- `jcs_canonicalize` — RFC 8785 (JCS) canonicalization. Uses the
+  `rfc8785` PyPI package when available (full compliance including
+  number edge cases); falls back to a sorted-keys + compact-separators
+  implementation otherwise, which is JCS-equivalent for all JSON
+  shapes ACS envelopes carry.
+- `derive_session_key` — HKDF-SHA256 per-session key derivation per §10.
 - `sign_envelope` / `verify_signature` — HMAC-SHA256 baseline signature
-  over the canonical input defined in §10: the JCS canonicalization of
-  the envelope with the `signature` field removed.
-- `iso8601_now` — RFC3339 UTC timestamp with millisecond precision.
-- `coerce_uuid` — stable UUID coercion (UUID passthrough; uuid5 for
-  non-UUID inputs).
-- `audit_event` — structured audit-event line emitter for fail-open
-  bypass recording (§6.4).
-- `do_handshake` — perform `handshake/hello` and cache result per
-  session in a process-local file (`~/.cache/acs-adapter-handshake/`).
-- `ping` — `system/ping` helper for adapters that want a liveness probe.
+  over JCS(envelope with signature field removed), per §10.
+- `load_hmac_secret` — read the HMAC secret from `ACS_HMAC_SECRET_FILE`
+  (preferred: file mode 0600) or `ACS_HMAC_SECRET` (env). File path
+  beats env var so secrets don't sit in `ps aux` output.
+- `iso8601_now` / `coerce_uuid` / `parse_iso8601` — time + ID helpers.
+- `audit_event` — structured `ACS_AUDIT` line for §6.4 fail-open bypass.
+- `do_handshake` / `ping` — protocol helpers (§4, §13).
+- `session_state` — per-session JSON file used by adapters to track
+  last_step_id, seen_step_ids, etc. across separate hook-process
+  invocations (shell-stdin adapters spawn one process per hook).
 """
 from __future__ import annotations
 
@@ -48,16 +46,27 @@ DEFAULT_SKEW_WINDOW_MS = 300_000
 
 # ----- Canonicalization -----
 
-def jcs_canonicalize(obj: Any) -> bytes:
-    """RFC 8785 (JSON Canonicalization Scheme) — sufficient for ACS envelopes.
+try:
+    import rfc8785 as _rfc8785  # type: ignore[import-not-found]
+    _HAVE_RFC8785 = True
+except ImportError:
+    _rfc8785 = None
+    _HAVE_RFC8785 = False
 
-    The full RFC covers number serialization edge cases (-0, subnormals,
-    very large integers) that ACS envelopes do not contain. For our
-    integer durations and string-only payload fields, json.dumps with
-    sort_keys and compact separators produces JCS-equivalent output.
-    Drop in the `rfc8785` package if your deployment carries arbitrary
-    JSON.
+
+def jcs_canonicalize(obj: Any) -> bytes:
+    """RFC 8785 (JSON Canonicalization Scheme).
+
+    Uses the `rfc8785` package when installed (full RFC 8785 compliance,
+    including float / -0 / subnormal handling and Unicode normalization).
+    Falls back to a sorted-keys + compact-separators implementation
+    when not, which is JCS-equivalent for all JSON shapes ACS envelopes
+    carry but does not handle every floating-point edge case.
+
+    Install rfc8785 for full compliance: pip install rfc8785
     """
+    if _HAVE_RFC8785:
+        return _rfc8785.dumps(obj)
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -80,11 +89,33 @@ def derive_session_key(input_key_material: bytes, session_id: str) -> bytes:
     return t  # one 32-byte block is enough for HMAC-SHA256
 
 
-def _signing_secret() -> bytes:
-    """Read ACS_HMAC_SECRET from env. Returns an empty bytes if unset
-    (caller decides what to do — typically skip signing for local dev)."""
-    s = os.environ.get("ACS_HMAC_SECRET", "")
-    return s.encode("utf-8") if s else b""
+def load_hmac_secret() -> bytes:
+    """Read the HMAC input keying material.
+
+    Resolution order (first hit wins):
+    1. `ACS_HMAC_SECRET_FILE` — path to a file containing the secret.
+       Preferred for production. Use `chmod 600` and own the file with
+       the same user the adapter/Guardian runs as. The file's full byte
+       content (stripped of trailing whitespace) is the secret.
+    2. `ACS_HMAC_SECRET` — env-var fallback. Quick for dev, less secure
+       (visible in `ps eauxw`, child-process envs, core dumps).
+    3. Empty bytes — caller decides whether that means dev-mode or fail.
+
+    Generate a secret: `openssl rand -hex 32 > /etc/acs/hmac.key`
+    """
+    path = os.environ.get("ACS_HMAC_SECRET_FILE", "").strip()
+    if path:
+        try:
+            with open(path, "rb") as f:
+                return f.read().rstrip(b"\r\n\t ")
+        except OSError:
+            return b""
+    env_val = os.environ.get("ACS_HMAC_SECRET", "")
+    return env_val.encode("utf-8") if env_val else b""
+
+
+# Back-compat alias for internal callers.
+_signing_secret = load_hmac_secret
 
 
 def sign_envelope(envelope: dict, *, key: bytes | None = None,
@@ -313,6 +344,68 @@ def ping(guardian_url: str, *, echo: str = "ping", timeout: float = 2.0) -> dict
             return json.loads(resp.read().decode("utf-8")).get("result")
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
         return None
+
+
+# ----- Per-session adapter state (cross-invocation) -----
+#
+# Shell-stdin adapters (claude-code, cursor) spawn one process per hook
+# event. To accumulate state across events in the same session (last
+# step_id, step_ids seen, subagent registry, etc.) the adapter persists
+# a small JSON file in the cache directory.
+
+_SESSION_STATE_DIR = Path(
+    os.environ.get(
+        "ACS_SESSION_STATE_DIR",
+        os.path.join(os.path.expanduser("~"), ".cache", "acs-adapter-session"),
+    )
+)
+
+
+def _session_state_path(session_id: str) -> Path:
+    key = hashlib.sha256(session_id.encode()).hexdigest()[:16]
+    return _SESSION_STATE_DIR / f"{key}.json"
+
+
+def load_session_state(session_id: str) -> dict:
+    """Return the session-state dict for `session_id`, or an empty dict."""
+    if not session_id:
+        return {}
+    path = _session_state_path(session_id)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_session_state(session_id: str, state: dict) -> None:
+    """Persist the session-state dict atomically. No-op on session_id empty."""
+    if not session_id:
+        return
+    try:
+        _SESSION_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _session_state_path(session_id)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def record_step(session_id: str, step_id: str) -> None:
+    """Append step_id to the session's seen-list and update last_step_id."""
+    if not session_id or not step_id:
+        return
+    st = load_session_state(session_id)
+    seen = st.setdefault("seen_step_ids", [])
+    if step_id not in seen:
+        seen.append(step_id)
+        # Bound the list so it doesn't grow unbounded across long sessions
+        if len(seen) > 1000:
+            del seen[: len(seen) - 1000]
+    st["last_step_id"] = step_id
+    save_session_state(session_id, st)
 
 
 # ----- Sys-path bootstrap for adapters in sibling directories -----

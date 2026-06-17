@@ -48,8 +48,9 @@ class CursorAdapter(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.port = _find_free_port()
+        env = os.environ.copy(); env["ACS_DEV_MODE"] = "1"; env.pop("ACS_HMAC_SECRET", None); env.pop("ACS_HMAC_SECRET_FILE", None)
         cls.guardian_proc = subprocess.Popen(
-            [sys.executable, str(GUARDIAN), "--port", str(cls.port)],
+            [sys.executable, str(GUARDIAN), "--port", str(cls.port)], env=env,
             stderr=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
         )

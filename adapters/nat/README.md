@@ -79,7 +79,7 @@ The adapter works across multiple NAT releases by feature-detecting the block me
 
 ## Conformance status
 
-**Important conformance posture**: this adapter is a **partial reference**, not a full ACS-Core deployment on its own. The NAT middleware boundary is the function call; session/turn/user-message hooks live above the middleware layer. A NAT deployment that uses ONLY this adapter does NOT satisfy the ACS-Core hook taxonomy minimum (`conformance.md:19` requires `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`). To be ACS-Core conformant, compose this with a NAT runtime middleware that emits the lifecycle hooks — or run NAT inside a larger harness (orchestrator, IDE plugin) whose adapter emits them.
+**Conformance posture**: the adapter now exposes ACS-Core's 6-hook minimum on its own by combining two NAT integration points: the `FunctionMiddleware` (for `toolCallRequest` / `toolCallResult`) and a lifecycle observer that subscribes to NAT's `IntermediateStepManager` for `WORKFLOW_START` / `WORKFLOW_END` events. Those events fire `sessionStart` + `userMessage` (on workflow start with input) and `agentResponse` + `sessionEnd` (on workflow end with output). The observer is auto-subscribed on the first `pre_invoke` call.
 
 Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
@@ -87,7 +87,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 |---|---|
 | Handshake (`handshake/hello`) | ✓ on first `pre_invoke` (cached per session) |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py`, runs without NAT) |
-| **Hook taxonomy minimum** | **✗ INCOMPLETE: only `steps/toolCallRequest` + `steps/toolCallResult`. Missing: sessionStart, userMessage/agentTrigger, agentResponse, sessionEnd. See note above.** |
+| Hook taxonomy minimum | ✓ all 6: `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. Lifecycle hooks come from the `IntermediateStepManager` subscription; function hooks from `FunctionMiddleware`. Verified in `tests/test_lifecycle.py`. |
 | Dispositions | ALLOW / DENY / MODIFY supported. ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). |
 | Unknown-disposition fail posture | ✓ |
 | Post-tool deny redaction | ✓ `post_invoke` clears `context.output` and sets `acs_post_invoke_redacted=True` per §6.4 output-redaction gate |

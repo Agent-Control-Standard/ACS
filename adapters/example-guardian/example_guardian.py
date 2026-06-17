@@ -27,10 +27,17 @@ Usage:
   python3 example_guardian.py [--port 8787]
 
 Environment variables:
-  ACS_HMAC_SECRET     Shared secret for HMAC signing. If set, the Guardian
-                      verifies every signed request and signs every response.
-                      Unset = signature-optional (matches adapters running
-                      with no secret; in production this is non-conformant).
+  ACS_HMAC_SECRET / ACS_HMAC_SECRET_FILE
+                      Shared secret for HMAC-SHA256 signing per §10. The
+                      Guardian verifies every signed request and signs
+                      every response. **The Guardian refuses to start
+                      unless one of these is set, or `ACS_DEV_MODE=1`.**
+                      File path is preferred for production (no exposure
+                      in `ps aux`); use `chmod 600`.
+                      Generate: `openssl rand -hex 32 > /etc/acs/hmac.key`
+  ACS_DEV_MODE        "1" allows starting without a signing secret. Local
+                      development only. ACS-Core baseline integrity (§10)
+                      is not satisfied in dev mode.
   ACS_SKEW_WINDOW_MS  Timestamp skew tolerance (default 300_000 = 5 min).
   ACS_ALLOW_SUBAGENT  "1" allows the Task tool. Default "0" gates it.
 """
@@ -56,6 +63,7 @@ from acs_common import (  # noqa: E402
     derive_session_key,
     iso8601_now,
     jcs_canonicalize,
+    load_hmac_secret,
     parse_iso8601,
     sign_envelope,
     verify_signature,
@@ -66,7 +74,15 @@ import datetime
 
 SKEW_WINDOW_MS = int(os.environ.get("ACS_SKEW_WINDOW_MS", str(DEFAULT_SKEW_WINDOW_MS)))
 ALLOW_SUBAGENT = os.environ.get("ACS_ALLOW_SUBAGENT", "0") == "1"
-HMAC_SECRET = os.environ.get("ACS_HMAC_SECRET", "").encode("utf-8")
+
+
+def _hmac_secret() -> bytes:
+    """Re-read on every call so operators can rotate the secret without
+    restarting the Guardian (rotate the file under `ACS_HMAC_SECRET_FILE`
+    or update `ACS_HMAC_SECRET` and the next signature check picks it up).
+    The handshake's advertised `signature_algorithms_supported` reflects
+    the current value each time a ClientHello arrives."""
+    return load_hmac_secret()
 
 
 # ----- Destructive-Bash regex set -----
@@ -157,8 +173,15 @@ def compute_entry_hash(entry: dict, previous_hash: str | None) -> str:
     return hashlib.sha256(content_bytes + prev_bytes).hexdigest()
 
 
-def append_to_chain(session_id: str, method: str, request_id: str, payload_canonical: str) -> str:
-    """Append a ContextEntry to the session's chain, return the new chain head."""
+def append_to_chain(session_id: str, method: str, request_id: str,
+                    payload_canonical: str, client_timestamp: str) -> str:
+    """Append a ContextEntry to the session's chain, return the new chain head.
+
+    Uses the client's request timestamp (already skew-validated upstream)
+    so an external observer that records the request and the published
+    chain_hash can fully recompute the entry and verify the hash. If the
+    Guardian stamped its own time, the entry would be irreproducible.
+    """
     st = STATE.get(session_id)
     with st.lock:
         entry = {
@@ -166,7 +189,7 @@ def append_to_chain(session_id: str, method: str, request_id: str, payload_canon
             "step_id": request_id,
             "step_type": method,
             "request_hash": hashlib.sha256(payload_canonical.encode()).hexdigest(),
-            "timestamp": iso8601_now(),
+            "timestamp": client_timestamp or iso8601_now(),
         }
         if st.previous_hash is not None:
             entry["previous_hash"] = st.previous_hash
@@ -208,7 +231,7 @@ def check_skew(timestamp: str) -> None:
 
 
 def check_signature(envelope: dict, session_id: str) -> None:
-    if not HMAC_SECRET:
+    if not _hmac_secret():
         return  # local-dev mode
     if not verify_signature(envelope, session_id=session_id):
         raise GuardianError(-32004, "SIGNATURE_INVALID")
@@ -227,7 +250,7 @@ def evaluate_handshake(params: dict, request_id: str) -> dict:
         "negotiated_version": ACS_VERSION,
         "methods_evaluated": client_hello.get("methods_implemented") or [],
         "selected_transport": "http",
-        "signature_algorithms_supported": (["HMAC-SHA256"] if HMAC_SECRET else []),
+        "signature_algorithms_supported": (["HMAC-SHA256"] if _hmac_secret() else []),
         "timeout_config": {"default_ms": 5000},
         "skew_window_ms": SKEW_WINDOW_MS,
         "on_decision_failure": "proceed",  # spec default per §6.4
@@ -328,7 +351,7 @@ def handle_request(request: dict) -> dict:
             return {"jsonrpc": "2.0", "id": request_id,
                     "error": {"code": e.code, "message": e.message}}
         envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
-        if HMAC_SECRET:
+        if _hmac_secret():
             sign_envelope(envelope, session_id=session_id)
         return envelope
 
@@ -343,7 +366,7 @@ def handle_request(request: dict) -> dict:
 
     # Compute chain entry BEFORE evaluating, then include head in result.
     payload_canonical = jcs_canonicalize(params).decode("utf-8")
-    chain_hash = append_to_chain(session_id, method, acs_request_id, payload_canonical)
+    chain_hash = append_to_chain(session_id, method, acs_request_id, payload_canonical, timestamp)
 
     try:
         result = evaluate_step(method, params, acs_request_id, chain_hash)
@@ -352,7 +375,7 @@ def handle_request(request: dict) -> dict:
                 "error": {"code": e.code, "message": e.message}}
 
     envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if HMAC_SECRET:
+    if _hmac_secret():
         sign_envelope(envelope, session_id=session_id)
     return envelope
 
@@ -399,6 +422,27 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
+
+    # §10 baseline integrity: refuse to start without a signing secret
+    # unless the operator explicitly opted into dev mode.
+    if not load_hmac_secret() and os.environ.get("ACS_DEV_MODE", "0") != "1":
+        sys.stderr.write(
+            "[guardian] REFUSING TO START: no signing secret configured.\n"
+            "  Configure one of:\n"
+            "    ACS_HMAC_SECRET_FILE=/path/to/key   (preferred; chmod 600)\n"
+            "    ACS_HMAC_SECRET=<hex>               (env-var fallback)\n"
+            "  Generate a key:\n"
+            "    openssl rand -hex 32 > /etc/acs/hmac.key && chmod 600 /etc/acs/hmac.key\n"
+            "  For local development without a secret (NON-CONFORMANT per §10):\n"
+            "    ACS_DEV_MODE=1\n"
+        )
+        return 1
+
+    if not load_hmac_secret():
+        sys.stderr.write(
+            "[guardian] WARNING: running in ACS_DEV_MODE — envelope signing disabled.\n"
+            "  ACS-Core baseline integrity (§10) is NOT satisfied.\n"
+        )
 
     class ReusableServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True

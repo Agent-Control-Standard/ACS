@@ -77,6 +77,20 @@ except ImportError:
     FunctionMiddlewareBaseConfig = object  # type: ignore[assignment, misc]
     _NAT_AVAILABLE = False
 
+# Lifecycle observer support: subscribes to NAT's IntermediateStepManager
+# to fire ACS sessionStart / userMessage / agentResponse / sessionEnd at
+# the workflow boundary. Without this, NAT alone only fires
+# toolCallRequest / toolCallResult and does not satisfy ACS-Core's
+# 6-hook taxonomy minimum (conformance.md:19).
+try:
+    from nat.data_models.intermediate_step import IntermediateStepType  # type: ignore[import-not-found]
+    from nat.builder.context import Context as _NATContext  # type: ignore[import-not-found]
+    _HAS_LIFECYCLE = True
+except ImportError:
+    IntermediateStepType = None  # type: ignore[assignment]
+    _NATContext = None  # type: ignore[assignment]
+    _HAS_LIFECYCLE = False
+
 # InvocationAction.SKIP is on the dev branch; not in NAT 1.7.0 release.
 try:
     from nat.middleware.middleware import InvocationAction  # type: ignore[attr-defined]
@@ -163,6 +177,32 @@ def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
     return {k: {"value": v} for k, v in (raw or {}).items()}
 
 
+def _stringify_step_data(data: Any) -> str:
+    """Best-effort extraction of human-readable content from a NAT
+    IntermediateStepPayload.data. The shape varies per event_type and per
+    framework; we pull out a string when possible and json-dump otherwise.
+    Returns empty string when there is genuinely nothing to forward."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    # NAT often wraps inputs/outputs in StreamEventData with .input/.output fields
+    for attr in ("input", "output", "chunk", "value", "content"):
+        v = getattr(data, attr, None)
+        if isinstance(v, str) and v:
+            return v
+        if v is not None and not isinstance(v, (dict, list, type(None))):
+            s = str(v)
+            if s and s != "None":
+                return s
+    if isinstance(data, (dict, list)):
+        try:
+            return json.dumps(data, default=str)
+        except (TypeError, ValueError):
+            return str(data)
+    return str(data)
+
+
 KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
 
 
@@ -181,18 +221,119 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         target = getattr(config, "target_function_or_group", None) or "nat"
         self._agent_id = os.environ.get("ACS_AGENT_ID") or f"nat:{hashlib.sha256(target.encode()).hexdigest()[:8]}"
         self._handshake_done = False
+        self._lifecycle_subscribed = False
+        self._lifecycle_subscription = None
 
     def _ensure_handshake(self) -> None:
         if self._handshake_done or os.environ.get("ACS_HANDSHAKE", "1") != "1":
             return
+        methods = ["steps/toolCallRequest", "steps/toolCallResult"]
+        if _HAS_LIFECYCLE:
+            methods += [
+                "steps/sessionStart", "steps/userMessage",
+                "steps/agentResponse", "steps/sessionEnd",
+            ]
         do_handshake(
             guardian_url=self._config.guardian_url,
             session_id=self._session_id,
             agent_id=self._agent_id,
             platform="nat",
-            methods_implemented=["steps/toolCallRequest", "steps/toolCallResult"],
+            methods_implemented=methods,
         )
         self._handshake_done = True
+
+    def _ensure_lifecycle_subscribed(self) -> None:
+        """Subscribe to NAT's IntermediateStepManager so workflow-boundary
+        events fire ACS sessionStart / userMessage / agentResponse / sessionEnd.
+
+        Idempotent within a single ACSMiddleware instance: only subscribes
+        once. The subscription is held in self._lifecycle_subscription to
+        keep it alive.
+        """
+        if self._lifecycle_subscribed or not _HAS_LIFECYCLE:
+            return
+        try:
+            ctx = _NATContext.get()
+            mgr = ctx.intermediate_step_manager
+        except Exception:  # noqa: BLE001
+            # No active Context (e.g., direct middleware invocation in tests
+            # without a full workflow). Silent skip — function-call hooks
+            # still fire via FunctionMiddleware.
+            return
+        try:
+            self._lifecycle_subscription = mgr.subscribe(
+                on_next=self._on_intermediate_step,
+                on_error=lambda e: audit_event(
+                    "lifecycle_subscription_error",
+                    session_id=self._session_id, error=str(e)),
+            )
+            self._lifecycle_subscribed = True
+        except Exception as e:  # noqa: BLE001
+            audit_event("lifecycle_subscribe_failed",
+                        session_id=self._session_id, error=str(e))
+
+    def _on_intermediate_step(self, step) -> None:
+        """Subscriber callback. Translates NAT's IntermediateStepType events
+        at the workflow boundary into ACS hooks. Function-level events
+        (FUNCTION_START/END, TOOL_START/END, LLM_START/END) are ignored
+        here because they're already covered by FunctionMiddleware's
+        pre_invoke/post_invoke."""
+        try:
+            payload = step.payload
+            event_type = payload.event_type
+        except AttributeError:
+            return
+
+        if event_type == IntermediateStepType.WORKFLOW_START:
+            # Workflow input becomes both sessionStart (boundary marker)
+            # and userMessage (the input itself).
+            self._emit_lifecycle_hook(
+                "steps/sessionStart",
+                payload={"platform_context": {"workflow_name": payload.name or ""}})
+            input_text = _stringify_step_data(payload.data)
+            if input_text:
+                self._emit_lifecycle_hook(
+                    "steps/userMessage",
+                    payload={"content": [{"type": "text", "value": input_text}]})
+        elif event_type == IntermediateStepType.WORKFLOW_END:
+            # Workflow output becomes agentResponse; sessionEnd closes the boundary.
+            output_text = _stringify_step_data(payload.data)
+            if output_text:
+                self._emit_lifecycle_hook(
+                    "steps/agentResponse",
+                    payload={"content": [{"type": "text", "value": output_text}]})
+            self._emit_lifecycle_hook(
+                "steps/sessionEnd",
+                payload={"reason": "completed"})
+
+    def _emit_lifecycle_hook(self, method: str, payload: dict) -> None:
+        """Build, sign, and fire-and-forget POST a lifecycle hook.
+
+        Errors are audited but do not interrupt the workflow — lifecycle
+        emission is best-effort observability, not the enforcement path
+        (that's pre_invoke / post_invoke)."""
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": {
+                "acs_version": ACS_VERSION,
+                "request_id": str(uuid.uuid4()),
+                "timestamp": _iso8601_now(),
+                "metadata": {
+                    "agent_id": self._agent_id,
+                    "session_id": self._session_id,
+                    "platform": "nat",
+                },
+                "payload": payload,
+            },
+        }
+        sign_envelope(request, session_id=self._session_id)
+        try:
+            self._call_guardian(request)
+        except Exception as e:  # noqa: BLE001
+            audit_event("lifecycle_hook_failed",
+                        method=method, session_id=self._session_id, error=str(e))
 
     def _correlation_request_id(self, context) -> str:
         """Deterministic UUID5 per (session, function-name, in-flight invocation
@@ -216,6 +357,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
     async def pre_invoke(self, context):
         """Gate the function call. Block via raising or InvocationAction.SKIP; modify args in place."""
         self._ensure_handshake()
+        self._ensure_lifecycle_subscribed()
         correlation_id = self._correlation_request_id(context)
         try:
             request = self._build_request(

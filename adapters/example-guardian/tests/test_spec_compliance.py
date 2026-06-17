@@ -130,6 +130,12 @@ class GuardianHarness(unittest.TestCase):
         env = os.environ.copy()
         if cls.HMAC_SECRET is not None:
             env["ACS_HMAC_SECRET"] = cls.HMAC_SECRET
+            env.pop("ACS_DEV_MODE", None)
+        else:
+            # No-secret tests opt into dev mode to keep the Guardian startable.
+            env["ACS_DEV_MODE"] = "1"
+            env.pop("ACS_HMAC_SECRET", None)
+            env.pop("ACS_HMAC_SECRET_FILE", None)
         cls.guardian_proc = subprocess.Popen(
             [sys.executable, str(GUARDIAN), "--port", str(cls.port)],
             env=env,

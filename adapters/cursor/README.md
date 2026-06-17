@@ -139,12 +139,12 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
 ### Per-hook honesty table
 
-Cursor does not expose every field the ACS v0.1.0 hook schemas require. Where the schema is strict and Cursor is silent, the adapter emits a deterministic synthetic value to keep the payload schema-valid. **Synthetic values satisfy the schema but do not carry the meaning the spec requires.** A Guardian seeing them gets a placeholder, not a real subagent boundary or compaction record. This is a Cursor schema gap that ACS cannot close on its side.
+Cursor does not expose every field the ACS v0.1.0 hook schemas require. Where the schema is strict and Cursor is silent, the adapter now populates fields from real session state where possible — and omits the hook entirely when the missing field can only be fabricated.
 
-| Cursor event → ACS hook | Real Cursor data | Synthetic in payload | Semantic gap |
+| Cursor event → ACS hook | What we fill from real data | What's hardcoded | What's omitted |
 |---|---|---|---|
-| `subagentStart` → `steps/subagentStart` | `subagent_id`, `subagent_type` (optional) | `subagent_session_id` (uuid5 of `subagent_id`), `parent_session_id` (uuid5 of session), `parent_step_id` (uuid4), `intent_derivation` (always `derived_from_parent`) | Subagent IDs do not correspond to anything observable on the Cursor side; intent_derivation is a guess |
-| `subagentStop` → `steps/subagentStop` | `subagent_id`, optional `outcome` | `final_chain_hash` (`sha256(subagent_id || timestamp)`) | Hash is fabricated; does not commit to any real chain |
-| `preCompact` → `steps/preCompact` | `trigger` (optional) | `entries_to_compact` = `[session_id]` (single-element placeholder) | The actual step_ids being compacted are not available |
+| `subagentStart` → `steps/subagentStart` | `subagent_session_id` (deterministic uuid5 of `parent_session + subagent_id`); `parent_session_id` (the envelope's actual `session_id`); `parent_step_id` (last step_id the adapter has seen in this session, tracked in `~/.cache/acs-adapter-session/`); `subagent_descriptor.{agent_id,agent_name}` (from Cursor's `subagent_id` / `subagent_type`) | `intent_derivation = "derived_from_parent"` (defensible default for IDE-spawned subagents) | — |
+| `preCompact` → `steps/preCompact` | `entries_to_compact` (list of step_ids the adapter has observed in this session, snapshotted from session state); `triggered_by` (Cursor's `trigger` field) | `triggered_by = "framework_initiated"` only when Cursor omits `trigger` | — |
+| `subagentStop` → `steps/subagentStop` | — | — | **Not forwarded.** Required `final_chain_hash` is genuinely unknowable (Cursor maintains no chain). Better to omit than fabricate. |
 
-These hooks are emitted only when Cursor's `hooks.json` wires them to the adapter. Removing them from your `hooks.json` removes the synthetic emission entirely; the gap is in the data, not in the adapter's correctness.
+These hooks are emitted only when Cursor's `hooks.json` wires them to the adapter. Per-session state for `parent_step_id` / `entries_to_compact` requires the adapter to be wired to at least one earlier hook in the same session (typically `preToolUse`); the adapter records each step's `request_id` to the session-state file on every invocation.

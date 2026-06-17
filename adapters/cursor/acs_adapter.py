@@ -8,14 +8,22 @@ Cursor's expected output format.
 
 Wire-format ground truth: Agent-Control-Standard/ACS specification/v0.1.0/
 
-Note on payload completeness: Cursor does not expose all fields the
-ACS v0.1.0 hook schemas require for subagentStart, subagentStop, and
-preCompact. The adapter emits schema-valid payloads using deterministic
-uuid5/sha256 derivations for the missing required fields. These are
-syntactically valid but semantically synthetic — a Guardian seeing
-them gets a placeholder, not a real subagent or compaction record.
-This is a Cursor schema gap that ACS cannot close on its side. See
-the README for the full per-hook honesty table.
+Note on payload completeness: Cursor does not expose every field ACS
+v0.1.0 hook schemas require.
+
+  - `subagentStart` — three of four required fields (subagent_session_id,
+    parent_session_id, parent_step_id) are populated from real session
+    data via deterministic UUID5 and the adapter's session-state tracking
+    of the last step_id. The fourth, `intent_derivation`, is hardcoded to
+    `derived_from_parent` (the defensible default for IDE-spawned subagents).
+  - `preCompact` — both required fields are real: `entries_to_compact` is
+    the list of step_ids the adapter has observed in this session;
+    `triggered_by` comes from Cursor's `trigger` field.
+  - `subagentStop` — NOT forwarded. The required `final_chain_hash` is
+    genuinely unknowable (Cursor maintains no chain). Better to omit than
+    to fabricate.
+
+See the README per-hook honesty table for the full mapping.
 
 Usage in hooks.json:
   { "command": "python3 /path/to/acs_adapter.py preToolUse" }
@@ -48,6 +56,9 @@ from acs_common import (  # noqa: E402
     coerce_uuid,
     do_handshake,
     iso8601_now,
+    load_session_state,
+    record_step,
+    save_session_state,
     sign_envelope,
     verify_signature,
 )
@@ -58,6 +69,16 @@ DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "0") == "1"
 HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
 
 
+# Cursor hook event -> ACS step method.
+#
+# Intentionally OMITTED from this map (documented gap, not synthesis):
+#   subagentStop — `final_chain_hash` (64-hex SHA-256 of the subagent's
+#                  ContextEntry chain) is genuinely unknowable because
+#                  Cursor does not maintain a chain on its side. Emitting
+#                  a fabricated hash would be schema-valid but
+#                  semantically meaningless. Cursor's subagentStop event
+#                  is therefore not forwarded. The Cursor README per-hook
+#                  honesty table documents the gap.
 HOOK_MAP: dict[str, str] = {
     "sessionStart": "steps/sessionStart",
     "sessionEnd": "steps/sessionEnd",
@@ -66,7 +87,6 @@ HOOK_MAP: dict[str, str] = {
     "postToolUse": "steps/toolCallResult",
     "postToolUseFailure": "steps/toolCallResult",
     "subagentStart": "steps/subagentStart",
-    "subagentStop": "steps/subagentStop",
     "beforeShellExecution": "steps/toolCallRequest",
     "afterShellExecution": "steps/toolCallResult",
     "beforeMCPExecution": "steps/toolCallRequest",
@@ -200,40 +220,51 @@ def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
         return {"reason": raw if raw in {"completed", "cancelled", "error", "timeout", "abandoned"} else "completed"}
 
     if event_name == "subagentStart":
-        # SYNTHETIC: Cursor does not expose these required ACS fields. The
-        # payload satisfies the schema using deterministic uuid5 derivations
-        # but does not carry real subagent-boundary semantics. Documented
-        # in adapters/cursor/README.md "Per-hook honesty table".
+        # All four schema-required fields, populated from real session data
+        # where possible. See Cursor README "Per-hook honesty table".
         sub_raw = event.get("subagent_id", "")
-        parent_raw = event.get("parent_session_id") or _session_id(event) or "unknown-parent"
-        parent_session = parent_raw if _looks_like_uuid(parent_raw) else str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"cursor-parent:{parent_raw}"))
-        return {
-            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                  f"cursor-subagent:{sub_raw or 'unknown'}")),
-            "parent_session_id": parent_session,
-            "parent_step_id": str(uuid.uuid4()),
+        sid = _session_id(event)
+        st = load_session_state(sid)
+        # parent_step_id: last step_id seen in this session (adapter tracks
+        # this via record_step on every step the framework fires). Falls
+        # back to the session_id if no prior step (first event of session).
+        parent_step_id = st.get("last_step_id") or sid
+        payload = {
+            # Deterministic UUID5 keyed by parent session + subagent_id so
+            # subagentStart and any later cross-reference produce the same UUID.
+            "subagent_session_id": str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"cursor-subagent:{sid}:{sub_raw or 'unknown'}")),
+            "parent_session_id": sid,  # REAL — envelope's own session_id is parent
+            "parent_step_id": parent_step_id,  # REAL when adapter has seen a prior step
+            # Cursor IDE subagents are dispatched by the parent agent
+            # (Composer/Agent panel routing), inheriting the parent's
+            # context. derived_from_parent is the defensible default.
             "intent_derivation": "derived_from_parent",
-            "subagent_descriptor": ({"agent_id": sub_raw, "agent_name": event.get("subagent_type", "")}
-                                    if sub_raw else {}),
         }
-
-    if event_name == "subagentStop":
-        # SYNTHETIC: final_chain_hash is fabricated; Cursor does not expose one.
-        sub_raw = event.get("subagent_id", "")
-        synthetic_hash = hashlib.sha256(f"cursor:{sub_raw}:{iso8601_now()}".encode()).hexdigest()
-        return {
-            "subagent_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                  f"cursor-subagent:{sub_raw or 'unknown'}")),
-            "outcome": (event.get("outcome") or "completed"),
-            "final_chain_hash": synthetic_hash,
-        }
+        if sub_raw:
+            payload["subagent_descriptor"] = {
+                "agent_id": sub_raw,
+                "agent_name": event.get("subagent_type", ""),
+            }
+        return payload
 
     if event_name == "preCompact":
-        # SYNTHETIC: entries_to_compact is a placeholder (Cursor does not
-        # expose the step_ids being compacted).
+        # entries_to_compact: real step_ids the adapter has seen in this
+        # session, snapshotted now. Cursor does not tell us which specific
+        # entries it intends to compact, but the entries actually IN the
+        # session are an honest superset (compaction always operates on
+        # something already observed). triggered_by uses Cursor's
+        # `trigger` field when provided; defaults to framework_initiated.
+        sid = _session_id(event)
+        st = load_session_state(sid)
+        seen = list(st.get("seen_step_ids") or [])
+        if not seen:
+            # No prior steps recorded — the adapter was wired without
+            # preceding hooks. Fall back to the session_id as a single
+            # placeholder entry, documented in the honesty table.
+            seen = [sid]
         return {
-            "entries_to_compact": [event.get("session_id") or "unknown"],
+            "entries_to_compact": seen,
             "triggered_by": (event.get("trigger") or "framework_initiated"),
         }
 
@@ -363,10 +394,9 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
             return {"additional_context": reasoning}
         return {}
 
-    if event_name == "subagentStop":
-        if decision == "deny":
-            return {"followup_message": f"Subagent denied at stop: {reasoning}"}
-        return {}
+    # subagentStop is not in HOOK_MAP — see comment on HOOK_MAP. The
+    # framework still fires it; the adapter sees event_name == "subagentStop"
+    # at main() and exits 0 without sending anything.
 
     if event_name == "beforeSubmitPrompt":
         return {"__exit_code": 2 if decision == "deny" else 0,
@@ -401,6 +431,17 @@ def main() -> int:
         if not request:
             sys.stderr.write(f"acs-adapter: could not build request for {event_name}\n")
             return _fail(event_name, _session_id(event))
+        # Track this step in session state so subsequent subagentStart /
+        # preCompact events can cite a real parent_step_id / entries_to_compact.
+        # Done before call_guardian so even a failed Guardian call leaves
+        # the step recorded for audit.
+        try:
+            sid_for_state = _session_id(event)
+            rid_for_state = request.get("params", {}).get("request_id")
+            if sid_for_state and rid_for_state:
+                record_step(sid_for_state, rid_for_state)
+        except Exception:  # noqa: BLE001
+            pass
         response = call_guardian(request)
 
         if not verify_signature(response, session_id=_session_id(event)):
