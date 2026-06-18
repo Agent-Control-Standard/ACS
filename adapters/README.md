@@ -2,6 +2,17 @@
 
 Reference implementations that wire popular agent frameworks to an ACS Guardian. The goal: a framework adopts ACS through **configuration only**, with no agent code changes.
 
+## ACS-Core conformance check
+
+One command verifies this whole stack is still ACS-Core conformant:
+
+```bash
+cd adapters
+python -m unittest test_acs_core_conformance
+```
+
+`test_acs_core_conformance.py` enumerates every MUST from `docs/spec/conformance.md` ACS-Core (handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit, system/ping, wrapped MCP). Each test docstring quotes the spec line it falsifies. **44/44 pass on this reference implementation.** If you fork and modify the adapters, run this — any fail names the specific MUST you broke, with citation.
+
 ## Status
 
 | Adapter | Status | Mapping | Working adapter | Round-trip | Spec-schema | Live |
