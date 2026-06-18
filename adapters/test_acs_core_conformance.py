@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import hmac as _hmac
+import http.server
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -311,6 +313,16 @@ class Core02_EnvelopeShape(CoreHarness):
             f"Conformant envelope FAILS request-envelope.json validation:\n  - "
             + "\n  - ".join(errors))
 
+    def test_contradiction_validator_actually_works(self) -> None:
+        """Falsifier check: a deliberately broken envelope MUST be
+        rejected. Without this, a no-op validator would pass every
+        positive-case test."""
+        broken = {"jsonrpc": "2.0"}  # missing method, id, params entirely
+        errors = _validate_request_envelope(broken)
+        self.assertNotEqual(errors, [],
+            "validator did not reject an envelope missing method/id/params — "
+            "the schema check is a no-op")
+
     def test_jsonrpc_field_is_literal_2_0(self) -> None:
         """request-envelope.json:10 — `jsonrpc` is the literal string
         "2.0"; any other value MUST be rejected by schema validation."""
@@ -403,49 +415,84 @@ class Core02_EnvelopeShape(CoreHarness):
 # =============================================================================
 
 class Core03_HookTaxonomyMinimum(CoreHarness):
-    """Each of the 6 minimum hooks MUST be acceptable to the Guardian
-    (validated end-to-end against a real envelope round-trip)."""
+    """Each of the 6 minimum hooks must be accepted with a valid
+    disposition (positive case) AND a malformed payload for that hook
+    must be rejected by Guardian-side schema validation (contradiction).
+    Without the contradiction, a Guardian that returns 'allow' for any
+    payload — including malformed ones — would pass."""
 
-    def _try_hook(self, method: str, payload: dict) -> dict:
-        env = self._make_envelope(method, payload)
-        return self._post(env)
+    # (method, valid_payload, broken_payload, payload_schema_file)
+    # Broken payloads exploit per-hook schema constraints — wrong types
+    # on enum-constrained fields, missing-required fields, malformed
+    # nested shapes. Each broken payload MUST fail validation; if it
+    # doesn't, the schema isn't actually enforcing what it advertises.
+    HOOKS = [
+        ("steps/sessionStart", {},
+         # policy_mode is enum strict/moderate/permissive; 123 is wrong type AND not in enum
+         {"policy_mode": 123},
+         "hooks/session-start.json"),
+        ("steps/userMessage",
+         {"content": [{"type": "text", "value": "hi"}]},
+         {"content": "not-an-array"},  # user-message.json requires content to be array
+         "hooks/user-message.json"),
+        ("steps/toolCallRequest",
+         {"tool": {"name": "Read"}, "arguments": {"file_path": {"value": "/tmp/x"}}},
+         {"tool": {"name": "Read"}},  # missing required `arguments`
+         "hooks/tool-call-request.json"),
+        ("steps/toolCallResult",
+         {"tool": {"name": "Read"}, "exit_status": "success",
+          "outputs": [{"value": "ok"}]},
+         {"tool": {"name": "Read"}, "exit_status": "magical"},  # bad enum value + missing outputs
+         "hooks/tool-call-result.json"),
+        ("steps/agentResponse",
+         {"content": [{"type": "text", "value": "ok"}]},
+         {},  # missing required content
+         "hooks/agent-response.json"),
+        ("steps/sessionEnd", {"reason": "completed"},
+         {"reason": "nonsense"},  # not in enum
+         "hooks/session-end.json"),
+    ]
 
-    def test_session_start(self) -> None:
-        """conformance.md:19 — sessionStart in minimum set"""
-        resp = self._try_hook("steps/sessionStart", {})
-        self.assertIn("result", resp,
-            f"steps/sessionStart must be accepted; got {resp}")
+    def _send(self, method: str, payload: dict) -> dict:
+        return self._post(self._make_envelope(method, payload))
 
-    def test_user_message(self) -> None:
-        """conformance.md:19 — userMessage or agentTrigger in minimum set"""
-        resp = self._try_hook("steps/userMessage",
-            {"content": [{"type": "text", "value": "hi"}]})
-        self.assertIn("result", resp)
+    def _validate_hook_payload(self, payload: dict, schema_file: str) -> list:
+        from jsonschema import Draft202012Validator
+        schema, resolver = _build_local_resolver(schema_file)
+        validator = Draft202012Validator(
+            schema, resolver=resolver,
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        )
+        return [
+            f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
+            for err in validator.iter_errors(payload)
+        ]
 
-    def test_tool_call_request(self) -> None:
-        """conformance.md:19 — toolCallRequest in minimum set"""
-        resp = self._try_hook("steps/toolCallRequest",
-            {"tool": {"name": "Read"},
-             "arguments": {"file_path": {"value": "/tmp/x"}}})
-        self.assertIn("result", resp)
+    def test_each_minimum_hook_returns_known_disposition(self) -> None:
+        """conformance.md:19 — each of the 6 minimum hooks must produce
+        a *known* disposition. Positive case + sanity: result.decision
+        is one of allow/deny/modify/ask/defer, not garbage."""
+        KNOWN = {"allow", "deny", "modify", "ask", "defer"}
+        for method, payload, _broken, _schema in self.HOOKS:
+            with self.subTest(method=method):
+                resp = self._send(method, payload)
+                self.assertIn("result", resp,
+                    f"{method} must be accepted; got {resp}")
+                self.assertIn(resp["result"].get("decision"), KNOWN,
+                    f"{method} returned non-spec disposition "
+                    f"{resp['result'].get('decision')!r}")
 
-    def test_tool_call_result(self) -> None:
-        """conformance.md:19 — toolCallResult in minimum set"""
-        resp = self._try_hook("steps/toolCallResult",
-            {"tool": {"name": "Read"}, "exit_status": "success",
-             "outputs": [{"value": "ok"}]})
-        self.assertIn("result", resp)
-
-    def test_agent_response(self) -> None:
-        """conformance.md:19 — agentResponse in minimum set"""
-        resp = self._try_hook("steps/agentResponse",
-            {"content": [{"type": "text", "value": "ok"}]})
-        self.assertIn("result", resp)
-
-    def test_session_end(self) -> None:
-        """conformance.md:19 — sessionEnd in minimum set"""
-        resp = self._try_hook("steps/sessionEnd", {"reason": "completed"})
-        self.assertIn("result", resp)
+    def test_each_minimum_hooks_malformed_payload_fails_schema(self) -> None:
+        """Contradiction check: a malformed payload for each minimum hook
+        MUST fail the canonical hooks/*.json schema. Verifies the per-hook
+        schemas actually constrain shape — not just rubber-stamp anything."""
+        for method, _payload, broken, schema_file in self.HOOKS:
+            with self.subTest(method=method):
+                errors = self._validate_hook_payload(broken, schema_file)
+                self.assertNotEqual(errors, [],
+                    f"{method}: a deliberately broken payload {broken!r} "
+                    f"was accepted by {schema_file} — schema is not "
+                    f"actually constraining shape")
 
 
 # =============================================================================
@@ -470,6 +517,42 @@ class Core04_Dispositions(CoreHarness):
             f"ALLOW response fails response-envelope.json:\n  - "
             + "\n  - ".join(errors))
         self.assertEqual(resp["result"]["decision"], "allow")
+
+    def test_allow_response_without_required_envelope_fields_rejected(self) -> None:
+        """Contradiction: an allow response missing AcsResult required
+        fields (type, acs_version, request_id, decision) MUST fail
+        schema validation. Otherwise positive-case tests are tautological."""
+        broken_responses = [
+            # Missing type
+            {"jsonrpc": "2.0", "id": "x",
+             "result": {"acs_version": "0.1.0",
+                        "request_id": "00000000-0000-4000-8000-000000000001",
+                        "decision": "allow"}},
+            # Missing acs_version
+            {"jsonrpc": "2.0", "id": "x",
+             "result": {"type": "final",
+                        "request_id": "00000000-0000-4000-8000-000000000001",
+                        "decision": "allow"}},
+            # Missing request_id
+            {"jsonrpc": "2.0", "id": "x",
+             "result": {"type": "final", "acs_version": "0.1.0",
+                        "decision": "allow"}},
+            # Missing decision
+            {"jsonrpc": "2.0", "id": "x",
+             "result": {"type": "final", "acs_version": "0.1.0",
+                        "request_id": "00000000-0000-4000-8000-000000000001"}},
+            # Bogus decision value
+            {"jsonrpc": "2.0", "id": "x",
+             "result": {"type": "final", "acs_version": "0.1.0",
+                        "request_id": "00000000-0000-4000-8000-000000000001",
+                        "decision": "maybe"}},
+        ]
+        for i, broken in enumerate(broken_responses):
+            with self.subTest(case=i):
+                errors = _validate_response_envelope(broken)
+                self.assertNotEqual(errors, [],
+                    f"broken allow response {broken!r} (case {i}) was "
+                    f"accepted by schema — validator is a no-op")
 
     def test_deny_response_includes_reasoning(self) -> None:
         """response-envelope.json:107 — 'if decision const deny, then
@@ -587,39 +670,58 @@ class Core05_SessionContext(CoreHarness):
         h2 = self._post(self._make_envelope("steps/sessionStart", {}))["result"]["chain_hash"]
         self.assertNotEqual(h1, h2)
 
-    def test_chain_externally_recomputable(self) -> None:
+    def test_chain_externally_recomputable_across_3_entries(self) -> None:
         """§8.2 normative — entry_hash = SHA-256(JCS(entry minus
         entry_hash/previous_hash) || prev_hash_bytes). An external
-        observer with the request stream MUST be able to recompute
-        the published chain head byte-for-byte."""
-        sid = str(uuid.uuid4())
-        req = self._make_envelope("steps/sessionStart", {}, session_id=sid)
-        published = self._post(req)["result"]["chain_hash"]
+        observer with the request stream MUST recompute the published
+        chain head byte-for-byte across multiple entries; this is what
+        catches a 'chain that doesn't actually chain' mutation.
 
-        # Recompute as the Guardian does
-        params = req["params"]
-        # Guardian strips the signature before computing chain entry, since
-        # the signature isn't input to the chain — but actually the chain
-        # entry only uses request_hash = sha256(JCS(params)). Reproduce that.
-        # We do NOT strip the signature here because the signature IS in params.
-        # Look at example_guardian append_to_chain: it does
-        # payload_canonical = jcs_canonicalize(params).decode("utf-8")
-        # and request_hash = sha256(payload_canonical.encode())
-        request_hash = hashlib.sha256(
-            acs_common.jcs_canonicalize(params)).hexdigest()
-        entry = {
-            "entry_id": params["request_id"],
-            "step_id": params["request_id"],
-            "step_type": "steps/sessionStart",
-            "request_hash": request_hash,
-            "timestamp": params["timestamp"],
-        }
-        # No previous_hash → first entry
-        content_bytes = acs_common.jcs_canonicalize(entry)
-        expected = hashlib.sha256(content_bytes).hexdigest()
-        self.assertEqual(published, expected,
-            "published chain_hash does not byte-equal externally-recomputed "
-            "hash. §8.2 requires the chain be reproducible.")
+        Testing 3 entries because a chain that returned sha256(entry)
+        (ignoring previous_hash) would still produce the right value
+        for the first entry (no previous_hash to ignore). The second
+        and third entries are where the chain link is actually
+        observable."""
+
+        def expected(req: dict, prev_hash: str | None) -> str:
+            params = req["params"]
+            entry = {
+                "entry_id": params["request_id"],
+                "step_id": params["request_id"],
+                "step_type": req["method"],
+                "request_hash": hashlib.sha256(
+                    acs_common.jcs_canonicalize(params)).hexdigest(),
+                "timestamp": params["timestamp"],
+            }
+            content_bytes = acs_common.jcs_canonicalize(entry)
+            prev_bytes = bytes.fromhex(prev_hash) if prev_hash else b""
+            return hashlib.sha256(content_bytes + prev_bytes).hexdigest()
+
+        sid = str(uuid.uuid4())
+        req1 = self._make_envelope("steps/sessionStart", {}, session_id=sid)
+        h1 = self._post(req1)["result"]["chain_hash"]
+        self.assertEqual(h1, expected(req1, None),
+            "entry 1 (root): published chain_hash != externally-computed hash")
+
+        req2 = self._make_envelope("steps/userMessage",
+            {"content": [{"type": "text", "value": "hi"}]}, session_id=sid)
+        h2 = self._post(req2)["result"]["chain_hash"]
+        self.assertEqual(h2, expected(req2, h1),
+            "entry 2: published chain_hash != externally-computed hash. "
+            "Either previous_hash is not folded in or JCS canonicalization differs.")
+        # Falsifier: same h2 computed WITHOUT prev_hash MUST differ — i.e. chain
+        # actually depends on the previous hash, not just the entry content.
+        self.assertNotEqual(h2, expected(req2, None),
+            "entry 2's hash matches the no-previous_hash computation — "
+            "the chain is not actually chained, just hashed.")
+
+        req3 = self._make_envelope("steps/toolCallRequest",
+            {"tool": {"name": "Read"},
+             "arguments": {"file_path": {"value": "/tmp/x"}}},
+            session_id=sid)
+        h3 = self._post(req3)["result"]["chain_hash"]
+        self.assertEqual(h3, expected(req3, h2),
+            "entry 3: chain breaks at depth 2 — not a transitive chain")
 
 
 # =============================================================================
@@ -778,46 +880,124 @@ class Core07_BaselineIntegrity(CoreHarness):
 # covered in adapters/{claude-code,cursor,nat}/tests/.
 # =============================================================================
 
-class Core08_DecisionHonoring(CoreHarness):
-
-    def test_guardian_responds_within_negotiated_timeout(self) -> None:
-        """§6.4 — Observed Agent waits up to negotiated timeout. The
-        Guardian MUST respond within that time for normal requests.
-        Default timeout is 5000ms per ServerHello; we assert <1s."""
-        start = time.monotonic()
-        resp = self._post(self._make_envelope("steps/sessionStart", {}))
-        elapsed = time.monotonic() - start
-        self.assertIn("result", resp)
-        self.assertLess(elapsed, 1.0,
-            f"Guardian took {elapsed:.2f}s on a trivial request; far over "
-            f"any sensible negotiated_ms — would force adapters to fail-posture")
-
-
 class Core08_DecisionHonoringAdapter(unittest.TestCase):
-    """Adapter-side §6.4 — fail-open MUST emit an audit event. We
-    exercise the claude-code adapter against a dead Guardian and verify
-    ACS_AUDIT appears on stderr."""
+    """§6.4 is an adapter-side property: 'the Observed Agent MUST wait
+    for the Guardian's decision up to the negotiated timeout and apply
+    it'. We falsify this by:
 
-    def test_fail_open_emits_audit_event(self) -> None:
-        """§6.4 — 'Every step that proceeds without a decision MUST be
-        recorded as an audit event, so the bypass is visible rather
-        than silent'."""
+      1. The adapter MUST apply DENY when the Guardian returns DENY
+         (positive: deny shows up as `permissionDecision: deny`).
+      2. The adapter MUST wait for the response, not proceed before it
+         arrives (a slow-but-responsive Guardian still gets honored).
+      3. On no-response, the adapter MUST fall to its fail posture and
+         emit an audit event (contradiction: silent bypass is a §6.4 violation).
+    """
+
+    def _run_claude_adapter(self, *, guardian_url: str,
+                             env_overrides: dict | None = None,
+                             timeout: float = 10.0) -> subprocess.CompletedProcess:
         adapter = HERE / "claude-code" / "acs_adapter.py"
         env = os.environ.copy()
-        env["ACS_GUARDIAN_URL"] = "http://127.0.0.1:1/dead"  # unreachable
+        env["ACS_GUARDIAN_URL"] = guardian_url
         env["ACS_HANDSHAKE"] = "0"
-        env.pop("ACS_DEFAULT_DENY", None)  # default = fail-open
-        proc = subprocess.run(
+        env.pop("ACS_DEFAULT_DENY", None)
+        if env_overrides:
+            env.update(env_overrides)
+        return subprocess.run(
             [sys.executable, str(adapter)],
             input=json.dumps({
                 "session_id": "00000000-0000-4000-8000-000000000001",
                 "transcript_path": "/tmp/t", "cwd": "/tmp",
                 "permission_mode": "default",
                 "hook_event_name": "PreToolUse",
-                "tool_name": "Read", "tool_input": {"file_path": "/tmp/x"},
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /home/u"},
             }),
-            capture_output=True, text=True, env=env, timeout=10,
+            capture_output=True, text=True, env=env, timeout=timeout,
         )
+
+    def test_adapter_actually_applies_guardian_deny(self) -> None:
+        """§6.4 positive — when the Guardian returns DENY, the adapter
+        MUST translate it to the framework's deny shape. A framework
+        that gets `allow` for a destructive Bash would execute it."""
+        port = _free_port()
+        env = os.environ.copy()
+        env["ACS_DEV_MODE"] = "1"
+        env.pop("ACS_HMAC_SECRET", None)
+        env.pop("ACS_HMAC_SECRET_FILE", None)
+        env["ACS_GUARDIAN_STATE_DIR"] = tempfile.mkdtemp()
+        guardian = subprocess.Popen(
+            [sys.executable, str(GUARDIAN_SCRIPT), "--port", str(port)],
+            env=env, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        )
+        _wait_port("127.0.0.1", port)
+        try:
+            proc = self._run_claude_adapter(
+                guardian_url=f"http://127.0.0.1:{port}/acs")
+            self.assertEqual(proc.returncode, 0,
+                f"adapter exited non-zero: {proc.stderr}")
+            payload = json.loads(proc.stdout)
+            hso = payload["hookSpecificOutput"]
+            self.assertEqual(hso["permissionDecision"], "deny",
+                f"Guardian returned DENY for `rm -rf /home/u` but adapter "
+                f"emitted {hso!r}. §6.4 — 'DENY blocks the action' violated.")
+        finally:
+            guardian.terminate()
+            try: guardian.wait(timeout=2.0)
+            except subprocess.TimeoutExpired: guardian.kill()
+
+    def test_adapter_waits_for_a_slow_guardian(self) -> None:
+        """§6.4 — 'wait for the Guardian's decision up to the negotiated
+        timeout'. The adapter MUST NOT proceed before the response
+        arrives. We run a deliberately-slow Guardian (1s delay) and
+        check the adapter took at least that long AND honored the result."""
+        delay_s = 1.0
+
+        class SlowGuardian(http.server.BaseHTTPRequestHandler):
+            def do_POST(self_h):  # noqa: N802
+                length = int(self_h.headers.get("Content-Length", "0"))
+                body = json.loads(self_h.rfile.read(length).decode())
+                time.sleep(delay_s)
+                reply = json.dumps({
+                    "jsonrpc": "2.0", "id": body.get("id"),
+                    "result": {"type": "final", "acs_version": "0.1.0",
+                               "request_id": body.get("params", {}).get("request_id", ""),
+                               "decision": "deny",
+                               "reasoning": "slow guardian denied"},
+                }).encode()
+                self_h.send_response(200)
+                self_h.send_header("Content-Length", str(len(reply)))
+                self_h.send_header("Content-Type", "application/json")
+                self_h.end_headers()
+                self_h.wfile.write(reply)
+            def log_message(self, *a, **kw): return
+
+        port = _free_port()
+        srv = http.server.HTTPServer(("127.0.0.1", port), SlowGuardian)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            start = time.monotonic()
+            proc = self._run_claude_adapter(
+                guardian_url=f"http://127.0.0.1:{port}/acs")
+            elapsed = time.monotonic() - start
+            self.assertGreaterEqual(elapsed, delay_s,
+                f"adapter returned in {elapsed:.2f}s but Guardian deliberately "
+                f"slept {delay_s}s — the adapter proceeded WITHOUT waiting. "
+                f"§6.4 violated.")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "deny",
+                "adapter waited but failed to apply the verdict")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_fail_open_emits_audit_event(self) -> None:
+        """§6.4 — 'Every step that proceeds without a decision MUST be
+        recorded as an audit event, so the bypass is visible rather
+        than silent'."""
+        proc = self._run_claude_adapter(guardian_url="http://127.0.0.1:1/dead")
         self.assertIn("ACS_AUDIT", proc.stderr,
             f"§6.4 — fail-open path must emit ACS_AUDIT event; stderr was:\n{proc.stderr}")
         self.assertIn("fail_open_bypass", proc.stderr,
@@ -911,9 +1091,11 @@ class Core10_WrappedMcp(CoreHarness):
             f"protocols/MCP/* method MUST be valid wire-format; got {errors}")
 
     def test_guardian_returns_structured_response_for_mcp(self) -> None:
-        """The Guardian MUST not crash on a protocols/MCP/* method.
-        It MAY deny with unknown_method, but the response MUST be a
-        well-formed envelope.
+        """The Guardian MUST not crash on a protocols/MCP/* method
+        AND its response MUST validate against response-envelope.json.
+        A 'no-op' Guardian that returns an empty 200 would pass the
+        previous version of this test; this version requires the
+        response to be schema-valid.
 
         NOTE — this is a partial Core-10 verification. Full wrapped
         MCP semantics (forwarding, MCP-specific validation, MCP error
@@ -922,12 +1104,35 @@ class Core10_WrappedMcp(CoreHarness):
         env = self._make_envelope("protocols/MCP/tools/call",
             {"name": "echo", "arguments": {"text": "hi"}})
         resp = self._post(env)
-        # Either result or error — both are well-formed
+        # Must be a well-formed JSON-RPC envelope
         self.assertTrue("result" in resp or "error" in resp,
-            f"malformed Guardian response for MCP method: {resp}")
+            f"Guardian response for MCP method lacks both result and error: {resp}")
+        # ResponseEnvelope schema validates — including conditional fields
+        # (deny -> reasoning required, etc.). A garbage response is rejected.
         errors = _validate_response_envelope(resp)
         self.assertEqual(errors, [],
             f"response to protocols/MCP/* envelope is malformed: {errors}")
+
+    def test_mcp_method_namespace_rejects_garbage_namespaces(self) -> None:
+        """Contradiction: methods OUTSIDE the reserved namespaces
+        (steps/, protocols/, agbom/, trace/, system/, handshake/,
+        wrapped:) MUST be rejected. Per request-envelope.json:14 the
+        regex is ^(steps/|protocols/|agbom/|trace/|system/|handshake/|wrapped:).+
+        so anything not starting with one of those prefixes — and with
+        at least one char after — must fail."""
+        bad_methods = [
+            "arbitrary/method",       # wrong prefix
+            "no-slash-at-all",        # no separator
+            "PROTOCOLS/upper",        # wrong case (prefix is case-sensitive)
+            "random/garbage",         # wrong prefix
+            "step/typo",              # 'step' not 'steps'
+        ]
+        for bad in bad_methods:
+            with self.subTest(method=bad):
+                env = self._make_envelope(bad, {})
+                errors = _validate_request_envelope(env)
+                self.assertTrue(any("method" in e for e in errors),
+                    f"method {bad!r} outside reserved namespaces was accepted")
 
 
 # =============================================================================
