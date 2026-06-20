@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 # Bootstrap shared helpers from sibling adapters/_common/
@@ -45,7 +45,8 @@ from acs_common import (  # noqa: E402
     ACS_VERSION,
     audit_event,
     coerce_uuid,
-    do_handshake,
+    ensure_session_handshake,
+    guardian_error_cause,
     iso8601_now,
     sign_envelope,
     validate_guardian_url,
@@ -58,24 +59,73 @@ DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "0") == "1"
 HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
 
 
+# ─── Hook taxonomy ──────────────────────────────────────────────────────────
+
 HOOK_MAP: dict[str, str] = {
-    "SessionStart": "steps/sessionStart",
-    "SessionEnd": "steps/sessionEnd",
+    "SessionStart":     "steps/sessionStart",
+    "SessionEnd":       "steps/sessionEnd",
     "UserPromptSubmit": "steps/userMessage",
-    "PreToolUse": "steps/toolCallRequest",
-    "PostToolUse": "steps/toolCallResult",
-    "Notification": "steps/agentResponse",
-    "Stop": "steps/sessionEnd",
+    "PreToolUse":       "steps/toolCallRequest",
+    "PostToolUse":      "steps/toolCallResult",
+    "Notification":     "steps/agentResponse",
+    "Stop":             "steps/sessionEnd",
 }
 
+# Hooks whose deny shape is {"decision": "block", "reason": "..."}
+# (i.e., everything except PreToolUse, which uses hookSpecificOutput.permissionDecision).
+BLOCK_RESPONSE_HOOKS = frozenset({
+    "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact",
+})
 
 SESSION_END_REASON_MAP: dict[str, str] = {
-    "clear": "completed",
-    "logout": "abandoned",
+    "clear":             "completed",
+    "logout":            "abandoned",
     "prompt_input_exit": "abandoned",
-    "other": "completed",
+    "other":             "completed",
 }
 
+PRETOOL_PERMISSION_MAP: dict[str, str] = {
+    "allow": "allow", "deny": "deny", "ask": "ask", "defer": "defer",
+}
+
+KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+
+
+# ─── Response writers — one definition each, used everywhere ──────────────
+
+def _emit(payload: dict[str, Any]) -> None:
+    """Single point where the adapter writes to stdout. Idempotent if
+    called with empty dict."""
+    if not payload:
+        return
+    json.dump(payload, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def _pretool_response(decision: str, reason: str = "",
+                       updated_input: dict | None = None) -> dict[str, Any]:
+    """Build Claude Code's PreToolUse response shape."""
+    hso: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision,
+    }
+    if reason:
+        hso["permissionDecisionReason"] = reason
+    if updated_input is not None:
+        hso["updatedInput"] = updated_input
+    return {"hookSpecificOutput": hso}
+
+
+def _block_response(reason: str, hook_event: str | None = None) -> dict[str, Any]:
+    """Build Claude Code's generic block shape used by PostToolUse,
+    UserPromptSubmit, Stop, SubagentStop, PreCompact."""
+    out: dict[str, Any] = {"decision": "block", "reason": reason}
+    if hook_event:
+        out["hookSpecificOutput"] = {"hookEventName": hook_event}
+    return out
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _agent_id(event: dict[str, Any]) -> str:
     explicit = os.environ.get("ACS_AGENT_ID")
@@ -100,51 +150,76 @@ def _tool_use_request_id(tool_use_id: str | None) -> str | None:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-code:tool_use:{tool_use_id}"))
 
 
-def build_payload(event: dict[str, Any]) -> dict[str, Any]:
+# ─── Payload builders — dispatch table, one function per hook ──────────────
+#
+# Each function takes the Claude Code event dict and returns the
+# hook-payload portion of the ACS envelope (the part that goes under
+# `params.payload`). The dispatch table at the bottom maps hook names
+# to these functions; build_payload is then a one-line dispatch.
+
+def _payload_pretool_use(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool": {"name": event.get("tool_name", "")},
+        "arguments": _wrap_arguments(event.get("tool_input") or {}),
+    }
+
+
+def _payload_post_tool_use(event: dict[str, Any]) -> dict[str, Any]:
+    tool_response = event.get("tool_response", event.get("tool_output"))
+    interrupted = isinstance(tool_response, dict) and tool_response.get("interrupted")
+    payload: dict[str, Any] = {
+        "tool": {"name": event.get("tool_name", "")},
+        "exit_status": "failure" if interrupted else "success",
+        "outputs": [{"value": tool_response}] if tool_response is not None else [],
+    }
+    ref = _tool_use_request_id(event.get("tool_use_id"))
+    if ref:
+        payload["request_id_ref"] = ref
+    if event.get("duration_ms") is not None:
+        payload["duration_ms"] = event["duration_ms"]
+    return payload
+
+
+def _payload_user_prompt(event: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text", "value": event.get("prompt", "")}]}
+
+
+def _payload_notification(event: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text", "value": event.get("message", "")}]}
+
+
+def _payload_session_start(event: dict[str, Any]) -> dict[str, Any]:
+    ctx = {k: v for k, v in (
+        ("source", event.get("source")),
+        ("model", event.get("model")),
+        ("transcript_path", event.get("transcript_path"))
+    ) if v}
+    return {"platform_context": ctx} if ctx else {}
+
+
+def _payload_session_end(event: dict[str, Any]) -> dict[str, Any]:
     name = event.get("hook_event_name", "")
+    raw_reason = event.get("reason") or ("completed" if name == "Stop" else "other")
+    return {"reason": SESSION_END_REASON_MAP.get(raw_reason, "completed")}
 
-    if name == "PreToolUse":
-        return {
-            "tool": {"name": event.get("tool_name", "")},
-            "arguments": _wrap_arguments(event.get("tool_input") or {}),
-        }
 
-    if name == "PostToolUse":
-        tool_response = event.get("tool_response", event.get("tool_output"))
-        exit_status = "failure" if (isinstance(tool_response, dict) and tool_response.get("interrupted")) else "success"
-        payload: dict[str, Any] = {
-            "tool": {"name": event.get("tool_name", "")},
-            "exit_status": exit_status,
-            "outputs": [{"value": tool_response}] if tool_response is not None else [],
-        }
-        ref = _tool_use_request_id(event.get("tool_use_id"))
-        if ref:
-            payload["request_id_ref"] = ref
-        if event.get("duration_ms") is not None:
-            payload["duration_ms"] = event["duration_ms"]
-        return payload
+_PAYLOAD_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "PreToolUse":       _payload_pretool_use,
+    "PostToolUse":      _payload_post_tool_use,
+    "UserPromptSubmit": _payload_user_prompt,
+    "Notification":     _payload_notification,
+    "SessionStart":     _payload_session_start,
+    "SessionEnd":       _payload_session_end,
+    "Stop":             _payload_session_end,
+}
 
-    if name == "UserPromptSubmit":
-        return {"content": [{"type": "text", "value": event.get("prompt", "")}]}
 
-    if name == "Notification":
-        return {"content": [{"type": "text", "value": event.get("message", "")}]}
+def build_payload(event: dict[str, Any]) -> dict[str, Any]:
+    builder = _PAYLOAD_BUILDERS.get(event.get("hook_event_name", ""))
+    return builder(event) if builder else {}
 
-    if name == "SessionStart":
-        out: dict[str, Any] = {}
-        ctx = {k: v for k, v in (("source", event.get("source")),
-                                 ("model", event.get("model")),
-                                 ("transcript_path", event.get("transcript_path"))) if v}
-        if ctx:
-            out["platform_context"] = ctx
-        return out
 
-    if name in ("SessionEnd", "Stop"):
-        raw_reason = event.get("reason") or ("completed" if name == "Stop" else "other")
-        return {"reason": SESSION_END_REASON_MAP.get(raw_reason, "completed")}
-
-    return {}
-
+# ─── Envelope construction ──────────────────────────────────────────────────
 
 def build_request(event: dict[str, Any]) -> dict[str, Any]:
     method = HOOK_MAP.get(event.get("hook_event_name", ""))
@@ -160,20 +235,14 @@ def build_request(event: dict[str, Any]) -> dict[str, Any]:
         "session_id": session_id,
         "platform": "claude-code",
     }
-    if event.get("cwd"):
-        metadata["cwd"] = event["cwd"]
-    if event.get("transcript_path"):
-        metadata["transcript_path"] = event["transcript_path"]
-    if event.get("permission_mode"):
-        metadata["permission_mode"] = event["permission_mode"]
+    for k in ("cwd", "transcript_path", "permission_mode"):
+        if event.get(k):
+            metadata[k] = event[k]
 
     # For PreToolUse, pin request_id to a deterministic UUID derived
-    # from tool_use_id so the PostToolUse can reference it.
-    if method == "steps/toolCallRequest":
-        ref = _tool_use_request_id(event.get("tool_use_id"))
-        request_id = ref or str(uuid.uuid4())
-    else:
-        request_id = str(uuid.uuid4())
+    # from tool_use_id so the matching PostToolUse can reference it.
+    request_id = (_tool_use_request_id(event.get("tool_use_id"))
+                  if method == "steps/toolCallRequest" else None) or str(uuid.uuid4())
 
     envelope = {
         "jsonrpc": "2.0",
@@ -192,12 +261,20 @@ def build_request(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _maybe_handshake(event: dict[str, Any]) -> None:
+    """Called on every hook event.
+
+    Looks like 'handshake every event', but `ensure_session_handshake`
+    is idempotent: the FIRST event of a session_id triggers a real
+    handshake/hello POST and writes the negotiated ServerHello to
+    ~/.cache/acs-adapter-handshake/. Every subsequent event for the
+    same session_id reads that file and returns without a network call.
+    """
     if not HANDSHAKE_ENABLED:
         return
     session_id = event.get("session_id")
     if not session_id:
         return
-    do_handshake(
+    ensure_session_handshake(
         guardian_url=GUARDIAN_URL,
         session_id=session_id,
         agent_id=_agent_id(event),
@@ -217,11 +294,69 @@ def call_guardian(request: dict[str, Any]) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-PRETOOL_PERMISSION_MAP: dict[str, str] = {
-    "allow": "allow", "deny": "deny", "ask": "ask", "defer": "defer",
-}
+# ─── Response translation — dispatch table, one function per hook ─────────
 
-KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+def _translate_pretool(decision: str, reasoning: str,
+                        modifications: dict) -> dict[str, Any]:
+    if decision in PRETOOL_PERMISSION_MAP:
+        return _pretool_response(PRETOOL_PERMISSION_MAP[decision], reasoning)
+    if decision == "modify":
+        overrides = modifications.get("parameter_overrides")
+        if overrides is not None:
+            return _pretool_response("allow", reasoning, updated_input=overrides)
+        return _pretool_response(
+            "deny",
+            f"MODIFY substituted to DENY (no parameter_overrides): {reasoning}",
+        )
+    return {}
+
+
+def _translate_posttool(decision: str, reasoning: str,
+                         modifications: dict) -> dict[str, Any]:
+    if decision == "deny":
+        return _block_response(reasoning or "blocked by Guardian", "PostToolUse")
+    if decision == "modify":
+        updated = modifications.get("modified_content")
+        if updated is not None:
+            hso = {
+                "hookEventName": "PostToolUse",
+                "updatedToolOutput": str(updated),
+            }
+            if reasoning:
+                hso["additionalContext"] = reasoning
+            return {"hookSpecificOutput": hso}
+        return _block_response(
+            f"MODIFY substituted to DENY (no modified_content): {reasoning}")
+    if decision in ("ask", "defer"):
+        return _block_response(
+            f"{decision} on post-tool not supported by Claude Code: {reasoning}")
+    return {}
+
+
+def _translate_user_prompt(decision: str, reasoning: str,
+                            modifications: dict) -> dict[str, Any]:
+    if decision == "deny":
+        return _block_response(reasoning or "blocked by Guardian")
+    if decision in ("ask", "defer"):
+        return _block_response(f"{decision} on user prompt: {reasoning}")
+    return {}
+
+
+def _translate_session_stop(decision: str, reasoning: str,
+                             modifications: dict) -> dict[str, Any]:
+    """Stop / SubagentStop — only deny matters; allow is the default."""
+    if decision == "deny":
+        return _block_response(reasoning or "blocked by Guardian")
+    return {}
+
+
+_TRANSLATORS: dict[str, Callable[[str, str, dict], dict[str, Any]]] = {
+    "PreToolUse":       _translate_pretool,
+    "PostToolUse":      _translate_posttool,
+    "UserPromptSubmit": _translate_user_prompt,
+    "Stop":             _translate_session_stop,
+    "SubagentStop":     _translate_session_stop,
+}
 
 
 def translate_response(acs_response: dict[str, Any], hook_event: str) -> dict[str, Any]:
@@ -230,68 +365,20 @@ def translate_response(acs_response: dict[str, Any], hook_event: str) -> dict[st
     reasoning = result.get("reasoning", "")
     modifications = result.get("modifications", {})
 
+    # Unknown disposition under fail-closed → emit a deny in the hook's shape.
     if decision not in KNOWN_DECISIONS and DEFAULT_DENY:
         reason = f"unknown Guardian disposition '{decision}' (default-deny)"
         if hook_event == "PreToolUse":
-            return {"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }}
-        if hook_event in ("PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact"):
-            return {"decision": "block", "reason": reason}
+            return _pretool_response("deny", reason)
+        if hook_event in BLOCK_RESPONSE_HOOKS:
+            return _block_response(reason)
 
-    if hook_event == "PreToolUse":
-        hso: dict[str, Any] = {"hookEventName": "PreToolUse"}
-        if decision in PRETOOL_PERMISSION_MAP:
-            hso["permissionDecision"] = PRETOOL_PERMISSION_MAP[decision]
-            if reasoning:
-                hso["permissionDecisionReason"] = reasoning
-            return {"hookSpecificOutput": hso}
-        if decision == "modify":
-            overrides = modifications.get("parameter_overrides")
-            if overrides is not None:
-                hso["permissionDecision"] = "allow"
-                hso["updatedInput"] = overrides
-                if reasoning:
-                    hso["permissionDecisionReason"] = reasoning
-                return {"hookSpecificOutput": hso}
-            hso["permissionDecision"] = "deny"
-            hso["permissionDecisionReason"] = f"MODIFY substituted to DENY (no parameter_overrides): {reasoning}"
-            return {"hookSpecificOutput": hso}
-        return {}
+    translator = _TRANSLATORS.get(hook_event)
+    if translator:
+        return translator(decision, reasoning, modifications)
 
-    if hook_event == "PostToolUse":
-        if decision == "deny":
-            return {"decision": "block", "reason": reasoning or "blocked by Guardian",
-                    "hookSpecificOutput": {"hookEventName": "PostToolUse"}}
-        if decision == "modify":
-            updated = modifications.get("modified_content")
-            if updated is not None:
-                return {"hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
-                    "updatedToolOutput": str(updated),
-                    **({"additionalContext": reasoning} if reasoning else {}),
-                }}
-            return {"decision": "block",
-                    "reason": f"MODIFY substituted to DENY (no modified_content): {reasoning}"}
-        if decision in ("ask", "defer"):
-            return {"decision": "block",
-                    "reason": f"{decision} on post-tool not supported by Claude Code: {reasoning}"}
-        return {}
-
-    if hook_event == "UserPromptSubmit":
-        if decision == "deny":
-            return {"decision": "block", "reason": reasoning or "blocked by Guardian"}
-        if decision in ("ask", "defer"):
-            return {"decision": "block", "reason": f"{decision} on user prompt: {reasoning}"}
-        return {}
-
-    if hook_event in ("Stop", "SubagentStop"):
-        if decision == "deny":
-            return {"decision": "block", "reason": reasoning or "blocked by Guardian"}
-        return {}
-
+    # Informational hooks (SessionStart, SessionEnd, Notification) —
+    # surface additional_context if the Guardian provided any, else empty.
     additional = result.get("additional_context")
     if additional:
         return {"hookSpecificOutput": {
@@ -301,6 +388,8 @@ def translate_response(acs_response: dict[str, Any], hook_event: str) -> dict[st
     return {}
 
 
+# ─── Main flow ──────────────────────────────────────────────────────────────
+
 def main() -> int:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -309,7 +398,7 @@ def main() -> int:
         event = json.loads(raw)
     except json.JSONDecodeError as e:
         sys.stderr.write(f"acs-adapter: invalid JSON on stdin: {e}\n")
-        return _fail()
+        return _fail(cause="invalid_stdin_json")
 
     hook_name = event.get("hook_event_name", "")
     if hook_name not in HOOK_MAP:
@@ -324,52 +413,75 @@ def main() -> int:
         request = build_request(event)
         if not request:
             sys.stderr.write(f"acs-adapter: could not build request for {hook_name}\n")
-            return _fail(hook_name, event.get("session_id"))
+            return _fail(hook_name, event.get("session_id"),
+                         cause="adapter_build_failed")
         response = call_guardian(request)
-
-        # Verify response signature if signing is enabled.
-        if not verify_signature(response, session_id=event.get("session_id")):
-            sys.stderr.write("acs-adapter: response signature invalid\n")
-            return _fail(hook_name, event.get("session_id"))
-
-        out = translate_response(response, hook_name)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         sys.stderr.write(f"acs-adapter: Guardian unreachable: {e}\n")
         return _fail(hook_name, event.get("session_id"),
+                     cause="transport_failure",
                      request_id=(request or {}).get("params", {}).get("request_id"),
-                     method=(request or {}).get("method"))
+                     method=(request or {}).get("method"),
+                     error=str(e))
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"acs-adapter: adapter error: {e}\n")
-        return _fail(hook_name, event.get("session_id"))
+        return _fail(hook_name, event.get("session_id"),
+                     cause="adapter_exception", error=str(e))
 
-    if out:
-        json.dump(out, sys.stdout)
-        sys.stdout.write("\n")
+    # Guardian responded — was it a result or a JSON-RPC error?
+    # An `error` means the Guardian explicitly rejected this envelope,
+    # which is NOT a transport failure. §6.4 collapses them but the
+    # cause field tells operators which case fired so they can act.
+    if "error" in response:
+        err = response.get("error") or {}
+        code = err.get("code")
+        cause = guardian_error_cause(code)
+        sys.stderr.write(
+            f"acs-adapter: Guardian returned JSON-RPC error "
+            f"{code} ({cause}): {err.get('message','')}\n")
+        return _fail(hook_name, event.get("session_id"),
+                     cause=cause,
+                     error_code=code,
+                     error_message=err.get("message"),
+                     request_id=(request or {}).get("params", {}).get("request_id"),
+                     method=(request or {}).get("method"))
+
+    # Response signature check (only relevant when signing is enabled).
+    if not verify_signature(response, session_id=event.get("session_id")):
+        sys.stderr.write("acs-adapter: response signature invalid\n")
+        return _fail(hook_name, event.get("session_id"),
+                     cause="response_signature_invalid")
+
+    _emit(translate_response(response, hook_name))
     return 0
 
 
-def _fail(hook_name: str = "", session_id: str | None = None, **audit_extras) -> int:
-    """Apply the deployment's fail posture and record an audit event per §6.4."""
+def _fail(hook_name: str = "", session_id: str | None = None, *,
+          cause: str = "unknown", **audit_extras) -> int:
+    """Apply the deployment's fail posture and record an audit event per §6.4.
+
+    `cause` distinguishes the failure mode (transport_failure,
+    signature_invalid_response, malformed_envelope_response, etc.)
+    independently of the posture. The audit event's top-level type
+    (`fail_open_bypass` or `decision_failure_fail_closed`) is set by
+    ACS_DEFAULT_DENY; the `cause` field tells operators what actually
+    went wrong so a malformed envelope (client bug) doesn't get
+    confused with an unreachable Guardian (ops issue).
+    """
     if DEFAULT_DENY:
-        # Fail-closed: emit a deny in the hook's native shape
-        msg = "ACS adapter: decision-failure (default-deny)"
+        msg = f"ACS adapter: decision-failure ({cause})"
         if hook_name == "PreToolUse":
-            json.dump({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": msg,
-            }}, sys.stdout)
-            sys.stdout.write("\n")
-        elif hook_name in ("PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact"):
-            json.dump({"decision": "block", "reason": msg}, sys.stdout)
-            sys.stdout.write("\n")
+            _emit(_pretool_response("deny", msg))
+        elif hook_name in BLOCK_RESPONSE_HOOKS:
+            _emit(_block_response(msg))
         audit_event("decision_failure_fail_closed",
-                    hook=hook_name, session_id=session_id, **audit_extras)
+                    cause=cause, hook=hook_name, session_id=session_id,
+                    **audit_extras)
         return 0
 
-    # Fail-open: proceed without a decision, but record the bypass (§6.4)
     audit_event("fail_open_bypass",
-                hook=hook_name, session_id=session_id, **audit_extras)
+                cause=cause, hook=hook_name, session_id=session_id,
+                **audit_extras)
     return 0
 
 

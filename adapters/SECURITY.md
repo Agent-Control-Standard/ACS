@@ -35,7 +35,7 @@ signature field removed (Specification §10). Both sides verify with
 `hmac.compare_digest` (constant-time). Signed input includes
 `method`, `metadata.session_id`, `request_id`, and `timestamp` so the
 signature is bound to the whole envelope.
-*Test:* `example-guardian/tests/test_spec_compliance.py::HmacSigning::test_tampered_request_rejected`
+*Test:* `test_acs_core_conformance.py::Core07_BaselineIntegrity::test_tampered_request_signature_invalid`
 
 **T2 — Cross-session signature lift.**
 An attacker captures a signed envelope from session A and replays it
@@ -135,9 +135,9 @@ field, hoping the adapter's response verification silently accepts.
 absent AND the adapter has `ACS_HMAC_SECRET` configured. The adapter
 rejects the response and fails per `ACS_DEFAULT_DENY` posture (audit
 event in either case).
-*No dedicated test* — covered indirectly by the spec-compliance signed
-round-trip tests, which would fail if signature absence were silently
-accepted.
+*No dedicated test* — covered indirectly by the conformance suite's
+signed round-trip tests (Core07_BaselineIntegrity), which would fail
+if signature absence were silently accepted.
 
 ### Out of scope (deployment / operational concerns)
 

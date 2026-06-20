@@ -2,6 +2,41 @@
 
 A drop-in adapter that wires [Claude Code](https://docs.claude.com/claude-code) hooks to an ACS Guardian. No agent code changes; configuration only.
 
+## End-to-end verification — `e2e_check.py`
+
+After wiring the adapter, run the real end-to-end check to confirm your
+installation actually works:
+
+```bash
+cd adapters/claude-code
+python3 e2e_check.py
+```
+
+This drives a real `claude --print` invocation through 4 scenarios
+(benign Bash allowed, destructive Bash denied, Read tool, multi-tool
+handshake-once) and prints every envelope on the wire, Claude's actual
+output, and PASS/FAIL per scenario. Each scenario takes ~10-15s
+because real Claude is in the loop; total ~60s.
+
+**Requirements** for the e2e check:
+
+- `claude` CLI installed and authenticated ([install guide](https://docs.claude.com/claude-code))
+- Python 3.10+ with `jsonschema` and `rfc8785` (`pip install -r ../requirements-test.txt`)
+- Canonical ACS schemas reachable. Default location:
+  `/tmp/acs-spec-source/specification/v0.1.0/`. Override via
+  `ACS_SPEC_DIR`. Clone with:
+
+  ```bash
+  git clone https://github.com/Agent-Control-Standard/ACS.git /tmp/acs-spec-source
+  ```
+
+- Optional: override the Claude model via `CLAUDE_MODEL=...` env var.
+  Default is `claude-haiku-4-5` (fastest currently available).
+
+If a scenario fails, the output names the specific check that failed
+and shows the envelope that triggered it — start by reading the
+"Hooks Claude fired" list and the per-scenario verdict.
+
 ## What it does
 
 Claude Code fires a hook (e.g. `PreToolUse`) by running a shell command and passing the hook event as JSON on stdin. The command's stdout becomes the hook decision.
@@ -80,7 +115,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd` |
 | Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on all hooks; MODIFY partial (`PreToolUse` with `parameter_overrides` only) |
 | Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts (when `ACS_DEFAULT_DENY=1`); spec-default fail-open path emits audit event |
-| SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`tests/test_spec_compliance.py`) |
+| SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`) |
 | Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3 |
 | Baseline integrity (HMAC-SHA256 signature) | ✓ HKDF-derived per-session key signs every request and response when `ACS_HMAC_SECRET` is set; Guardian rejects unsigned/tampered with SIGNATURE_INVALID -32004 |
 | Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; spec-default fail-open posture emits structured `ACS_AUDIT` event on every bypass |

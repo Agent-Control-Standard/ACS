@@ -20,7 +20,7 @@ python -m unittest test_acs_core_conformance
 | [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | 13 passed | 17 passed | ✓ `test_live.py` ALLOW + DENY against real `claude --print` |
 | [cursor](./cursor/) | Reference implementation | ✓ | ✓ | 13 passed | 36 passed | ✓ Manual procedure in `tests/live_verification.md` (Cursor is a desktop app, no headless mode) |
 | [nat](./nat/) | Reference implementation | ✓ | ✓ | 7 passed (require `nvidia-nat-core==1.7.0`) | 6 passed (work without NAT) | ✓ `test_live.py` (5) + `test_lifecycle.py` (2 — lifecycle hooks on workflow boundary) — all require `nvidia-nat-core` |
-| [example-guardian](./example-guardian/) | Test substrate (not a production Guardian) | — | — | — | — | 20 spec-compliance tests in `tests/test_spec_compliance.py` covering §4, §6.4, §8.2, §10, §10.3, §13 |
+| [example-guardian](./example-guardian/) | Test substrate (not a production Guardian) | — | — | — | — | Behavior verified by the Core conformance suite (`adapters/test_acs_core_conformance.py`) — handshake, replay, skew, signing, chain, ping, dispositions |
 
 **NAT note:** the adapter now combines `FunctionMiddleware` (for
 toolCallRequest/Result) with an `IntermediateStepManager` lifecycle
@@ -35,7 +35,7 @@ adapter satisfies ACS-Core's 6-hook minimum on its own. See
 missing — not skipped — because spec validation is non-negotiable.
 Format checking (`uuid`, `date-time`) is enforced.
 
-**Spec-compliance tests** in `example-guardian/tests/test_spec_compliance.py`
+**Core conformance tests** in `adapters/test_acs_core_conformance.py`
 exercise: rolling chain hash per §8.2, REPLAY_DETECTED + TIMESTAMP_OUT_OF_WINDOW
 per §10.3, HMAC-SHA256 sign/verify per §10, handshake/hello per §4,
 system/ping per §13, and response-envelope schema validation for every

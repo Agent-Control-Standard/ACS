@@ -20,7 +20,9 @@ What's in here:
   beats env var so secrets don't sit in `ps aux` output.
 - `iso8601_now` / `coerce_uuid` / `parse_iso8601` — time + ID helpers.
 - `audit_event` — structured `ACS_AUDIT` line for §6.4 fail-open bypass.
-- `do_handshake` / `ping` — protocol helpers (§4, §13).
+- `ensure_session_handshake` / `ping` — protocol helpers (§4, §13).
+  `ensure_session_handshake` is idempotent per session via disk cache;
+  see its docstring. The old name `do_handshake` is kept as an alias.
 - `session_state` — per-session JSON file used by adapters to track
   last_step_id, seen_step_ids, etc. across separate hook-process
   invocations (shell-stdin adapters spawn one process per hook).
@@ -295,6 +297,34 @@ def verify_signature(envelope: dict, *, key: bytes | None = None,
     return hmac.compare_digest(expected_bytes, base64.b64decode(expected_b64))
 
 
+# ----- JSON-RPC error code → audit cause label -----
+#
+# Adapters use this when the Guardian returns a JSON-RPC `error` response
+# (as opposed to a transport failure). Separating "Guardian rejected this
+# envelope" from "I couldn't reach the Guardian" is load-bearing for
+# operator triage — same fail-posture under §6.4, completely different
+# remediation. Codes are the §17.1 / JSON-RPC reserved set.
+GUARDIAN_ERROR_CAUSE: dict[int, str] = {
+    -32001: "unsupported_version_response",
+    -32002: "provenance_required_response",
+    -32004: "signature_invalid_response",         # adapter or operator bug
+    -32005: "replay_detected_response",            # duplicate request_id
+    -32006: "timestamp_out_of_window_response",    # clock skew
+    -32600: "malformed_envelope_response",         # non-conformant envelope
+    -32700: "parse_error_response",
+}
+
+
+def guardian_error_cause(code: int | None) -> str:
+    """Resolve a JSON-RPC error code to a stable audit cause label.
+
+    Returns the generic 'guardian_error_response' for unrecognized codes
+    so audit consumers always have a non-empty cause string."""
+    if code is None:
+        return "guardian_error_response"
+    return GUARDIAN_ERROR_CAUSE.get(code, "guardian_error_response")
+
+
 # ----- Time + IDs -----
 
 def iso8601_now() -> str:
@@ -362,7 +392,7 @@ def _handshake_cache_path(session_id: str, guardian_url: str) -> Path:
 _HANDSHAKE_CACHE_TTL_S = int(os.environ.get("ACS_HANDSHAKE_CACHE_TTL_SECONDS", "3600"))
 
 
-def do_handshake(
+def ensure_session_handshake(
     *,
     guardian_url: str,
     session_id: str,
@@ -372,11 +402,29 @@ def do_handshake(
     wrapped_protocols: list[str] | None = None,
     timeout: float = 5.0,
 ) -> dict | None:
-    """Perform handshake/hello with the Guardian; return ServerHello or None.
+    """Idempotently ensure a handshake/hello has happened for this session.
 
-    Caches the ServerHello in a small JSON file keyed by (session_id,
-    guardian_url) with a TTL (default 1h). Stale cache files are
-    ignored — operator Guardian-config changes propagate within the TTL.
+    Spec contract (§4): handshake is REQUIRED at session start, ONCE
+    per session, not per event. The shell-stdin adapters
+    (claude-code, cursor) spawn a fresh process per hook event, so we
+    persist the negotiated ServerHello in a small JSON file under
+    `~/.cache/acs-adapter-handshake/<sha256(session_id+url)>.json`:
+
+      - First event of a session: cache miss → POSTs ClientHello,
+        receives ServerHello, writes cache file, returns ServerHello.
+      - Subsequent events same session: cache hit (file fresh, < 1h
+        old by default) → reads file, returns cached ServerHello.
+        NO network call.
+      - Cache files older than the TTL are ignored so operator
+        Guardian-config changes propagate.
+
+    Returns the ServerHello (cached or freshly fetched), or None on
+    failure (Guardian unreachable, etc.) — adapters fall to their
+    startup posture in that case (§4.1).
+
+    Function-name rationale: previously `do_handshake`, which
+    misleadingly read as 'POST every call'. The cache short-circuit
+    makes this an ensure-once, so the name says so.
     """
     cache = _handshake_cache_path(session_id, guardian_url)
     if cache.exists():
@@ -590,3 +638,10 @@ def install_path_for_sibling() -> None:
     here = str(Path(__file__).resolve().parent)
     if here not in sys.path:
         sys.path.insert(0, here)
+
+
+# ----- Back-compat alias -----
+# `do_handshake` was the original name. Renamed to make the cache
+# short-circuit visible at call sites. Old name kept so out-of-tree
+# adapter forks aren't broken by the rename.
+do_handshake = ensure_session_handshake

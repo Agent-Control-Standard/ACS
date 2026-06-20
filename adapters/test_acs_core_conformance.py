@@ -66,85 +66,18 @@ TEST_HMAC_SECRET = "acs-core-conformance-test-secret-not-for-production"
 
 # =============================================================================
 # Test harness — spawns the Guardian, exchanges signed envelopes.
+# Helpers come from adapters/_common/test_harness.py — see that file for
+# the canonical implementations of free_port, wait_port, schema validators,
+# and ProgrammableGuardian.
 # =============================================================================
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_port(host: str, port: int, timeout: float = 5.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError(f"Guardian did not start on {host}:{port}")
-
-
-def _build_local_resolver(schema_name: str):
-    """RefResolver with a `store` mapping canonical $id URLs to local
-    schema files, so $refs like 'modifications.json' resolve to disk
-    instead of network. Avoids RefResolver hitting acs.org."""
-    from jsonschema.validators import RefResolver
-    store = {}
-    for path in SPEC_DIR.glob("*.json"):
-        try:
-            with open(path) as f:
-                doc = json.load(f)
-            if "$id" in doc:
-                store[doc["$id"]] = doc
-            # Also register by local-file URI for relative $refs
-            store[path.as_uri()] = doc
-        except (OSError, json.JSONDecodeError):
-            pass
-    for path in (SPEC_DIR / "hooks").glob("*.json"):
-        try:
-            with open(path) as f:
-                doc = json.load(f)
-            if "$id" in doc:
-                store[doc["$id"]] = doc
-            store[path.as_uri()] = doc
-        except (OSError, json.JSONDecodeError):
-            pass
-    schema_path = SPEC_DIR / schema_name
-    with open(schema_path) as f:
-        schema = json.load(f)
-    resolver = RefResolver(
-        base_uri=schema_path.as_uri(),
-        referrer=schema,
-        store=store,
-    )
-    return schema, resolver
-
-
-def _validate_response_envelope(envelope: dict) -> list[str]:
-    from jsonschema import Draft202012Validator
-    schema, resolver = _build_local_resolver("response-envelope.json")
-    validator = Draft202012Validator(
-        schema, resolver=resolver,
-        format_checker=Draft202012Validator.FORMAT_CHECKER,
-    )
-    return [
-        f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
-        for err in validator.iter_errors(envelope)
-    ]
-
-
-def _validate_request_envelope(envelope: dict) -> list[str]:
-    from jsonschema import Draft202012Validator
-    schema, resolver = _build_local_resolver("request-envelope.json")
-    validator = Draft202012Validator(
-        schema, resolver=resolver,
-        format_checker=Draft202012Validator.FORMAT_CHECKER,
-    )
-    return [
-        f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
-        for err in validator.iter_errors(envelope)
-    ]
+from test_harness import (  # noqa: E402
+    free_port as _free_port,
+    wait_port as _wait_port,
+    build_local_resolver as _build_local_resolver,
+    validate_request_envelope as _validate_request_envelope,
+    validate_response_envelope as _validate_response_envelope,
+)
 
 
 class CoreHarness(unittest.TestCase):
@@ -247,7 +180,9 @@ class Core01_Handshake(CoreHarness):
     def test_handshake_returns_server_hello(self) -> None:
         """conformance.md:17 — 'Handshake — handshake/hello with
         ClientHello/ServerHello'. A Guardian MUST respond to
-        handshake/hello with a ServerHello in result.payload."""
+        handshake/hello with a ServerHello in result.payload, AND
+        the response envelope itself MUST validate against
+        response-envelope.json."""
         env = self._make_envelope("handshake/hello", payload={
             "acs_versions_supported": ["0.1.0"],
             "methods_implemented": ["steps/toolCallRequest"],
@@ -258,6 +193,11 @@ class Core01_Handshake(CoreHarness):
         resp = self._post(env)
         self.assertIn("result", resp,
             f"handshake/hello must return a result; got {resp}")
+        # Response envelope MUST validate against response-envelope.json
+        errors = _validate_response_envelope(resp)
+        self.assertEqual(errors, [],
+            f"handshake response fails response-envelope.json:\n  - "
+            + "\n  - ".join(errors))
         result = resp["result"]
         server_hello = result.get("payload", {})
         # handshake.json:70 — ServerHello required
@@ -757,13 +697,45 @@ class Core06_ReplayProtection(CoreHarness):
     def test_timestamp_outside_window_rejected_with_32006(self) -> None:
         """§10.3 — 'Guardians MUST reject requests whose timestamp is
         more than the negotiated skew window in the past or future,
-        returning TIMESTAMP_OUT_OF_WINDOW (-32006)'."""
+        returning TIMESTAMP_OUT_OF_WINDOW (-32006)'. Tests BOTH
+        directions: an ancient timestamp and a future one. Without
+        future-side coverage, a clock-skewed client gets
+        Heisenberg-ish behavior — sometimes accepted, sometimes not."""
+        # Past
         ancient = datetime.datetime(2010, 1, 1, tzinfo=datetime.timezone.utc).isoformat()
         resp = self._post(self._make_envelope("steps/sessionStart", {},
                                               timestamp=ancient))
         self.assertIn("error", resp)
         self.assertEqual(resp["error"]["code"], -32006,
-            f"§10.3 — code must be -32006 TIMESTAMP_OUT_OF_WINDOW")
+            f"§10.3 — code must be -32006 TIMESTAMP_OUT_OF_WINDOW (past)")
+        # Future
+        future = (datetime.datetime.now(datetime.timezone.utc)
+                  + datetime.timedelta(hours=1)).isoformat()
+        resp = self._post(self._make_envelope("steps/sessionStart", {},
+                                              timestamp=future))
+        self.assertIn("error", resp,
+            "§10.3 says 'past or future' — future-skewed timestamps must "
+            "also be rejected, not silently accepted")
+        self.assertEqual(resp["error"]["code"], -32006)
+
+    def test_error_response_envelope_validates(self) -> None:
+        """Every Guardian response — including ERROR responses — MUST
+        validate against response-envelope.json. The disposition tests
+        cover allow/deny envelopes; this one covers the error branch
+        of the JSON-RPC oneOf (result OR error)."""
+        sid = str(uuid.uuid4())
+        rid = str(uuid.uuid4())
+        # First request: accepted
+        self._post(self._make_envelope("steps/sessionStart", {},
+                                        session_id=sid, request_id=rid))
+        # Second request: same (sid, rid) → -32005 REPLAY_DETECTED error
+        resp = self._post(self._make_envelope("steps/sessionStart", {},
+                                              session_id=sid, request_id=rid))
+        self.assertIn("error", resp)
+        errors = _validate_response_envelope(resp)
+        self.assertEqual(errors, [],
+            f"Guardian error response fails response-envelope.json:\n  - "
+            + "\n  - ".join(errors))
 
     def test_same_request_id_across_sessions_is_fine(self) -> None:
         """§10.3 — replay protection is PER-SESSION. The same
@@ -1002,6 +974,209 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
             f"§6.4 — fail-open path must emit ACS_AUDIT event; stderr was:\n{proc.stderr}")
         self.assertIn("fail_open_bypass", proc.stderr,
             "audit event type must be 'fail_open_bypass'")
+        # Cause field must identify this as transport failure (Guardian
+        # was unreachable), not as a Guardian-returned error.
+        self.assertIn("transport_failure", proc.stderr,
+            "audit event must carry cause=transport_failure when Guardian is unreachable; "
+            "without this, transport failures and Guardian-returned errors look identical "
+            "in the audit log")
+
+    def test_guardian_error_response_carries_distinct_cause(self) -> None:
+        """Regression — found by hand-probing in a Claude session: when
+        the Guardian returns a JSON-RPC error (e.g. SIGNATURE_INVALID,
+        Invalid Request), the adapter SHOULD distinguish that in the
+        audit log from 'Guardian unreachable'. Both apply the same
+        fail posture per §6.4, but operators need to grep the cause to
+        tell them apart — a signature error is a client/operator bug
+        (fix your code), an unreachable Guardian is an ops issue (your
+        gate is down).
+
+        Setup: Guardian REQUIRES signing (started with ACS_HMAC_SECRET).
+        Adapter is invoked WITHOUT a secret, so it sends unsigned envelopes.
+        Guardian responds with -32004 SIGNATURE_INVALID.
+        """
+        adapter = HERE / "claude-code" / "acs_adapter.py"
+        # Spin up a Guardian that requires signing
+        port = _free_port()
+        env_g = os.environ.copy()
+        env_g["ACS_HMAC_SECRET"] = "regression-test-secret"
+        env_g.pop("ACS_DEV_MODE", None)
+        env_g["ACS_GUARDIAN_STATE_DIR"] = tempfile.mkdtemp()
+        guardian = subprocess.Popen(
+            [sys.executable, str(GUARDIAN_SCRIPT), "--port", str(port)], env=env_g,
+            stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        )
+        _wait_port("127.0.0.1", port)
+        try:
+            env_a = os.environ.copy()
+            env_a["ACS_GUARDIAN_URL"] = f"http://127.0.0.1:{port}/acs"
+            env_a["ACS_HANDSHAKE"] = "0"
+            env_a.pop("ACS_HMAC_SECRET", None)
+            env_a.pop("ACS_HMAC_SECRET_FILE", None)
+            env_a.pop("ACS_DEFAULT_DENY", None)  # default fail-open
+
+            proc = subprocess.run(
+                [sys.executable, str(adapter)],
+                input=json.dumps({
+                    "session_id": "00000000-0000-4000-8000-000000000001",
+                    "transcript_path": "/tmp/t", "cwd": "/tmp",
+                    "permission_mode": "default",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo hi"},
+                }),
+                capture_output=True, text=True, env=env_a, timeout=10,
+            )
+            self.assertIn("ACS_AUDIT", proc.stderr,
+                "fail-open path must still emit audit; stderr was:\n" + proc.stderr)
+            # The disposition is fail_open (since DEFAULT_DENY=0)
+            self.assertIn("fail_open_bypass", proc.stderr,
+                "disposition must be fail_open_bypass under DEFAULT_DENY=0")
+            # The cause MUST be the Guardian-returned-error case, NOT
+            # the transport case. This is the regression: if a future
+            # change collapses them again, this test fires.
+            self.assertIn("signature_invalid_response", proc.stderr,
+                "REGRESSION GAP: an unsigned envelope to a signing-required "
+                "Guardian must audit with cause=signature_invalid_response, "
+                "not cause=transport_failure. Collapsing them is the "
+                "footgun a Claude probe surfaced — without the distinct "
+                "cause, operators can't grep their audit log for client "
+                "bugs (which they should fix) vs Guardian outages.")
+            self.assertNotIn("cause\": \"transport_failure", proc.stderr,
+                "Guardian-returned error must NOT be logged as transport_failure")
+        finally:
+            guardian.terminate()
+            try: guardian.wait(timeout=2.0)
+            except subprocess.TimeoutExpired: guardian.kill()
+
+    def test_guardian_error_under_fail_closed_emits_deny(self) -> None:
+        """Companion regression — same setup as above, but with
+        ACS_DEFAULT_DENY=1. The adapter MUST emit a deny (not silently
+        proceed) AND must audit the specific cause."""
+        adapter = HERE / "claude-code" / "acs_adapter.py"
+        port = _free_port()
+        env_g = os.environ.copy()
+        env_g["ACS_HMAC_SECRET"] = "regression-test-secret-2"
+        env_g.pop("ACS_DEV_MODE", None)
+        env_g["ACS_GUARDIAN_STATE_DIR"] = tempfile.mkdtemp()
+        guardian = subprocess.Popen(
+            [sys.executable, str(GUARDIAN_SCRIPT), "--port", str(port)], env=env_g,
+            stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        )
+        _wait_port("127.0.0.1", port)
+        try:
+            env_a = os.environ.copy()
+            env_a["ACS_GUARDIAN_URL"] = f"http://127.0.0.1:{port}/acs"
+            env_a["ACS_HANDSHAKE"] = "0"
+            env_a["ACS_DEFAULT_DENY"] = "1"
+            env_a.pop("ACS_HMAC_SECRET", None)
+            env_a.pop("ACS_HMAC_SECRET_FILE", None)
+
+            proc = subprocess.run(
+                [sys.executable, str(adapter)],
+                input=json.dumps({
+                    "session_id": "00000000-0000-4000-8000-000000000002",
+                    "transcript_path": "/tmp/t", "cwd": "/tmp",
+                    "permission_mode": "default",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "rm -rf /home/some-fake-path"},
+                }),
+                capture_output=True, text=True, env=env_a, timeout=10,
+            )
+            # With DEFAULT_DENY=1, the adapter MUST emit a deny on stdout.
+            self.assertTrue(proc.stdout.strip(),
+                "fail-closed mode must emit a deny on stdout, not be silent")
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                self.fail(f"stdout was not JSON: {proc.stdout!r}")
+            self.assertEqual(
+                payload.get("hookSpecificOutput", {}).get("permissionDecision"),
+                "deny",
+                "PreToolUse adapter under DEFAULT_DENY=1 + Guardian rejects "
+                "envelope must emit permissionDecision=deny. Without this, "
+                "the original gap stays open: an unsigned envelope produces "
+                "no stdout (proceed) when fail-open, hiding the policy hole."
+            )
+            # And the audit log must record the specific cause
+            self.assertIn("decision_failure_fail_closed", proc.stderr,
+                "fail-closed audit type must appear")
+            self.assertIn("signature_invalid_response", proc.stderr,
+                "audit must carry cause=signature_invalid_response")
+        finally:
+            guardian.terminate()
+            try: guardian.wait(timeout=2.0)
+            except subprocess.TimeoutExpired: guardian.kill()
+
+    def test_malformed_envelope_under_fail_closed_emits_deny(self) -> None:
+        """Companion to the signature regression — what Claude in the
+        other probe found FIRST: a non-UUID session_id makes the Guardian
+        return -32600 Invalid Request. Under fail-open the adapter
+        silently proceeds (the original footgun). Under DEFAULT_DENY=1
+        the adapter MUST emit a deny AND log cause=malformed_envelope_response."""
+        adapter = HERE / "claude-code" / "acs_adapter.py"
+        port = _free_port()
+        env_g = os.environ.copy()
+        env_g["ACS_DEV_MODE"] = "1"  # no signing for this test
+        env_g.pop("ACS_HMAC_SECRET", None)
+        env_g.pop("ACS_HMAC_SECRET_FILE", None)
+        env_g["ACS_GUARDIAN_STATE_DIR"] = tempfile.mkdtemp()
+        guardian = subprocess.Popen(
+            [sys.executable, str(GUARDIAN_SCRIPT), "--port", str(port)], env=env_g,
+            stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        )
+        _wait_port("127.0.0.1", port)
+        try:
+            env_a = os.environ.copy()
+            env_a["ACS_GUARDIAN_URL"] = f"http://127.0.0.1:{port}/acs"
+            env_a["ACS_HANDSHAKE"] = "0"
+            env_a["ACS_DEFAULT_DENY"] = "1"
+            env_a.pop("ACS_HMAC_SECRET", None)
+            env_a.pop("ACS_HMAC_SECRET_FILE", None)
+
+            # Non-UUID session_id triggers -32600 from the Guardian's
+            # request-envelope.json schema validation
+            proc = subprocess.run(
+                [sys.executable, str(adapter)],
+                input=json.dumps({
+                    "session_id": "test-sess",  # not a UUID — Guardian rejects
+                    "transcript_path": "/tmp/t", "cwd": "/tmp",
+                    "permission_mode": "default",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "rm -rf /home/some-fake-path"},
+                }),
+                capture_output=True, text=True, env=env_a, timeout=10,
+            )
+            # Either the adapter refused to build the envelope at all
+            # (adapter_build_failed) because session_id isn't a UUID,
+            # OR the Guardian rejected with -32600. Both should result
+            # in a deny under DEFAULT_DENY=1.
+            self.assertTrue(proc.stdout.strip(),
+                "fail-closed must emit a deny on stdout; stdout was empty. "
+                "stderr: " + proc.stderr[:400])
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                self.fail(f"stdout was not JSON: {proc.stdout!r}")
+            self.assertEqual(
+                payload.get("hookSpecificOutput", {}).get("permissionDecision"),
+                "deny",
+                "non-UUID session_id under DEFAULT_DENY=1 must produce deny, "
+                "not silent proceed (the original footgun)")
+            self.assertIn("decision_failure_fail_closed", proc.stderr)
+            # Cause is either adapter_build_failed (caught before the wire)
+            # or malformed_envelope_response (caught by Guardian).
+            self.assertTrue(
+                "adapter_build_failed" in proc.stderr
+                or "malformed_envelope_response" in proc.stderr,
+                f"cause must distinguish the malformed-envelope case from "
+                f"a transport failure; stderr was: {proc.stderr[:400]}")
+        finally:
+            guardian.terminate()
+            try: guardian.wait(timeout=2.0)
+            except subprocess.TimeoutExpired: guardian.kill()
 
 
 # =============================================================================
@@ -1019,11 +1194,17 @@ class Core09_SystemPing(CoreHarness):
 
     def test_ping_returns_allow(self) -> None:
         """§13 — 'Guardians MUST always return decision: allow for
-        system/ping regardless of policy, signature, or session state'."""
+        system/ping regardless of policy, signature, or session state'.
+        Also: the response envelope MUST validate against
+        response-envelope.json."""
         env = self._make_envelope("system/ping", {"echo": "hi"}, sign=False)
         resp = self._post(env)
         self.assertIn("result", resp)
         self.assertEqual(resp["result"]["decision"], "allow")
+        errors = _validate_response_envelope(resp)
+        self.assertEqual(errors, [],
+            f"ping response fails response-envelope.json:\n  - "
+            + "\n  - ".join(errors))
 
     def test_ping_does_not_require_signature(self) -> None:
         """§13 — 'system/ping MUST NOT require a signature even if the

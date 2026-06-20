@@ -45,10 +45,8 @@ if _NAT_OK:
     from acs_adapter import ACSMiddlewareConfig  # noqa: E402
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_common"))
+from test_harness import free_port as _free_port  # noqa: E402
 
 
 class RecordingGuardian(BaseHTTPRequestHandler):

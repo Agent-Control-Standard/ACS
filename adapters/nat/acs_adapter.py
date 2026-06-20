@@ -61,7 +61,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 from acs_common import (  # noqa: E402
     audit_event,
-    do_handshake,
+    ensure_session_handshake,
     iso8601_now as _common_iso8601_now,
     sign_envelope,
     validate_guardian_url,
@@ -245,7 +245,11 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 "steps/sessionStart", "steps/userMessage",
                 "steps/agentResponse", "steps/sessionEnd",
             ]
-        do_handshake(
+        # NAT is in-process, so we use the in-memory `_handshake_done`
+        # flag as the primary guard (above). The disk cache in
+        # ensure_session_handshake is the fallback that also makes
+        # things idempotent across process restarts.
+        ensure_session_handshake(
             guardian_url=self._config.guardian_url,
             session_id=self._session_id,
             agent_id=self._agent_id,

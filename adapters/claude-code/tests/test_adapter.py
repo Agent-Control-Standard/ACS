@@ -23,21 +23,11 @@ ADAPTER = ADAPTER_DIR / "acs_adapter.py"
 GUARDIAN = ADAPTER_DIR.parent / "example-guardian" / "example_guardian.py"
 
 
-def _find_free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError(f"guardian did not start on {host}:{port}")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_common"))
+from test_harness import (  # noqa: E402
+    free_port as _find_free_port,
+    wait_port as _wait_for_port,
+)
 
 
 def _claude_code_event(name: str, **extra) -> dict:

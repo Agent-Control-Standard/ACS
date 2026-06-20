@@ -34,21 +34,8 @@ GUARDIAN = ADAPTER_DIR.parent / "example-guardian" / "example_guardian.py"
 CLAUDE_AVAILABLE = shutil.which("claude") is not None
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait(host: str, port: int, timeout: float = 5.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError(f"guardian not up at {host}:{port}")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_common"))
+from test_harness import free_port as _free_port, wait_port as _wait  # noqa: E402
 
 
 @unittest.skipUnless(CLAUDE_AVAILABLE, "`claude` CLI not on PATH")

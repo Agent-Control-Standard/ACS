@@ -54,7 +54,7 @@ from acs_common import (  # noqa: E402
     ACS_VERSION,
     audit_event,
     coerce_uuid,
-    do_handshake,
+    ensure_session_handshake,
     iso8601_now,
     load_session_state,
     record_step,
@@ -329,12 +329,15 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _maybe_handshake(event: dict[str, Any]) -> None:
+    """Called on every hook event. Idempotent per session via disk
+    cache — only the first event of a session actually POSTs
+    handshake/hello. See ensure_session_handshake's docstring."""
     if not HANDSHAKE_ENABLED:
         return
     sid = _session_id(event)
     if not sid:
         return
-    do_handshake(
+    ensure_session_handshake(
         guardian_url=GUARDIAN_URL,
         session_id=sid,
         agent_id=_agent_id(event),
