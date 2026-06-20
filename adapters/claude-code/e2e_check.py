@@ -68,102 +68,16 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5")
 PER_CALL_TIMEOUT_S = 120.0
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Pretty printer
-# ──────────────────────────────────────────────────────────────────────
-
-CHECK = "✓"
-CROSS = "✗"
-PASS_TXT = "\033[1;32mPASS\033[0m"
-FAIL_TXT = "\033[1;31mFAIL\033[0m"
-DIM = "\033[2m"
-RESET = "\033[0m"
+# Shared pretty-printer + helpers; see adapters/_common/e2e_report.py.
+from e2e_report import (  # noqa: E402
+    Report,
+    assert_envelopes_signed_and_valid as _assert_envelopes_signed_and_valid,
+)
 
 
-class Report:
-    def __init__(self) -> None:
-        self.entries: list[tuple[str, bool]] = []
-
-    def print_header(self, total: int) -> None:
-        line = "═" * 68
-        print(line)
-        print("  ACS Claude Code adapter — REAL end-to-end conformance check")
-        print(line)
-        print()
-        print("  This test drives a REAL `claude --print` invocation against")
-        print("  the adapter you wired up. It is NOT synthetic — it verifies")
-        print("  that YOUR installed Claude Code actually fires the hooks ACS")
-        print("  expects, that they are correctly translated to wire envelopes,")
-        print("  signed end-to-end, and applied by Claude when the Guardian decides.")
-        print()
-        print(f"  Spec source : {SPEC_DIR_DEFAULT}")
-        print(f"  Adapter     : {ADAPTER}")
-        print(f"  Claude CLI  : {shutil.which('claude')}")
-        print(f"  Model       : {CLAUDE_MODEL}")
-        print()
-        print(f"  {total} scenarios — each invokes real Claude (~10-15s each).")
-        print()
-        print("─" * 68)
-        print()
-
-    def case(self, num: int, total: int, title: str) -> None:
-        print(f"[{num}/{total}] {title}")
-
-    def field(self, label: str, value: str) -> None:
-        print(f"      {label:12s} {value}")
-
-    def sub(self, label: str, ok: bool, detail: str = "") -> None:
-        mark = CHECK if ok else CROSS
-        line = f"      {mark} {label}"
-        if detail:
-            line += f"  ({detail})"
-        print(line)
-
-    def json_block(self, label: str, obj, *, truncate: int = 200) -> None:
-        rendered = json.dumps(self._trim(obj, truncate), indent=2, sort_keys=True)
-        rendered = "\n".join("        " + line for line in rendered.splitlines())
-        print(f"      ── {label}")
-        print(rendered)
-
-    def quote_block(self, label: str, text: str, *, max_chars: int = 400) -> None:
-        text = text.strip()
-        if len(text) > max_chars:
-            text = text[:max_chars] + f"\n[…+{len(text) - max_chars} more chars truncated]"
-        wrapped = "\n".join("        " + line for line in text.splitlines())
-        print(f"      ── {label}")
-        print(wrapped)
-
-    def _trim(self, obj, n):
-        if isinstance(obj, str):
-            return obj if len(obj) <= n else obj[:n] + f"…(+{len(obj) - n} chars)"
-        if isinstance(obj, dict):
-            return {k: self._trim(v, n) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._trim(v, n) for v in obj]
-        return obj
-
-    def finish(self, title: str, ok: bool) -> None:
-        verdict = PASS_TXT if ok else FAIL_TXT
-        print(f"      Result      {verdict}")
-        print()
-        self.entries.append((title, ok))
-
-    def summary(self) -> bool:
-        line = "═" * 68
-        passed = sum(1 for _, ok in self.entries if ok)
-        total = len(self.entries)
-        print(line)
-        if passed == total:
-            print(f"  Summary: {passed}/{total} scenarios passed — "
-                  f"\033[1;32mYOUR CLAUDE CODE INSTALL IS ACS-CONFORMANT\033[0m")
-        else:
-            print(f"  Summary: {passed}/{total} scenarios passed — "
-                  f"\033[1;31mFAILURES BELOW\033[0m")
-            for title, ok in self.entries:
-                if not ok:
-                    print(f"   {CROSS} {title}")
-        print(line)
-        return passed == total
+def _envelope_checks(guardian, sub_results: list) -> None:
+    _assert_envelopes_signed_and_valid(
+        guardian, validate_request_envelope, sub_results)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -319,22 +233,7 @@ def scenario_allow(report: Report, workdir: Path,
                          "handshake/hello" in methods, ""))
     sub_results.append(("Guardian received steps/toolCallRequest",
                          "steps/toolCallRequest" in methods, ""))
-    signed_envs = [r for r in guardian.received
-                    if r.get("params", {}).get("signature", {}).get("algorithm") == "HMAC-SHA256"]
-    all_signed = (len(signed_envs) == len(guardian.received))
-    sub_results.append(("Every envelope is HMAC-SHA256 signed",
-                         all_signed,
-                         f"{len(signed_envs)}/{len(guardian.received)}"))
-    schema_errors = []
-    for r in guardian.received:
-        if r.get("method") in ("handshake/hello", "system/ping"):
-            continue
-        errs = validate_request_envelope(r)
-        if errs:
-            schema_errors.append((r.get("method"), errs[0]))
-    sub_results.append(("Every envelope validates against canonical schema",
-                         not schema_errors,
-                         "no errors" if not schema_errors else f"{len(schema_errors)} envelopes failed"))
+    _envelope_checks(guardian, sub_results)
     # Check the marker in the toolCallResult envelope (the actual tool
     # output the Guardian saw), not in Claude's prose summary — Claude
     # may condense or rephrase tool output before showing it to the user.
@@ -552,7 +451,23 @@ def main() -> int:
         return 1
 
     report = Report()
-    report.print_header(TOTAL_SCENARIOS)
+    report.print_header(
+        "ACS Claude Code adapter — REAL end-to-end conformance check",
+        "",
+        "This test drives a REAL `claude --print` invocation against",
+        "the adapter you wired up. It is NOT synthetic — it verifies",
+        "that YOUR installed Claude Code actually fires the hooks ACS",
+        "expects, that they are correctly translated to wire envelopes,",
+        "signed end-to-end, and applied by Claude when the Guardian decides.",
+        "",
+        f"Spec source : {SPEC_DIR_DEFAULT}",
+        f"Adapter     : {ADAPTER}",
+        f"Claude CLI  : {shutil.which('claude')}",
+        f"Model       : {CLAUDE_MODEL}",
+        "",
+        f"{TOTAL_SCENARIOS} scenarios — each invokes real Claude (~10-15s each).",
+        width=68,
+    )
 
     # Programmable Guardian — records every envelope, signs every response
     # with the same HMAC secret the adapter uses, can be configured per
@@ -571,7 +486,7 @@ def main() -> int:
         guardian.stop()
         shutil.rmtree(workdir, ignore_errors=True)
 
-    return 0 if report.summary() else 1
+    return 0 if report.summary("YOUR CLAUDE CODE INSTALL IS ACS-CONFORMANT", width=68) else 1
 
 
 if __name__ == "__main__":

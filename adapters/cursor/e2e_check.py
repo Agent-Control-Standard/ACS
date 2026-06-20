@@ -88,109 +88,20 @@ from example_guardian import evaluate_step  # noqa: E402
 HMAC_SECRET = "e2e-test-shared-secret-not-for-production"
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Pretty printer (identical structure to the Claude Code e2e_check)
-# ──────────────────────────────────────────────────────────────────────
-
-CHECK = "✓"
-CROSS = "✗"
-PASS_TXT = "\033[1;32mPASS\033[0m"
-FAIL_TXT = "\033[1;31mFAIL\033[0m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+# Shared pretty-printer + helpers; see adapters/_common/e2e_report.py.
+from e2e_report import (  # noqa: E402
+    Report, real_policy_handler as _shared_real_policy_handler,
+    assert_envelopes_signed_and_valid as _assert_envelopes_signed_and_valid,
+)
 
 
-class Report:
-    def __init__(self) -> None:
-        self.entries: list[tuple[str, bool]] = []
+def real_policy_handler():
+    return _shared_real_policy_handler(evaluate_step)
 
-    def print_header(self, total: int, workdir: Path) -> None:
-        line = "═" * 70
-        print(line)
-        print("  ACS Cursor adapter — REAL end-to-end conformance check")
-        print(line)
-        print()
-        print("  This test drives YOUR Cursor installation through real")
-        print("  scenarios. The script wires a project-level .cursor/hooks.json")
-        print("  inside a temp workspace and asks you to open that workspace")
-        print("  in Cursor + perform specific actions. Cursor is a GUI; the")
-        print("  loop requires you to do the user actions.")
-        print()
-        print(f"  Spec source : {SPEC_DIR_DEFAULT}")
-        print(f"  Adapter     : {ADAPTER}")
-        print(f"  Cursor app  : (open it yourself when prompted)")
-        print(f"  Test workdir: {workdir}")
-        print()
-        print(f"  {total} scenarios. Budget ~5-10 minutes total — real human")
-        print(f"  interaction is in the loop.")
-        print()
-        print("─" * 70)
-        print()
 
-    def case(self, num: int, total: int, title: str) -> None:
-        print(f"[{num}/{total}] {BOLD}{title}{RESET}")
-
-    def field(self, label: str, value: str) -> None:
-        print(f"      {label:12s} {value}")
-
-    def operator_action(self, instructions: list[str]) -> None:
-        """Print the OPERATOR ACTION block and wait for Enter."""
-        print(f"      {BOLD}── ACTION REQUIRED in Cursor ──{RESET}")
-        for i, line in enumerate(instructions, 1):
-            print(f"        {i}. {line}")
-        print()
-        try:
-            input(f"      {BOLD}Press Enter when done (or Ctrl-C to abort):{RESET} ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            print("      Aborted.")
-            sys.exit(1)
-        print()
-
-    def sub(self, label: str, ok: bool, detail: str = "") -> None:
-        mark = CHECK if ok else CROSS
-        line = f"      {mark} {label}"
-        if detail:
-            line += f"  ({detail})"
-        print(line)
-
-    def json_block(self, label: str, obj, *, truncate: int = 200) -> None:
-        rendered = json.dumps(self._trim(obj, truncate), indent=2, sort_keys=True)
-        rendered = "\n".join("        " + line for line in rendered.splitlines())
-        print(f"      ── {label}")
-        print(rendered)
-
-    def _trim(self, obj, n):
-        if isinstance(obj, str):
-            return obj if len(obj) <= n else obj[:n] + f"…(+{len(obj) - n} chars)"
-        if isinstance(obj, dict):
-            return {k: self._trim(v, n) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._trim(v, n) for v in obj]
-        return obj
-
-    def finish(self, title: str, ok: bool) -> None:
-        verdict = PASS_TXT if ok else FAIL_TXT
-        print(f"      Result      {verdict}")
-        print()
-        self.entries.append((title, ok))
-
-    def summary(self) -> bool:
-        line = "═" * 70
-        passed = sum(1 for _, ok in self.entries if ok)
-        total = len(self.entries)
-        print(line)
-        if passed == total:
-            print(f"  Summary: {passed}/{total} scenarios passed — "
-                  f"\033[1;32mYOUR CURSOR INSTALL IS ACS-CONFORMANT\033[0m")
-        else:
-            print(f"  Summary: {passed}/{total} scenarios passed — "
-                  f"\033[1;31mFAILURES BELOW\033[0m")
-            for title, ok in self.entries:
-                if not ok:
-                    print(f"   {CROSS} {title}")
-        print(line)
-        return passed == total
+def _envelope_checks(guardian, sub_results: list) -> None:
+    _assert_envelopes_signed_and_valid(
+        guardian, validate_request_envelope, sub_results)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -243,26 +154,6 @@ def write_project_hooks(workdir: Path, port: int) -> Path:
     }
     hooks_path.write_text(json.dumps(config, indent=2))
     return hooks_path
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Guardian disposition: the REAL example-Guardian policy
-# ──────────────────────────────────────────────────────────────────────
-
-def real_policy_handler() -> callable:
-    """Wrap `example_guardian.evaluate_step` so the ProgrammableGuardian
-    runs the production policy for every method. This is the ONLY
-    handler the e2e installs — every scenario sees the same shipping
-    policy. An operator who runs `rm -rf` during the wrong prompt still
-    gets denied; a policy regression gets caught end-to-end here, not
-    just at the regex unit-test level."""
-    def handler(req: dict) -> dict:
-        method = req.get("method", "")
-        params = req.get("params") or {}
-        request_id = params.get("request_id", "")
-        chain_hash = params.get("chain_hash", "0" * 64)
-        return evaluate_step(method, params, request_id, chain_hash)
-    return handler
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -324,23 +215,7 @@ def scenario_allow(report: Report, workdir: Path,
     pretool_or_shell = ("steps/toolCallRequest" in methods)
     sub_results.append(("Guardian received a toolCallRequest",
                          pretool_or_shell, ""))
-    signed_envs = [r for r in guardian.received
-                    if r.get("params", {}).get("signature", {}).get("algorithm") == "HMAC-SHA256"]
-    all_signed = (len(signed_envs) == len(guardian.received))
-    sub_results.append(("Every envelope is HMAC-SHA256 signed",
-                         all_signed,
-                         f"{len(signed_envs)}/{len(guardian.received)}"))
-    schema_errors = []
-    for r in guardian.received:
-        if r.get("method") in ("handshake/hello", "system/ping"):
-            continue
-        errs = validate_request_envelope(r)
-        if errs:
-            schema_errors.append((r.get("method"), errs[0]))
-    sub_results.append(("Every envelope validates against canonical schema",
-                         not schema_errors,
-                         "no errors" if not schema_errors
-                         else f"{len(schema_errors)} envelopes failed"))
+    _envelope_checks(guardian, sub_results)
     # Marker should appear in some toolCallResult envelope's outputs
     result_envs = [r for r in guardian.received
                     if r.get("method") == "steps/toolCallResult"]
@@ -624,7 +499,23 @@ def main() -> int:
     write_project_hooks(workdir, guardian.port)
 
     report = Report()
-    report.print_header(TOTAL_SCENARIOS, workdir)
+    report.print_header(
+        "ACS Cursor adapter — REAL end-to-end conformance check",
+        "",
+        "This test drives YOUR Cursor installation through real",
+        "scenarios. The script wires a project-level .cursor/hooks.json",
+        "inside a temp workspace and asks you to open that workspace",
+        "in Cursor + perform specific actions. Cursor is a GUI; the",
+        "loop requires you to do the user actions.",
+        "",
+        f"Spec source : {SPEC_DIR_DEFAULT}",
+        f"Adapter     : {ADAPTER}",
+        f"Cursor app  : (open it yourself when prompted)",
+        f"Test workdir: {workdir}",
+        "",
+        f"{TOTAL_SCENARIOS} scenarios. Budget ~5-10 minutes total — real human",
+        "interaction is in the loop.",
+    )
 
     try:
         scenario_setup_open_workspace(report, workdir, guardian)
@@ -642,7 +533,7 @@ def main() -> int:
         # which is harmless.
         shutil.rmtree(workdir, ignore_errors=True)
 
-    return 0 if report.summary() else 1
+    return 0 if report.summary("YOUR CURSOR INSTALL IS ACS-CONFORMANT") else 1
 
 
 if __name__ == "__main__":
