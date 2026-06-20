@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
@@ -55,6 +55,7 @@ from acs_common import (  # noqa: E402
     audit_event,
     coerce_uuid,
     ensure_session_handshake,
+    guardian_error_cause,
     iso8601_now,
     load_session_state,
     record_step,
@@ -70,6 +71,8 @@ DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "0") == "1"
 HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
 
 
+# ─── Hook taxonomy ──────────────────────────────────────────────────────────
+
 # Cursor hook event -> ACS step method.
 #
 # Intentionally OMITTED from this map (documented gap, not synthesis):
@@ -81,32 +84,84 @@ HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
 #                  is therefore not forwarded. The Cursor README per-hook
 #                  honesty table documents the gap.
 HOOK_MAP: dict[str, str] = {
-    "sessionStart": "steps/sessionStart",
-    "sessionEnd": "steps/sessionEnd",
-    "stop": "steps/sessionEnd",
-    "preToolUse": "steps/toolCallRequest",
-    "postToolUse": "steps/toolCallResult",
-    "postToolUseFailure": "steps/toolCallResult",
-    "subagentStart": "steps/subagentStart",
+    "sessionStart":         "steps/sessionStart",
+    "sessionEnd":           "steps/sessionEnd",
+    "stop":                 "steps/sessionEnd",
+    "preToolUse":           "steps/toolCallRequest",
+    "postToolUse":          "steps/toolCallResult",
+    "postToolUseFailure":   "steps/toolCallResult",
+    "subagentStart":        "steps/subagentStart",
     "beforeShellExecution": "steps/toolCallRequest",
-    "afterShellExecution": "steps/toolCallResult",
-    "beforeMCPExecution": "steps/toolCallRequest",
-    "afterMCPExecution": "steps/toolCallResult",
-    "afterFileEdit": "steps/toolCallResult",
-    "beforeSubmitPrompt": "steps/userMessage",
-    "preCompact": "steps/preCompact",
-    "afterAgentResponse": "steps/agentResponse",
-    "afterAgentThought": "steps/agentResponse",
-    "afterTabFileEdit": "steps/toolCallResult",
+    "afterShellExecution":  "steps/toolCallResult",
+    "beforeMCPExecution":   "steps/toolCallRequest",
+    "afterMCPExecution":    "steps/toolCallResult",
+    "afterFileEdit":        "steps/toolCallResult",
+    "beforeSubmitPrompt":   "steps/userMessage",
+    "preCompact":           "steps/preCompact",
+    "afterAgentResponse":   "steps/agentResponse",
+    "afterAgentThought":    "steps/agentResponse",
+    "afterTabFileEdit":     "steps/toolCallResult",
 }
 
+# Cursor events whose deny shape is `{"permission": "deny", ...}`
+# (vs `beforeSubmitPrompt` which uses exit code 2, and post-tool events
+# which only carry `additional_context`).
+PERMISSION_EVENTS = frozenset({
+    "preToolUse", "subagentStart", "beforeShellExecution", "beforeMCPExecution",
+})
 
-PERMISSION_EVENTS = {"preToolUse", "subagentStart", "beforeShellExecution", "beforeMCPExecution"}
-POST_TOOL_EVENTS = {
+POST_TOOL_EVENTS = frozenset({
     "postToolUse", "postToolUseFailure", "afterMCPExecution",
     "afterShellExecution", "afterFileEdit", "afterTabFileEdit",
+})
+
+PERMISSION_MAP: dict[str, str] = {
+    "allow": "allow", "deny": "deny", "ask": "ask", "defer": "ask",  # no native defer
 }
 
+KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+
+SESSION_END_REASONS = frozenset({"completed", "cancelled", "error", "timeout", "abandoned"})
+
+
+# ─── Response writers — one definition each, used everywhere ──────────────
+
+def _emit(payload: dict[str, Any]) -> None:
+    """Single point where the adapter writes to stdout. Idempotent on
+    empty dict. beforeSubmitPrompt uses internal __exit_code/_reasoning
+    keys (handled in main) and never reaches this writer with them."""
+    if not payload:
+        return
+    json.dump(payload, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def _permission_response(decision: str, message: str = "",
+                          updated_input: dict | None = None) -> dict[str, Any]:
+    """Cursor's permission-event response shape: top-level `permission`
+    plus optional user/agent messages and updated_input (preToolUse only)."""
+    out: dict[str, Any] = {"permission": decision}
+    if message:
+        out["user_message"] = message
+        out["agent_message"] = message
+    if updated_input is not None:
+        out["updated_input"] = updated_input
+    return out
+
+
+def _post_tool_response(additional_context: str | None = None,
+                         updated_mcp_tool_output: str | None = None) -> dict[str, Any]:
+    """Cursor post-tool event response — only `additional_context` and
+    (for afterMCPExecution) `updated_mcp_tool_output`."""
+    out: dict[str, Any] = {}
+    if additional_context:
+        out["additional_context"] = additional_context
+    if updated_mcp_tool_output is not None:
+        out["updated_mcp_tool_output"] = updated_mcp_tool_output
+    return out
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _agent_id(event: dict[str, Any]) -> str:
     explicit = os.environ.get("ACS_AGENT_ID")
@@ -131,10 +186,12 @@ def _workspace(event: dict[str, Any]) -> str | None:
 
 
 def _wrap_arguments(raw: dict[str, Any]) -> dict[str, Any]:
+    """tool-call-request.json:26-37 — each arg is {value, provenance?}."""
     return {k: {"value": v} for k, v in (raw or {}).items()}
 
 
 def _outputs_list(raw: Any) -> list[dict[str, Any]]:
+    """tool-call-result.json wants outputs as array of {value, provenance?}."""
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -143,149 +200,180 @@ def _outputs_list(raw: Any) -> list[dict[str, Any]]:
 
 
 def _tool_use_request_id(tool_call_id: str | None) -> str | None:
+    """Deterministic UUID5 so postToolUse can carry request_id_ref linking
+    back to the originating preToolUse (per tool-call-result.json:19-23)."""
     if not tool_call_id:
         return None
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"cursor:tool_use:{tool_call_id}"))
 
 
+# ─── Payload builders — dispatch table, one function per Cursor event ─────
+
+def _payload_pretool(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool": {"name": event.get("tool_name") or event.get("tool", "")},
+        "arguments": _wrap_arguments(event.get("tool_input") or event.get("arguments") or {}),
+    }
+
+
+def _payload_before_shell(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool": {"name": "Shell"},
+        "arguments": _wrap_arguments({"command": event.get("command", "")}),
+    }
+
+
+def _payload_before_mcp(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
+                 "provider": event.get("mcp_server", "")},
+        "arguments": _wrap_arguments(event.get("tool_input") or event.get("arguments") or {}),
+    }
+
+
+def _payload_posttool(event: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "tool": {"name": event.get("tool_name") or event.get("tool", "")},
+        "exit_status": "failure" if event.get("hook_event_name") == "postToolUseFailure"
+                       or event.get("_event_name") == "postToolUseFailure" else "success",
+        "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
+    }
+    ref = _tool_use_request_id(event.get("tool_call_id") or event.get("tool_use_id"))
+    if ref:
+        payload["request_id_ref"] = ref
+    return payload
+
+
+def _payload_after_shell(event: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "tool": {"name": "Shell"},
+        "exit_status": "failure" if event.get("exit_code", 0) else "success",
+        "outputs": _outputs_list(event.get("output") or event.get("result")),
+    }
+    ref = _tool_use_request_id(event.get("execution_id"))
+    if ref:
+        payload["request_id_ref"] = ref
+    return payload
+
+
+def _payload_after_mcp(event: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
+                 "provider": event.get("mcp_server", "")},
+        "exit_status": "success",
+        "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
+    }
+    ref = _tool_use_request_id(event.get("call_id"))
+    if ref:
+        payload["request_id_ref"] = ref
+    return payload
+
+
+def _payload_file_edit(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool": {"name": "Edit"},
+        "exit_status": "success",
+        "outputs": _outputs_list({"file_path": event.get("file_path", "")}),
+    }
+
+
+def _payload_before_submit_prompt(event: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text",
+                         "value": event.get("prompt") or event.get("user_message", "")}]}
+
+
+def _payload_after_agent(event: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text",
+                         "value": event.get("response") or event.get("thought", "")}]}
+
+
+def _payload_session_start(event: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if event.get("workspace_path") or event.get("cwd"):
+        out["platform_context"] = {"workspace_path": event.get("workspace_path") or event.get("cwd")}
+    return out
+
+
+def _payload_session_end(event: dict[str, Any]) -> dict[str, Any]:
+    raw = (event.get("reason") or "").lower()
+    return {"reason": raw if raw in SESSION_END_REASONS else "completed"}
+
+
+def _payload_subagent_start(event: dict[str, Any]) -> dict[str, Any]:
+    """All four schema-required fields, populated from real session data
+    where possible. See Cursor README 'Per-hook honesty table'."""
+    sub_raw = event.get("subagent_id", "")
+    sid = _session_id(event)
+    st = load_session_state(sid, workspace=_workspace(event))
+    parent_step_id = st.get("last_step_id") or sid
+    payload = {
+        "subagent_session_id": str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"cursor-subagent:{sid}:{sub_raw or 'unknown'}")),
+        "parent_session_id": sid,
+        "parent_step_id": parent_step_id,
+        # Cursor IDE subagents are dispatched by the parent agent
+        # (Composer/Agent panel routing), inheriting the parent's
+        # context. derived_from_parent is the defensible default.
+        "intent_derivation": "derived_from_parent",
+    }
+    if sub_raw:
+        payload["subagent_descriptor"] = {
+            "agent_id": sub_raw,
+            "agent_name": event.get("subagent_type", ""),
+        }
+    return payload
+
+
+def _payload_precompact(event: dict[str, Any]) -> dict[str, Any]:
+    """entries_to_compact: real step_ids the adapter has observed in this
+    session. Cursor doesn't tell us WHICH entries it intends to compact,
+    but the entries actually IN the session are an honest superset
+    (compaction always operates on something already observed)."""
+    sid = _session_id(event)
+    st = load_session_state(sid, workspace=_workspace(event))
+    seen = list(st.get("seen_step_ids") or [])
+    if not seen:
+        # No prior steps recorded — adapter wired without preceding hooks.
+        # Fall back to the session_id as a single placeholder entry.
+        seen = [sid]
+    return {
+        "entries_to_compact": seen,
+        "triggered_by": (event.get("trigger") or "framework_initiated"),
+    }
+
+
+_PAYLOAD_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "preToolUse":           _payload_pretool,
+    "beforeShellExecution": _payload_before_shell,
+    "beforeMCPExecution":   _payload_before_mcp,
+    "postToolUse":          _payload_posttool,
+    "postToolUseFailure":   _payload_posttool,
+    "afterShellExecution":  _payload_after_shell,
+    "afterMCPExecution":    _payload_after_mcp,
+    "afterFileEdit":        _payload_file_edit,
+    "afterTabFileEdit":     _payload_file_edit,
+    "beforeSubmitPrompt":   _payload_before_submit_prompt,
+    "afterAgentResponse":   _payload_after_agent,
+    "afterAgentThought":    _payload_after_agent,
+    "sessionStart":         _payload_session_start,
+    "sessionEnd":           _payload_session_end,
+    "stop":                 _payload_session_end,
+    "subagentStart":        _payload_subagent_start,
+    "preCompact":           _payload_precompact,
+}
+
+
 def build_payload(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
-    if event_name == "preToolUse":
-        return {
-            "tool": {"name": event.get("tool_name") or event.get("tool", "")},
-            "arguments": _wrap_arguments(event.get("tool_input") or event.get("arguments") or {}),
-        }
-
-    if event_name == "beforeShellExecution":
-        return {
-            "tool": {"name": "Shell"},
-            "arguments": _wrap_arguments({"command": event.get("command", "")}),
-        }
-
-    if event_name == "beforeMCPExecution":
-        return {
-            "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
-                     "provider": event.get("mcp_server", "")},
-            "arguments": _wrap_arguments(event.get("tool_input") or event.get("arguments") or {}),
-        }
-
+    builder = _PAYLOAD_BUILDERS.get(event_name)
+    if not builder:
+        return {}
+    # _payload_posttool branches on event_name; thread it through
     if event_name in ("postToolUse", "postToolUseFailure"):
-        payload = {
-            "tool": {"name": event.get("tool_name") or event.get("tool", "")},
-            "exit_status": "failure" if event_name == "postToolUseFailure" else "success",
-            "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
-        }
-        ref = _tool_use_request_id(event.get("tool_call_id") or event.get("tool_use_id"))
-        if ref:
-            payload["request_id_ref"] = ref
-        return payload
-
-    if event_name == "afterShellExecution":
-        payload = {
-            "tool": {"name": "Shell"},
-            "exit_status": "failure" if event.get("exit_code", 0) else "success",
-            "outputs": _outputs_list(event.get("output") or event.get("result")),
-        }
-        ref = _tool_use_request_id(event.get("execution_id"))
-        if ref:
-            payload["request_id_ref"] = ref
-        return payload
-
-    if event_name == "afterMCPExecution":
-        payload = {
-            "tool": {"name": f"{event.get('mcp_server', '')}:{event.get('mcp_tool', '')}",
-                     "provider": event.get("mcp_server", "")},
-            "exit_status": "success",
-            "outputs": _outputs_list(event.get("tool_output") or event.get("result")),
-        }
-        ref = _tool_use_request_id(event.get("call_id"))
-        if ref:
-            payload["request_id_ref"] = ref
-        return payload
-
-    if event_name in ("afterFileEdit", "afterTabFileEdit"):
-        return {
-            "tool": {"name": "Edit"},
-            "exit_status": "success",
-            "outputs": _outputs_list({"file_path": event.get("file_path", "")}),
-        }
-
-    if event_name == "beforeSubmitPrompt":
-        return {"content": [{"type": "text",
-                             "value": event.get("prompt") or event.get("user_message", "")}]}
-
-    if event_name in ("afterAgentResponse", "afterAgentThought"):
-        return {"content": [{"type": "text",
-                             "value": event.get("response") or event.get("thought", "")}]}
-
-    if event_name == "sessionStart":
-        out: dict[str, Any] = {}
-        if event.get("workspace_path") or event.get("cwd"):
-            out["platform_context"] = {"workspace_path": event.get("workspace_path") or event.get("cwd")}
-        return out
-
-    if event_name in ("sessionEnd", "stop"):
-        raw = (event.get("reason") or "").lower()
-        return {"reason": raw if raw in {"completed", "cancelled", "error", "timeout", "abandoned"} else "completed"}
-
-    if event_name == "subagentStart":
-        # All four schema-required fields, populated from real session data
-        # where possible. See Cursor README "Per-hook honesty table".
-        sub_raw = event.get("subagent_id", "")
-        sid = _session_id(event)
-        st = load_session_state(sid, workspace=_workspace(event))
-        # parent_step_id: last step_id seen in this session (adapter tracks
-        # this via record_step on every step the framework fires). Falls
-        # back to the session_id if no prior step (first event of session).
-        parent_step_id = st.get("last_step_id") or sid
-        payload = {
-            # Deterministic UUID5 keyed by parent session + subagent_id so
-            # subagentStart and any later cross-reference produce the same UUID.
-            "subagent_session_id": str(uuid.uuid5(
-                uuid.NAMESPACE_URL, f"cursor-subagent:{sid}:{sub_raw or 'unknown'}")),
-            "parent_session_id": sid,  # REAL — envelope's own session_id is parent
-            "parent_step_id": parent_step_id,  # REAL when adapter has seen a prior step
-            # Cursor IDE subagents are dispatched by the parent agent
-            # (Composer/Agent panel routing), inheriting the parent's
-            # context. derived_from_parent is the defensible default.
-            "intent_derivation": "derived_from_parent",
-        }
-        if sub_raw:
-            payload["subagent_descriptor"] = {
-                "agent_id": sub_raw,
-                "agent_name": event.get("subagent_type", ""),
-            }
-        return payload
-
-    if event_name == "preCompact":
-        # entries_to_compact: real step_ids the adapter has seen in this
-        # session, snapshotted now. Cursor does not tell us which specific
-        # entries it intends to compact, but the entries actually IN the
-        # session are an honest superset (compaction always operates on
-        # something already observed). triggered_by uses Cursor's
-        # `trigger` field when provided; defaults to framework_initiated.
-        sid = _session_id(event)
-        st = load_session_state(sid, workspace=_workspace(event))
-        seen = list(st.get("seen_step_ids") or [])
-        if not seen:
-            # No prior steps recorded — the adapter was wired without
-            # preceding hooks. Fall back to the session_id as a single
-            # placeholder entry, documented in the honesty table.
-            seen = [sid]
-        return {
-            "entries_to_compact": seen,
-            "triggered_by": (event.get("trigger") or "framework_initiated"),
-        }
-
-    return {}
+        event = {**event, "_event_name": event_name}
+    return builder(event)
 
 
-def _looks_like_uuid(s: str) -> bool:
-    try:
-        uuid.UUID(s)
-        return True
-    except (ValueError, AttributeError, TypeError):
-        return False
-
+# ─── Envelope construction ──────────────────────────────────────────────────
 
 def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
     method = HOOK_MAP.get(event_name)
@@ -305,6 +393,8 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
     if event.get("cwd") or event.get("workspace_path"):
         metadata["workspace_path"] = event.get("cwd") or event.get("workspace_path")
 
+    # For *Request methods, pin request_id deterministically so a matching
+    # *Result can populate request_id_ref pointing back at it.
     if method == "steps/toolCallRequest":
         ref = _tool_use_request_id(event.get("tool_call_id") or event.get("tool_use_id")
                                    or event.get("execution_id"))
@@ -357,8 +447,51 @@ def call_guardian(request: dict[str, Any]) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-PERMISSION_MAP: dict[str, str] = {"allow": "allow", "deny": "deny", "ask": "ask", "defer": "ask"}
-KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+# ─── Response translation — dispatch table by event category ──────────────
+#
+# Cursor's response shapes group naturally into 4 categories:
+#   - permission events (preToolUse, subagentStart, beforeShellExecution,
+#     beforeMCPExecution): {"permission": ..., "user_message": ..., "agent_message": ...,
+#     "updated_input": ...}
+#   - post-tool events (postToolUse, postToolUseFailure, afterShellExecution,
+#     afterMCPExecution, afterFileEdit, afterTabFileEdit): {"additional_context": ...,
+#     "updated_mcp_tool_output": ...}
+#   - beforeSubmitPrompt: uses exit code 2 (not stdout) to block; carries
+#     internal __exit_code/_reasoning keys consumed by main()
+#   - everything else: no response shape (Stop, SessionStart, SessionEnd, etc.)
+
+def _translate_permission(decision: str, reasoning: str,
+                           modifications: dict, event_name: str) -> dict[str, Any]:
+    if decision in PERMISSION_MAP:
+        return _permission_response(PERMISSION_MAP[decision], reasoning)
+    if decision == "modify":
+        overrides = modifications.get("parameter_overrides")
+        if overrides is not None and event_name == "preToolUse":
+            return _permission_response("allow", reasoning, updated_input=overrides)
+        return _permission_response("deny",
+                                     f"MODIFY substituted to DENY: {reasoning}")
+    return {}
+
+
+def _translate_post_tool(decision: str, reasoning: str,
+                          modifications: dict, event_name: str) -> dict[str, Any]:
+    if decision == "modify":
+        if event_name == "afterMCPExecution":
+            updated = modifications.get("modified_content")
+            if updated is not None:
+                return _post_tool_response(updated_mcp_tool_output=str(updated))
+        return _post_tool_response(additional_context=f"MODIFY received: {reasoning}")
+    if reasoning:
+        return _post_tool_response(additional_context=reasoning)
+    return {}
+
+
+def _translate_before_submit_prompt(decision: str, reasoning: str,
+                                     modifications: dict,
+                                     event_name: str) -> dict[str, Any]:
+    """Returns internal markers (__exit_code, _reasoning) consumed by main()."""
+    return {"__exit_code": 2 if decision == "deny" else 0,
+            "_reasoning": reasoning if decision == "deny" else None}
 
 
 def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[str, Any]:
@@ -367,55 +500,29 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
     reasoning = result.get("reasoning", "")
     modifications = result.get("modifications", {})
 
+    # Unknown disposition under fail-closed → emit a deny in the hook's shape.
     if decision not in KNOWN_DECISIONS and DEFAULT_DENY:
         reason = f"unknown Guardian disposition '{decision}' (default-deny)"
         if event_name in PERMISSION_EVENTS:
-            return {"permission": "deny", "user_message": reason, "agent_message": reason}
+            return _permission_response("deny", reason)
         if event_name == "beforeSubmitPrompt":
             return {"__exit_code": 2, "_reasoning": reason}
 
     if event_name in PERMISSION_EVENTS:
-        out: dict[str, Any] = {}
-        if decision in PERMISSION_MAP:
-            out["permission"] = PERMISSION_MAP[decision]
-            if reasoning:
-                out["user_message"] = reasoning
-                out["agent_message"] = reasoning
-            return out
-        if decision == "modify":
-            overrides = modifications.get("parameter_overrides")
-            if overrides is not None and event_name == "preToolUse":
-                out["permission"] = "allow"
-                out["updated_input"] = overrides
-                if reasoning:
-                    out["user_message"] = reasoning
-                return out
-            return {"permission": "deny",
-                    "user_message": f"MODIFY substituted to DENY: {reasoning}",
-                    "agent_message": f"MODIFY substituted to DENY: {reasoning}"}
-        return {}
-
+        return _translate_permission(decision, reasoning, modifications, event_name)
     if event_name in POST_TOOL_EVENTS:
-        if decision == "modify":
-            if event_name == "afterMCPExecution":
-                updated = modifications.get("modified_content")
-                if updated is not None:
-                    return {"updated_mcp_tool_output": str(updated)}
-            return {"additional_context": f"MODIFY received: {reasoning}"}
-        if reasoning:
-            return {"additional_context": reasoning}
-        return {}
-
-    # subagentStop is not in HOOK_MAP — see comment on HOOK_MAP. The
-    # framework still fires it; the adapter sees event_name == "subagentStop"
-    # at main() and exits 0 without sending anything.
-
+        return _translate_post_tool(decision, reasoning, modifications, event_name)
     if event_name == "beforeSubmitPrompt":
-        return {"__exit_code": 2 if decision == "deny" else 0,
-                "_reasoning": reasoning if decision == "deny" else None}
+        return _translate_before_submit_prompt(decision, reasoning, modifications, event_name)
 
+    # subagentStop is dropped from HOOK_MAP entirely (see comment on HOOK_MAP);
+    # other events (sessionStart, sessionEnd, stop, subagentStart, preCompact,
+    # afterAgentResponse, afterAgentThought) are observational with no
+    # response shape — empty dict skips stdout emission.
     return {}
 
+
+# ─── Main flow ──────────────────────────────────────────────────────────────
 
 def main() -> int:
     if len(sys.argv) < 2:
@@ -430,7 +537,7 @@ def main() -> int:
         event = json.loads(raw)
     except json.JSONDecodeError as e:
         sys.stderr.write(f"acs-adapter: invalid JSON on stdin: {e}\n")
-        return _fail(event_name)
+        return _fail(event_name, cause="invalid_stdin_json")
 
     if event_name not in HOOK_MAP:
         return 0
@@ -442,7 +549,7 @@ def main() -> int:
         request = build_request(event_name, event)
         if not request:
             sys.stderr.write(f"acs-adapter: could not build request for {event_name}\n")
-            return _fail(event_name, _session_id(event))
+            return _fail(event_name, _session_id(event), cause="adapter_build_failed")
         # Track this step in session state so subsequent subagentStart /
         # preCompact events can cite a real parent_step_id / entries_to_compact.
         # Done before call_guardian so even a failed Guardian call leaves
@@ -455,54 +562,88 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             pass
         response = call_guardian(request)
-
-        if not verify_signature(response, session_id=_session_id(event)):
-            sys.stderr.write("acs-adapter: response signature invalid\n")
-            return _fail(event_name, _session_id(event))
-
-        out = translate_response(response, event_name)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         sys.stderr.write(f"acs-adapter: Guardian unreachable: {e}\n")
         return _fail(event_name, _session_id(event),
+                     cause="transport_failure",
                      request_id=(request or {}).get("params", {}).get("request_id"),
-                     method=(request or {}).get("method"))
+                     method=(request or {}).get("method"),
+                     error=str(e))
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"acs-adapter: adapter error: {e}\n")
-        return _fail(event_name, _session_id(event))
+        return _fail(event_name, _session_id(event),
+                     cause="adapter_exception", error=str(e))
+
+    # Guardian responded — was it a result or a JSON-RPC error?
+    if "error" in response:
+        err = response.get("error") or {}
+        code = err.get("code")
+        cause = guardian_error_cause(code)
+        sys.stderr.write(
+            f"acs-adapter: Guardian returned JSON-RPC error "
+            f"{code} ({cause}): {err.get('message','')}\n")
+        return _fail(event_name, _session_id(event),
+                     cause=cause,
+                     error_code=code,
+                     error_message=err.get("message"),
+                     request_id=(request or {}).get("params", {}).get("request_id"),
+                     method=(request or {}).get("method"))
+
+    if not verify_signature(response, session_id=_session_id(event)):
+        sys.stderr.write("acs-adapter: response signature invalid\n")
+        return _fail(event_name, _session_id(event),
+                     cause="response_signature_invalid")
+
+    out = translate_response(response, event_name)
 
     if event_name == "beforeSubmitPrompt":
         exit_code = out.pop("__exit_code", 0)
         reasoning = out.pop("_reasoning", None)
         if reasoning:
             sys.stderr.write(f"acs-adapter: blocking prompt: {reasoning}\n")
+        # Cursor with `failClosed: true` treats "exit 0 + empty stdout"
+        # as a hook FAILURE (since the hook produced no decision), not
+        # as an allow. Always emit at minimum `{}` on the allow path so
+        # Cursor sees a real response. On deny we still use exit code 2;
+        # stdout is ignored for that path.
+        if exit_code == 0:
+            sys.stdout.write("{}\n")
         return exit_code
 
-    if out:
-        json.dump(out, sys.stdout)
-        sys.stdout.write("\n")
+    _emit(out)
     return 0
 
 
-def _fail(event_name: str = "", session_id: str | None = None, **audit_extras) -> int:
+def _fail(event_name: str = "", session_id: str | None = None, *,
+          cause: str = "unknown", **audit_extras) -> int:
+    """Apply the deployment's fail posture and record an audit event per §6.4.
+
+    `cause` distinguishes the failure mode (transport_failure,
+    signature_invalid_response, malformed_envelope_response, etc.)
+    independently of the posture. Disposition (fail_open_bypass /
+    decision_failure_fail_closed) is determined by ACS_DEFAULT_DENY;
+    cause tells operators what actually went wrong so a malformed
+    envelope (client bug) doesn't get confused with an unreachable
+    Guardian (ops issue).
+    """
     if DEFAULT_DENY:
-        msg = "ACS adapter: decision-failure (default-deny)"
+        msg = f"ACS adapter: decision-failure ({cause})"
         if event_name in PERMISSION_EVENTS:
-            json.dump({"permission": "deny", "user_message": msg, "agent_message": msg}, sys.stdout)
-            sys.stdout.write("\n")
+            _emit(_permission_response("deny", msg))
             audit_event("decision_failure_fail_closed",
-                        event=event_name, session_id=session_id, **audit_extras)
+                        cause=cause, event=event_name, session_id=session_id, **audit_extras)
             return 0
         if event_name == "beforeSubmitPrompt":
-            sys.stderr.write("acs-adapter: prompt blocked (decision-failure)\n")
+            sys.stderr.write(f"acs-adapter: prompt blocked ({cause})\n")
             audit_event("decision_failure_fail_closed",
-                        event=event_name, session_id=session_id, **audit_extras)
+                        cause=cause, event=event_name, session_id=session_id, **audit_extras)
             return 2
         audit_event("decision_failure_fail_closed",
-                    event=event_name, session_id=session_id, **audit_extras)
+                    cause=cause, event=event_name, session_id=session_id, **audit_extras)
         return 0
 
     audit_event("fail_open_bypass",
-                event=event_name, session_id=session_id, **audit_extras)
+                cause=cause, event=event_name, session_id=session_id, **audit_extras)
     return 0
 
 

@@ -4,3 +4,9 @@ book/
 site/
 references/
 .DS_Store
+
+# Adapter manual-test scratch dirs (project-level hook configs with
+# machine-specific paths from local probing — must never land in commits)
+adapters/*/.cursor/
+adapters/*/.claude/
+adapters/*/.acs-handshake-cache/

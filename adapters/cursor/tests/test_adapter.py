@@ -176,7 +176,8 @@ class CursorAdapter(unittest.TestCase):
         self.assertIn("fail_open_bypass", err)
 
     def test_before_submit_prompt_block_via_exit_code(self) -> None:
-        """beforeSubmitPrompt blocks via exit code 2, not stdout (fail-closed mode)."""
+        """beforeSubmitPrompt blocks via exit code 2, not stdout (fail-closed mode).
+        Audit log carries cause=transport_failure since the Guardian is unreachable."""
         rc, _, err = self._run("beforeSubmitPrompt",
             {"session_id": "cur-12", "prompt": "anything"},
             env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/dead",
@@ -184,7 +185,10 @@ class CursorAdapter(unittest.TestCase):
                            "ACS_HANDSHAKE": "0"},
         )
         self.assertEqual(rc, 2)
-        self.assertIn("decision-failure", err.lower())
+        self.assertIn("prompt blocked", err.lower())
+        self.assertIn("ACS_AUDIT", err)
+        self.assertIn("transport_failure", err,
+            "audit event must carry cause=transport_failure when Guardian unreachable")
 
 
 if __name__ == "__main__":
