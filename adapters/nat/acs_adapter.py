@@ -54,6 +54,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
+from dataclasses import is_dataclass, asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 from acs_common import (  # noqa: E402
     audit_event,
     ensure_session_handshake,
+    guardian_error_cause,
     iso8601_now as _common_iso8601_now,
     sign_envelope,
     validate_guardian_url,
@@ -206,6 +208,176 @@ def _stringify_step_data(data: Any) -> str:
 
 
 KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+
+
+def _extract_arguments(context: Any) -> dict[str, Any]:
+    """Build a flat {arg_name: value} dict from NAT's invocation context.
+
+    NAT's middleware chain captures the function input from
+    `Function.ainvoke(value)` as `modified_args[0]` — typically a
+    Pydantic model returned by `_convert_input(value)`. `modified_kwargs`
+    is only populated when the caller passes named kwargs directly,
+    which the LangChain `react_agent` path does not. Reading only from
+    `modified_kwargs` (the original adapter code) yielded an empty
+    arguments dict, so the Guardian's `args.get("command")` always
+    returned "" — and a real `rm -rf` driven by an LLM-driven agent
+    silently bypassed the destructive-Bash policy.
+
+    This helper:
+      1. Starts with `modified_kwargs` (highest fidelity when present).
+      2. Walks `modified_args`. For each Pydantic model / dataclass /
+         dict, flattens its fields into the result; for scalars,
+         falls back to the function's input schema field names (or
+         positional `arg0`, `arg1`, … if no schema is available).
+      3. Returns a JSON-serializable dict ready for wire wrapping.
+    """
+    out: dict[str, Any] = {}
+
+    # 1. kwargs first — already named, no inference needed
+    kwargs = getattr(context, "modified_kwargs", None) or {}
+    for k, v in kwargs.items():
+        out[str(k)] = v
+
+    # 2. args — extract named fields
+    args = getattr(context, "modified_args", None) or []
+    if not args:
+        return out
+
+    # Try to read field names from the function's input schema (Pydantic)
+    schema = None
+    fc = getattr(context, "function_context", None)
+    if fc is not None:
+        schema = getattr(fc, "input_schema", None)
+    schema_fields: list[str] = []
+    if schema is not None:
+        # Pydantic v2: model_fields. v1 / others: __fields__
+        fields = getattr(schema, "model_fields", None) or getattr(schema, "__fields__", None)
+        if fields:
+            schema_fields = list(fields.keys())
+
+    for idx, arg in enumerate(args):
+        # Pydantic model — best case: dump and merge
+        if hasattr(arg, "model_dump"):
+            try:
+                out.update(arg.model_dump())
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        # Pydantic v1 fallback
+        if hasattr(arg, "dict") and callable(getattr(arg, "dict", None)):
+            try:
+                d = arg.dict()
+                if isinstance(d, dict):
+                    out.update(d)
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+        # Dataclass
+        if is_dataclass(arg):
+            try:
+                out.update(asdict(arg))
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        # Plain dict — merge
+        if isinstance(arg, dict):
+            for k, v in arg.items():
+                out[str(k)] = v
+            continue
+        # Scalar — use the schema field name at this position, else argN
+        name = schema_fields[idx] if idx < len(schema_fields) else f"arg{idx}"
+        out[name] = arg
+
+    return out
+
+
+def _redact_output(context: Any) -> None:
+    """Clear context.output to None as the post_invoke redaction signal.
+    Pulled into a helper so the redaction path is one line and matches
+    the audit event we emit alongside it. The `output` field is declared
+    on InvocationContext, so this assignment is always safe; ad-hoc
+    extra attributes (acs_post_invoke_redacted, etc.) are NOT — that
+    was the original bug that made post_invoke deny crash silently."""
+    try:
+        context.output = None
+    except Exception:  # noqa: BLE001
+        # Test stub or unusual context without a settable output field —
+        # the audit event still fires so the redaction is recorded.
+        pass
+
+
+def _apply_overrides_to_context(context: Any, overrides: dict[str, Any]) -> None:
+    """Apply Guardian's MODIFY parameter_overrides to wherever NAT will
+    actually read the function input.
+
+    The call NAT eventually executes is:
+        await call_next(*context.modified_args, **context.modified_kwargs)
+
+    so the override has to land in the same slot the input lives in:
+      - LangChain agent path: input is `modified_args[0]` (a Pydantic
+        model returned by `Function._convert_input`). Replace the
+        instance via `model_copy(update=overrides)` so the next stage
+        sees the rewritten field values.
+      - Dataclass: rebuild with overrides merged.
+      - Plain dict in modified_args[0]: merge in place.
+      - Direct keyword-arg path: write into `modified_kwargs` as before.
+
+    BEFORE this helper the adapter only wrote overrides to
+    `modified_kwargs`. On the LangChain path that dict was empty and the
+    overrides never reached the function — Guardian's MODIFY silently
+    became a no-op. A `rm -rf` that a Guardian wanted to rewrite to
+    `echo blocked` ran unchanged. Caught by the live Vertex test.
+    """
+    # 1. Mutate modified_args[0] when it holds the input
+    args = list(getattr(context, "modified_args", ()) or ())
+    if args:
+        head = args[0]
+        new_head: Any = None
+        # Pydantic v2
+        if hasattr(head, "model_copy"):
+            try:
+                new_head = head.model_copy(update=dict(overrides))
+            except Exception:  # noqa: BLE001
+                new_head = None
+        # Pydantic v1
+        if new_head is None and hasattr(head, "copy") and callable(getattr(head, "copy", None)):
+            try:
+                new_head = head.copy(update=dict(overrides))  # type: ignore[call-arg]
+            except Exception:  # noqa: BLE001
+                new_head = None
+        # Dataclass
+        if new_head is None and is_dataclass(head):
+            try:
+                from dataclasses import replace as _dc_replace
+                new_head = _dc_replace(head, **overrides)
+            except Exception:  # noqa: BLE001
+                new_head = None
+        # Plain dict
+        if new_head is None and isinstance(head, dict):
+            new_head = {**head, **overrides}
+        if new_head is not None:
+            args[0] = new_head
+            # `modified_args` is a tuple field with validate_assignment=True;
+            # assign the new tuple so Pydantic re-validates and accepts it.
+            try:
+                context.modified_args = tuple(args)
+            except Exception:  # noqa: BLE001
+                # If we can't write back (test stub, etc.), at least the
+                # in-place mutation of the dict / dataclass-via-replace
+                # took effect via reference; tuple write is best-effort.
+                pass
+
+    # 2. Always also write to modified_kwargs — many functions in NAT
+    # take kwargs directly (no Pydantic conversion), and the live
+    # smoke tests use this path. Both writes is correct; the
+    # eventual call_next reads exactly one of them depending on the
+    # function's signature, but updating both keeps either path safe.
+    try:
+        kwargs = dict(getattr(context, "modified_kwargs", None) or {})
+        kwargs.update(overrides)
+        context.modified_kwargs = kwargs
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ----- Middleware class -----
@@ -415,42 +587,43 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             request = self._build_request(
                 method="steps/toolCallRequest",
                 tool_name=context.function_context.name,
-                tool_arguments=dict(context.modified_kwargs or {}),
+                tool_arguments=_extract_arguments(context),
                 request_id=correlation_id,
             )
             response = self._call_guardian(request)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
-            if self._config.default_deny:
-                audit_event("decision_failure_fail_closed",
-                            session_id=self._session_id,
-                            method="steps/toolCallRequest",
-                            error=str(e))
-                return self._block(context, f"Guardian unreachable: {e}")
-            audit_event("fail_open_bypass",
-                        session_id=self._session_id,
-                        method="steps/toolCallRequest",
-                        error=str(e))
-            return None
+            return self._handle_decision_failure(
+                context, "steps/toolCallRequest",
+                cause="transport_failure", error=str(e),
+                deny_msg=f"Guardian unreachable: {e}")
         except Exception as e:  # noqa: BLE001
-            if self._config.default_deny:
-                audit_event("decision_failure_fail_closed",
-                            session_id=self._session_id,
-                            method="steps/toolCallRequest",
-                            error=str(e))
-                return self._block(context, f"adapter error: {e}")
-            audit_event("fail_open_bypass",
-                        session_id=self._session_id,
-                        method="steps/toolCallRequest",
-                        error=str(e))
-            return None
+            return self._handle_decision_failure(
+                context, "steps/toolCallRequest",
+                cause="adapter_exception", error=str(e),
+                deny_msg=f"adapter error: {e}")
+
+        # Guardian returned a JSON-RPC error response (replay detected,
+        # signature invalid, timestamp skew, malformed envelope, …).
+        # Distinct from transport failure: operator triage needs the
+        # specific cause (clock skew vs adapter bug vs duplicate id).
+        err = (response or {}).get("error")
+        if err is not None:
+            return self._handle_decision_failure(
+                context, "steps/toolCallRequest",
+                cause=guardian_error_cause(err.get("code")),
+                error=err.get("message", ""),
+                jsonrpc_code=err.get("code"),
+                deny_msg=f"Guardian rejected envelope: {err.get('message','')}")
 
         if not verify_signature(response, session_id=self._session_id):
             if self._config.default_deny:
-                audit_event("response_signature_invalid",
+                audit_event("decision_failure_fail_closed",
+                            cause="response_signature_invalid",
                             session_id=self._session_id,
                             method="steps/toolCallRequest")
                 return self._block(context, "response signature invalid")
-            audit_event("fail_open_unverified_response",
+            audit_event("fail_open_bypass",
+                        cause="response_signature_invalid",
                         session_id=self._session_id,
                         method="steps/toolCallRequest")
             return None
@@ -467,7 +640,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             mods = result.get("modifications", {})
             overrides = mods.get("parameter_overrides")
             if isinstance(overrides, dict):
-                context.modified_kwargs.update(overrides)
+                _apply_overrides_to_context(context, overrides)
                 return context
             return self._block(context, f"MODIFY substituted to DENY: {reasoning}")
         if decision in ("ask", "defer"):
@@ -499,21 +672,40 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             request = self._build_request(
                 method="steps/toolCallResult",
                 tool_name=context.function_context.name,
-                tool_arguments=dict(context.modified_kwargs or {}),
+                tool_arguments=_extract_arguments(context),
                 result=context.output,
                 request_id_ref=correlation_id,
             )
             response = self._call_guardian(request)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
             audit_event("post_invoke_unreachable",
+                        cause="transport_failure",
                         session_id=self._session_id,
-                        method="steps/toolCallResult")
+                        method="steps/toolCallResult",
+                        error=str(e))
             return None
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            audit_event("post_invoke_unreachable",
+                        cause="adapter_exception",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult",
+                        error=str(e))
+            return None
+
+        # Same JSON-RPC error response distinction as pre_invoke.
+        err = (response or {}).get("error")
+        if err is not None:
+            audit_event("post_invoke_unreachable",
+                        cause=guardian_error_cause(err.get("code")),
+                        session_id=self._session_id,
+                        method="steps/toolCallResult",
+                        jsonrpc_code=err.get("code"),
+                        error=err.get("message", ""))
             return None
 
         if not verify_signature(response, session_id=self._session_id):
             audit_event("post_invoke_signature_invalid",
+                        cause="response_signature_invalid",
                         session_id=self._session_id,
                         method="steps/toolCallResult")
             return None
@@ -525,9 +717,18 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         if decision == "deny":
             # Post-hoc redaction: the tool already executed, but we
             # prevent the (potentially sensitive) output from flowing.
-            context.output = None
-            context.acs_post_invoke_redacted = True
-            context.acs_post_invoke_reason = reasoning or "output redacted by Guardian"
+            # NOTE: NAT's InvocationContext is a strict Pydantic model
+            # with validate_assignment=True — extra attributes
+            # (acs_post_invoke_redacted, etc.) raise ValidationError.
+            # The redaction signal is therefore output=None plus the
+            # audit event below, which downstream consumers MUST use
+            # rather than reading nonexistent ad-hoc fields.
+            _redact_output(context)
+            audit_event("post_invoke_redacted",
+                        cause="guardian_deny",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult",
+                        reasoning=reasoning or "output redacted by Guardian")
             return context
         if decision == "modify":
             mods = result.get("modifications", {})
@@ -536,13 +737,40 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 context.output = modified_content
                 return context
         if decision not in KNOWN_DECISIONS and self._config.default_deny:
-            context.output = None
-            context.acs_post_invoke_redacted = True
-            context.acs_post_invoke_reason = f"unknown disposition '{decision}' (default-deny)"
+            _redact_output(context)
+            audit_event("post_invoke_redacted",
+                        cause="unknown_disposition_default_deny",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult",
+                        decision=decision)
             return context
         return None
 
     # ----- helpers -----
+
+    def _handle_decision_failure(self, context, method: str, *, cause: str,
+                                   error: str, deny_msg: str,
+                                   jsonrpc_code: int | None = None):
+        """Single point for the pre_invoke decision-failure audit + posture.
+
+        Every fail-closed / fail-open emission carries a stable `cause`
+        label so operators can triage which failure mode hit (transport,
+        adapter bug, Guardian rejection — and which specific Guardian
+        rejection: replay vs signature vs skew vs malformed). Mirrors
+        the Cursor/Claude `_fail(cause=...)` taxonomy."""
+        fields: dict[str, Any] = {
+            "cause": cause,
+            "session_id": self._session_id,
+            "method": method,
+            "error": error,
+        }
+        if jsonrpc_code is not None:
+            fields["jsonrpc_code"] = jsonrpc_code
+        if self._config.default_deny:
+            audit_event("decision_failure_fail_closed", **fields)
+            return self._block(context, deny_msg)
+        audit_event("fail_open_bypass", **fields)
+        return None
 
     def _block(self, context, reason: str):
         """Block the invocation. Prefer InvocationAction when available,

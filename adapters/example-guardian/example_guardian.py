@@ -531,15 +531,23 @@ def evaluate_step(method: str, params: dict, request_id: str, chain_hash: str) -
 
     if method == "steps/toolCallRequest":
         tool = payload.get("tool") or {}
-        tool_name = tool.get("name", "")
+        # Case-fold once so tool names from different platforms — "Bash"
+        # (Claude Code), "Shell" (Cursor's beforeShellExecution), "shell"
+        # (NAT YAML key used as instance_name) — all hit the same policy
+        # branch. Caught via the live-LLM NAT manual test: a `shell` tool
+        # (lowercase from the YAML key) silently bypassed the destructive-
+        # Bash check because the comparison was case-sensitive; the agent
+        # ran `rm -rf` against a sandbox dir and the canary was deleted.
+        tool_name_raw = tool.get("name", "")
+        tool_name = tool_name_raw.lower()
         args = _unwrap_arguments(payload.get("arguments") or {})
 
-        if tool_name == "Task" and not ALLOW_SUBAGENT:
+        if tool_name == "task" and not ALLOW_SUBAGENT:
             return {**base, "decision": "deny",
                     "reasoning": "Task tool (in-process subagent) is gated by default. Set ACS_ALLOW_SUBAGENT=1 to allow.",
                     "reason_codes": ["subagent_gated"]}
 
-        if tool_name in ("Bash", "Shell"):
+        if tool_name in ("bash", "shell"):
             cmd = args.get("command", "") or ""
             match = _matches_destructive_bash(cmd)
             if match == "too_large":
@@ -552,7 +560,7 @@ def evaluate_step(method: str, params: dict, request_id: str, chain_hash: str) -
                         "reasoning": f"destructive Bash pattern in: {cmd[:120]}",
                         "reason_codes": ["destructive_command"]}
 
-        if tool_name == "Write":
+        if tool_name == "write":
             path = args.get("file_path", "")
             if any(path.startswith(p) for p in PROTECTED_PATH_PREFIXES):
                 return {**base, "decision": "deny",
@@ -677,6 +685,18 @@ class GuardianHandler(http.server.BaseHTTPRequestHandler):
         sys.stderr.flush()
 
         response = handle_request(request)
+        # Log the verdict so operators can see allow/deny in the terminal,
+        # not just "envelope received". Critical for live debugging.
+        result = (response or {}).get("result") or {}
+        decision = result.get("decision")
+        if decision:
+            tail = ""
+            if decision == "deny":
+                tail = f" — {result.get('reasoning', '')[:80]}"
+            sys.stderr.write(
+                f"[guardian] → {decision}{tail}\n"
+            )
+            sys.stderr.flush()
         self._respond(200, response)
 
     def _respond(self, status: int, body: dict) -> None:
@@ -723,7 +743,7 @@ def main() -> int:
         daemon_threads = True
 
     with ReusableServer((args.host, args.port), GuardianHandler) as httpd:
-        sys.stderr.write(f"[guardian] listening on {args.host}:{args.port}\n")
+        sys.stderr.write(f"[guardian] listening on {args.host}:{args.port} (case-insensitive-tool-policy)\n")
         sys.stderr.flush()
         try:
             httpd.serve_forever()

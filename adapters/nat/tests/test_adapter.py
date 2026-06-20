@@ -179,5 +179,103 @@ class NATMiddlewareIntegration(unittest.TestCase):
         self.assertIsNone(result)  # fail-open: proceed
 
 
+class ExtractArgumentsFromInvocationContext(unittest.TestCase):
+    """Regression: NAT's middleware chain captures the function input as
+    `modified_args[0]` (a Pydantic model or similar, returned by
+    `Function._convert_input(value)`), NOT as `modified_kwargs`. The
+    original adapter read only from `modified_kwargs` — which is empty
+    on the LangChain react_agent path — so every `toolCallRequest`
+    envelope carried `arguments: {}`. A real LLM-driven `rm -rf`
+    against a sandbox directory ran to completion because the
+    Guardian's policy had no command string to inspect.
+
+    `_extract_arguments` MUST flatten args from EVERY shape NAT may
+    use to capture the input. These tests don't need NAT installed —
+    the helper is duck-typed on the context.
+    """
+
+    def _ctx(self, *, modified_args=(), modified_kwargs=None,
+              input_schema=None):
+        """Build a duck-typed object matching what _extract_arguments reads."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            modified_args=tuple(modified_args),
+            modified_kwargs=dict(modified_kwargs or {}),
+            function_context=SimpleNamespace(input_schema=input_schema),
+        )
+
+    def test_pydantic_v2_model_in_modified_args_extracts_fields(self) -> None:
+        """The exact regression. LangChain react_agent → NAT → Pydantic
+        model in modified_args[0] → adapter must surface field values."""
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+        from acs_adapter import _extract_arguments
+
+        class ShellInput(BaseModel):
+            command: str
+
+        ctx = self._ctx(modified_args=(ShellInput(command="rm -rf /tmp/x/"),))
+        args = _extract_arguments(ctx)
+        self.assertEqual(args.get("command"), "rm -rf /tmp/x/",
+            "REGRESSION: LLM-driven rm -rf bypassed Guardian because adapter "
+            "ignored Pydantic input in modified_args[0]; field 'command' "
+            "must be extracted so policy can match destructive patterns")
+
+    def test_plain_dict_in_modified_args_extracts_keys(self) -> None:
+        """NAT may also pass a raw dict if the function takes one."""
+        from acs_adapter import _extract_arguments
+        ctx = self._ctx(modified_args=({"command": "echo hi"},))
+        self.assertEqual(_extract_arguments(ctx), {"command": "echo hi"})
+
+    def test_modified_kwargs_still_works(self) -> None:
+        """Existing path (named kwargs, e.g. from direct middleware tests)
+        must still work — this is the path the integration tests above use."""
+        from acs_adapter import _extract_arguments
+        ctx = self._ctx(modified_kwargs={"file_path": "/tmp/x"})
+        self.assertEqual(_extract_arguments(ctx), {"file_path": "/tmp/x"})
+
+    def test_kwargs_and_args_both_present_kwargs_first(self) -> None:
+        """If both shapes are populated, both should appear in the result."""
+        from acs_adapter import _extract_arguments
+        ctx = self._ctx(modified_args=({"command": "ls"},),
+                          modified_kwargs={"timeout_s": 5})
+        out = _extract_arguments(ctx)
+        self.assertEqual(out.get("command"), "ls")
+        self.assertEqual(out.get("timeout_s"), 5)
+
+    def test_scalar_arg_with_schema_uses_field_name(self) -> None:
+        """If the arg is a scalar (e.g. single string), name it after
+        the input schema's first field — better than 'arg0' on the wire."""
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            self.skipTest("pydantic not installed")
+        from acs_adapter import _extract_arguments
+
+        class Schema(BaseModel):
+            command: str
+
+        ctx = self._ctx(modified_args=("ls -la",), input_schema=Schema)
+        self.assertEqual(_extract_arguments(ctx).get("command"), "ls -la")
+
+    def test_empty_context_returns_empty(self) -> None:
+        """No args, no kwargs, no schema → empty dict, not a crash."""
+        from acs_adapter import _extract_arguments
+        self.assertEqual(_extract_arguments(self._ctx()), {})
+
+    def test_dataclass_in_modified_args(self) -> None:
+        from acs_adapter import _extract_arguments
+        from dataclasses import dataclass
+
+        @dataclass
+        class ShellInput:
+            command: str
+
+        ctx = self._ctx(modified_args=(ShellInput(command="ls"),))
+        self.assertEqual(_extract_arguments(ctx).get("command"), "ls")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

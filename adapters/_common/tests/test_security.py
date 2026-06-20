@@ -306,5 +306,80 @@ class Item13_DestructiveRmFlagVariants(unittest.TestCase):
         # disable the pattern in their policy bundle.
 
 
+class Item14_ToolNameCaseInsensitive(unittest.TestCase):
+    """Regression: the example Guardian's destructive-Bash policy was
+    gated on `tool_name in ("Bash", "Shell")` — a case-sensitive string
+    match. A NAT YAML key `shell` (lowercase) became the instance name,
+    sailed past the check, and a real LLM-driven `rm -rf` against a
+    sandbox directory ran to completion with the canary file deleted.
+    The destructive regex was correct; the OUTER guard was too strict.
+
+    Every reasonable shell tool name spelling MUST hit the same policy
+    branch:
+      - "Bash" (Claude Code adapter's PreToolUse tool name)
+      - "Shell" (Cursor's beforeShellExecution synthesizes this name)
+      - "shell" (NAT YAML key used as instance_name)
+      - "bash" / "BASH" (paranoia — any caller-chosen casing)
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "example-guardian"))
+        import example_guardian
+        cls.eg = example_guardian
+
+    def _call(self, tool_name: str, command: str) -> dict:
+        params = {
+            "request_id": "00000000-0000-4000-8000-000000000001",
+            "chain_hash": "0" * 64,
+            "metadata": {"session_id": "00000000-0000-4000-8000-000000000002"},
+            "payload": {
+                "tool": {"name": tool_name},
+                "arguments": {"command": {"value": command}},
+            },
+        }
+        return self.eg.evaluate_step(
+            "steps/toolCallRequest", params,
+            "00000000-0000-4000-8000-000000000001", "0" * 64)
+
+    def test_lowercase_shell_destructive_denied(self) -> None:
+        """The exact regression: tool name 'shell' (lowercase) MUST hit
+        the destructive policy branch — discovered when a real Vertex-
+        driven react_agent's `shell` tool ran `rm -rf` and Guardian
+        allowed."""
+        result = self._call("shell", "rm -rf /tmp/x/")
+        self.assertEqual(result.get("decision"), "deny",
+            "REGRESSION: lowercase 'shell' tool with rm -rf MUST be denied; "
+            "the case-sensitive name check let real destructive commands through")
+        self.assertIn("destructive_command", result.get("reason_codes", []))
+
+    def test_every_reasonable_casing_denied(self) -> None:
+        for name in ("Bash", "BASH", "bash", "Shell", "SHELL", "shell", "ShElL"):
+            with self.subTest(tool_name=name):
+                result = self._call(name, "rm -rf /tmp/x/")
+                self.assertEqual(result.get("decision"), "deny",
+                    f"tool name {name!r} should hit destructive-Bash branch")
+                self.assertIn("destructive_command",
+                                result.get("reason_codes", []))
+
+    def test_unrelated_tool_unaffected(self) -> None:
+        """Case-folding must not over-broaden — `read` is not a shell tool."""
+        result = self._call("Read", "rm -rf /tmp/x/")
+        # Read tool with a 'command' arg that LOOKS dangerous — not a
+        # shell call, the destructive regex isn't applied here.
+        self.assertEqual(result.get("decision"), "allow",
+            "case-fold must not pull non-shell tools into shell policy")
+
+    def test_task_subagent_gate_also_case_insensitive(self) -> None:
+        """The Task tool deny was also case-sensitive; same case-fold."""
+        # ALLOW_SUBAGENT defaults False so Task should be denied
+        for name in ("Task", "task", "TASK"):
+            with self.subTest(tool_name=name):
+                result = self._call(name, "")
+                self.assertEqual(result.get("decision"), "deny",
+                    f"tool name {name!r} (Task variant) must hit subagent gate")
+                self.assertIn("subagent_gated", result.get("reason_codes", []))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
