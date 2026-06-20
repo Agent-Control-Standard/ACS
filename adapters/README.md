@@ -2,6 +2,19 @@
 
 Reference implementations that wire popular agent frameworks to an ACS Guardian. The goal: a framework adopts ACS through **configuration only**, with no agent code changes.
 
+## What is a Guardian?
+
+The **Guardian** is the policy enforcement point: a long-running HTTP service that receives every ACS envelope from the adapter, evaluates it against the deployment's policy, and returns one of five dispositions (allow / deny / modify / ask / defer). It's the "decider"; the adapter is the "messenger."
+
+Two roles in any deployment:
+
+- **Production Guardian** — your real policy engine. Typically OPA/Rego, Cedar, or a vendor SDK plugged in behind an HTTP server that speaks the ACS wire protocol. The adapter doesn't care what's inside; only the wire contract matters.
+- **`example-guardian/example_guardian.py`** in this repo — a teaching artifact and test substrate. Implements the full wire protocol (handshake, envelope schema validation, HMAC signing, rolling chain, replay protection, skew rejection, dispositions, `system/ping`) but with a deliberately tiny deterministic policy: denies a short list of destructive Bash patterns + writes to system paths, allows everything else. Useful for local testing; **not for production**.
+
+Production deployments swap the policy code in the example Guardian's `evaluate(method, params)` function with their real engine and keep the wire-protocol scaffolding.
+
+Running the Guardian — terminal window, `launchd`, `systemd`, container — is the operator's responsibility. The adapter expects it to be reachable at `$ACS_GUARDIAN_URL`; if it isn't, the §6.4 fail posture applies and an `ACS_AUDIT` event is emitted.
+
 ## ACS-Core conformance check
 
 One command verifies this whole stack is still ACS-Core conformant:

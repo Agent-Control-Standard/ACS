@@ -288,12 +288,6 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1. |
 | Wrapped MCP `protocols/MCP/*` | ✗ not implemented; Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path. |
 
-## What this is not
-
-- A production Guardian. `example_guardian.py` is a teaching artifact with a small destructive-Bash regex set plus a protected-path list. Production Guardians plug in OPA/Rego, Cedar, or a vendor's policy engine via the `evaluate(method, params)` entry point.
-- A full MCP wrapping implementation. Claude Code's MCP traffic goes through its own mechanism; the adapter would need a separate wrapping path to forward `protocols/MCP/*` envelopes through the Guardian.
-- A service manager. The Guardian process is your responsibility (terminal window, `launchd`, `systemd`, container, etc.).
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
