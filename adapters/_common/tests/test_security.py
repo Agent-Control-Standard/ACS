@@ -242,5 +242,69 @@ class RegexInputSizeCap(unittest.TestCase):
             acs_common.scan_destructive_bash_safely("ls -la", max_len=8192))
 
 
+class Item13_DestructiveRmFlagVariants(unittest.TestCase):
+    """Regression: every `rm` variant that combines recursive + force,
+    no matter what other harmless flags are present (verbose, interactive,
+    etc.), MUST be caught.
+
+    Original Guardian regex used `\\b` after a fixed `-rf` match, so
+    `rm -rfv /tmp/...` slipped through — the trailing `v` defeated the
+    word boundary. A trivial single-letter extension defeating the
+    policy is the worst class of regex bug for a security control."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "example-guardian"))
+        import example_guardian
+        cls.eg = example_guardian
+
+    def _assert_caught(self, cmd: str) -> None:
+        match = self.eg._matches_destructive_bash(cmd)
+        self.assertTrue(match,
+            f"REGRESSION: destructive command not caught: {cmd!r}. "
+            f"The Guardian's regex must match rm with recursive+force "
+            f"flags regardless of additional harmless flags.")
+
+    def _assert_allowed(self, cmd: str) -> None:
+        match = self.eg._matches_destructive_bash(cmd)
+        self.assertFalse(match,
+            f"FALSE POSITIVE: benign command flagged as destructive: {cmd!r}")
+
+    def test_rf_variants_caught(self) -> None:
+        # Canonical
+        self._assert_caught("rm -rf /home/x")
+        self._assert_caught("rm -fr /home/x")
+        self._assert_caught("rm --recursive --force /home/x")
+        self._assert_caught("rm --force --recursive /home/x")
+
+    def test_rf_with_trailing_letters_caught(self) -> None:
+        # The bug Bar found: extra flag letters after r/f defeated the regex
+        self._assert_caught("rm -rfv /home/x")
+        self._assert_caught("rm -rfvi /home/x")
+        self._assert_caught("rm -rfvI /home/x")
+        self._assert_caught("rm -frv /home/x")
+
+    def test_rf_with_middle_or_leading_letters_caught(self) -> None:
+        self._assert_caught("rm -rvf /home/x")
+        self._assert_caught("rm -vrf /home/x")
+        self._assert_caught("rm -ivrf /home/x")
+
+    def test_rf_with_trailing_slash_and_command_chain_caught(self) -> None:
+        # Exact shape that Claude generated when Bar asked for an -rf test
+        self._assert_caught("rm -rfv /tmp/this-is-a-fake-test-path-12345/")
+        self._assert_caught("rm -rfv /tmp/foo/ ; echo done")
+
+    def test_benign_rm_not_flagged(self) -> None:
+        # rm WITHOUT both r and f is allowed
+        self._assert_allowed("rm -v /home/x")
+        self._assert_allowed("rm -i /home/x")
+        self._assert_allowed("rm /home/x")
+        self._assert_allowed("rmdir /home/x")
+        # NOTE: `echo rm -rf /home/x` IS flagged by the regex (conservative
+        # by design — wrapping a destructive command in `echo` and piping
+        # to `sh` is a known evasion). Operators who want to allow it
+        # disable the pattern in their policy bundle.
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -132,7 +132,15 @@ def _hmac_secret() -> bytes:
 # ----- Destructive-Bash regex set -----
 
 DESTRUCTIVE_BASH_PATTERNS: tuple[re.Pattern, ...] = (
-    re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive\s+--force|--force\s+--recursive)\b.*\s+(/|~|\$HOME)\b", re.IGNORECASE),
+    # Pattern 0: `rm` + a flag token that contains both r and f in any
+    # order, possibly with other letters anywhere (-rf, -fr, -rfv,
+    # -rfvi, -vrf, etc.), followed eventually by a path starting with
+    # `/`, `~`, or `$HOME`. The trailing `[a-zA-Z]*` after the second
+    # required flag letter is the bug-fix — without it, `-rfv` only
+    # matched `-rf` and then `\b` failed against `v`, letting `rm -rfv`
+    # slip through the policy. (CVE-class evasion: trivial single-letter
+    # extension defeats the regex.)
+    re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|--recursive\s+--force|--force\s+--recursive)\b.*?\s+(/|~|\$HOME)", re.IGNORECASE),
     re.compile(r"\brm\s+(-rf|-fr|--recursive\s+--force|--force\s+--recursive)\s+(/|~|\$HOME)(\s|$)", re.IGNORECASE),
     re.compile(r"\brm\s+.*--no-preserve-root\b", re.IGNORECASE),
     re.compile(r"\bmkfs(\.\w+)?\s+", re.IGNORECASE),
