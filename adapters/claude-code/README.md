@@ -2,107 +2,272 @@
 
 A drop-in adapter that wires [Claude Code](https://docs.claude.com/claude-code) hooks to an ACS Guardian. No agent code changes; configuration only.
 
-## End-to-end verification — `e2e_check.py`
+## How it works
 
-After wiring the adapter, run the real end-to-end check to confirm your
-installation actually works:
+Claude Code fires a hook (e.g. `PreToolUse`) by running a shell command and passing the hook event as JSON on stdin. The command's stdout becomes the hook's decision.
+
+This adapter is that command. On every hook event Claude Code spawns the adapter as a subprocess; the adapter:
+
+1. Reads the Claude Code hook event from stdin.
+2. Translates it to an ACS JSON-RPC envelope ([mapping.md](./mapping.md)).
+3. Signs it with HMAC-SHA256 (`ACS_HMAC_SECRET_FILE`).
+4. POSTs to the Guardian.
+5. Verifies the response signature.
+6. Translates the verdict back to Claude Code's expected output shape and writes to stdout.
+7. Exits.
+
+The handshake/hello fires once per session, cached on disk so subsequent events skip the round-trip.
+
+### Decision honoring (§6.4)
+
+ACS-Core §6.4 requires the framework to wait for the verdict and apply it before the action executes. Claude Code provides this guarantee through its hook protocol: the adapter is invoked as a blocking subprocess and the framework reads its stdout for the decision, so the tool can't run until the adapter exits with a verdict. The adapter relies on this — without it, a Guardian deny would arrive after the side effect.
+
+## Install — five steps
+
+You need three pieces co-located on the same machine: a running Guardian, a shared HMAC secret, and a `~/.claude/settings.json` that wires the adapter into Claude Code's hooks. `wire.py` does step 3 for you.
+
+Commands below assume `$ACS_REPO` points at your local clone of `Agent-Control-Standard/ACS` (or your fork). Export it once:
 
 ```bash
-cd adapters/claude-code
+export ACS_REPO=/path/to/your/clone   # e.g., $HOME/code/ACS
+```
+
+### 1. Generate the shared HMAC secret
+
+Both the adapter and the Guardian read this file. Mode 0600 is enforced by the adapter — anything looser and it refuses to start.
+
+```bash
+mkdir -p ~/.acs
+openssl rand -hex 32 > ~/.acs/hmac.key
+chmod 600 ~/.acs/hmac.key
+```
+
+### 2. Run the Guardian
+
+Use the example Guardian for testing; a production Guardian is the same wire protocol with a real policy engine attached.
+
+```bash
+ACS_HMAC_SECRET_FILE=~/.acs/hmac.key \
+  python3 $ACS_REPO/adapters/example-guardian/example_guardian.py \
+  --port 8787
+```
+
+Keep this terminal open. You should see `[guardian] listening on 127.0.0.1:8787`.
+
+(For long-running setups: a `launchd` plist on macOS or a `systemd` unit on Linux. Out of scope here.)
+
+### 3. Wire `~/.claude/settings.json`
+
+The `wire.py` CLI does this safely — dry-run by default, atomic write with a timestamped backup when you pass `--write`.
+
+```bash
+cd "$ACS_REPO/adapters/claude-code"
+
+# Preview the change without touching the file
+python3 wire.py \
+  --guardian-url=http://127.0.0.1:8787/acs \
+  --secret-file=~/.acs/hmac.key
+
+# Apply it (creates ~/.claude/settings.json.bak.<timestamp>)
+python3 wire.py \
+  --guardian-url=http://127.0.0.1:8787/acs \
+  --secret-file=~/.acs/hmac.key \
+  --write
+```
+
+What it wires by default:
+
+| Hook | Posture |
+|---|---|
+| `PreToolUse` | **fail-CLOSED** (gate — silent fail-open is a policy hole) |
+| `UserPromptSubmit` | **fail-CLOSED** (gate) |
+| `SessionStart` | fail-open (observational; §6.4 default) |
+| `PostToolUse` | fail-open |
+| `Notification` | fail-open |
+| `SessionEnd` | fail-open |
+
+Override with `--default-deny` (fail-closed on every hook) or `--all-fail-open` (strict §6.4 default everywhere).
+
+To remove the wiring later: `python3 wire.py --unwire --write`.
+
+### 4. Restart any open Claude Code session
+
+Claude Code reads `~/.claude/settings.json` at session start, not live. Existing sessions keep their pre-wiring config.
+
+### 5. Verify the install
+
+Two complementary checks. The end-to-end check is the one to run if you only have time for one:
+
+```bash
+cd "$ACS_REPO/adapters/claude-code"
 python3 e2e_check.py
 ```
 
-This drives a real `claude --print` invocation through 4 scenarios
-(benign Bash allowed, destructive Bash denied, Read tool, multi-tool
-handshake-once) and prints every envelope on the wire, Claude's actual
-output, and PASS/FAIL per scenario. Each scenario takes ~10-15s
-because real Claude is in the loop; total ~60s.
+Real Claude is driven through four scenarios — allow, deny, Read tool, multi-tool handshake-once — every envelope is printed verbatim, you read PASS/FAIL per scenario. Wall-clock ~60-90s because real Claude is in the loop. The final line is either `YOUR CLAUDE CODE INSTALL IS ACS-CONFORMANT` (exit 0) or a per-scenario failure list (exit 1).
 
-**Requirements** for the e2e check:
+You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests) below).
 
-- `claude` CLI installed and authenticated ([install guide](https://docs.claude.com/claude-code))
-- Python 3.10+ with `jsonschema` and `rfc8785` (`pip install -r ../requirements-test.txt`)
-- Canonical ACS schemas reachable. Default location:
-  `/tmp/acs-spec-source/specification/v0.1.0/`. Override via
-  `ACS_SPEC_DIR`. Clone with:
+## Prerequisites
 
+- **`claude` CLI** installed and authenticated — install guide: <https://docs.claude.com/claude-code>
+- **Python 3.10+** with `jsonschema` and `rfc8785` — `pip install -r ../requirements-test.txt`
+- **Canonical ACS schemas** reachable on disk. Default location `/tmp/acs-spec-source/specification/v0.1.0/`; override via `ACS_SPEC_DIR`. Clone with:
   ```bash
   git clone https://github.com/Agent-Control-Standard/ACS.git /tmp/acs-spec-source
   ```
 
-- Optional: override the Claude model via `CLAUDE_MODEL=...` env var.
-  Default is `claude-haiku-4-5` (fastest currently available).
+## Smoke tests
 
-If a scenario fails, the output names the specific check that failed
-and shows the envelope that triggered it — start by reading the
-"Hooks Claude fired" list and the per-scenario verdict.
+Five tests, ordered from broadest to most specific. Run any/all.
 
-## What it does
+### Smoke #1 — automated test suite (unit + integration, ~30s)
 
-Claude Code fires a hook (e.g. `PreToolUse`) by running a shell command and passing the hook event as JSON on stdin. The command's stdout becomes the hook decision.
-
-This adapter is that command. It:
-
-1. Reads the Claude Code hook event from stdin.
-2. Translates it to an ACS JSON-RPC request (see [mapping.md](./mapping.md)).
-3. POSTs it to a Guardian endpoint.
-4. Translates the ACS decision back to the format Claude Code expects.
-5. Emits the translated response on stdout.
-
-## Quick start
+Run from `adapters/` (the conformance suite lives at the top level):
 
 ```bash
-# 1. Run the example Guardian (in one terminal)
-python3 example_guardian.py
-# [guardian] listening on 127.0.0.1:8787
+cd "$ACS_REPO/adapters"
 
-# 2. Wire the adapter into Claude Code
-#    Edit ~/.claude/settings.json (see settings.json.example) and replace
-#    /path/to/acs_adapter.py with the absolute path on your machine.
+python3 -m unittest test_acs_core_conformance
+# Expect: Ran 48 tests in ~10s / OK   (every ACS-Core MUST)
 
-# 3. Test it from the shell (no Claude Code needed)
-echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /home/user"}}' \
-  | ACS_GUARDIAN_URL=http://127.0.0.1:8787/acs python3 acs_adapter.py
-# {"decision": "block", "reason": "destructive Bash pattern in: rm -rf /home/user"}
+(cd claude-code && python3 -m unittest discover tests)
+# Expect: Ran 32 tests / OK            (round-trip + schema + live)
+
+(cd _common && python3 -m unittest discover tests)
+# Expect: Ran 33 tests / OK            (security + edge cases)
+```
+
+If any of those fail, the failure message names the specific spec MUST or property that broke.
+
+### Smoke #2 — real Claude end-to-end (~60-90s)
+
+```bash
+cd "$ACS_REPO/adapters/claude-code"
+python3 e2e_check.py
+```
+
+Drives real Claude through 4 scenarios with a recording Guardian. Prints every envelope on the wire plus per-scenario PASS/FAIL.
+
+### Smoke #3 — in-session manual test
+
+Open a real Claude Code session. Try:
+
+```
+echo hello via Bash
+```
+
+In your Guardian terminal you should see roughly this sequence (one new entry per hook Claude fires):
+
+```
+[guardian] handshake/hello       session=<uuid>...
+[guardian] steps/sessionStart    session=<uuid>...
+[guardian] steps/userMessage     session=<uuid>...
+[guardian] steps/toolCallRequest session=<uuid>...
+[guardian] steps/toolCallResult  session=<uuid>...
+[guardian] steps/agentResponse   session=<uuid>...
+[guardian] steps/sessionEnd      session=<uuid>...
+```
+
+Then try a denied command in the same session:
+
+```
+Run: rm -rf /home/some-fake-path
+```
+
+Claude should refuse and surface the Guardian's `reasoning` field. The example Guardian's regex catches `rm -rf /...`; the Bash never runs.
+
+### Smoke #4 — audit-cause differentiation
+
+Verifies that the adapter's audit log distinguishes "Guardian unreachable" (ops issue) from "Guardian rejected the envelope" (client/operator bug).
+
+Unsigned envelope to a signing-required Guardian:
+
+```bash
+ACS_GUARDIAN_URL="http://127.0.0.1:8787/acs" \
+ACS_HMAC_SECRET="" \
+python3 $ACS_REPO/adapters/claude-code/acs_adapter.py 2>&1 <<'EOF'
+{"session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"/tmp/t","cwd":"/tmp","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}
+EOF
+```
+
+Expected stderr — note the `cause` field:
+
+```
+acs-adapter: Guardian returned JSON-RPC error -32004 (signature_invalid_response): SIGNATURE_INVALID
+ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "signature_invalid_response", ...}
+```
+
+Guardian unreachable (different cause, same disposition):
+
+```bash
+ACS_GUARDIAN_URL="http://127.0.0.1:1/dead" \
+python3 $ACS_REPO/adapters/claude-code/acs_adapter.py 2>&1 <<'EOF'
+{"session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"/tmp/t","cwd":"/tmp","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}
+EOF
+```
+
+Expected:
+
+```
+acs-adapter: Guardian unreachable: <urlopen error ...>
+ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "transport_failure", ...}
+```
+
+Same `acs_audit_event`, distinct `cause`. Operators grep on `cause=` to triage.
+
+### Smoke #5 — pre-flight inventory (paranoid)
+
+If you're debugging, this is the fastest "where did I go wrong" sweep:
+
+```bash
+echo "=== Guardian listening? ==="
+lsof -i :8787 | head -3 || echo "NOT RUNNING"
+
+echo "=== Secret file 0600? ==="
+ls -la ~/.acs/hmac.key
+
+echo "=== Hooks wired? ==="
+python3 -c "import json, os; d=json.load(open(os.path.expanduser('~/.claude/settings.json'))); print(list(d.get('hooks',{}).keys()))"
+
+echo "=== Guardian responds to system/ping? ==="
+cd "$ACS_REPO/adapters" && python3 -c "
+import sys; sys.path.insert(0, '_common')
+from acs_common import ping; import json
+r = ping('http://127.0.0.1:8787/acs'); print(json.dumps(r, indent=2)[:200] if r else 'no response')
+"
 ```
 
 ## Files
 
-- `acs_adapter.py` — the adapter itself. Stdlib-only. No `pip install` required.
-- `example_guardian.py` — a minimal local Guardian for testing. Implements deterministic policy (denies destructive Bash and writes to system paths, allows everything else).
-- `settings.json.example` — Claude Code config that wires the adapter into every relevant hook.
+- `acs_adapter.py` — the adapter itself. Stdlib + `rfc8785` for JCS canonicalization.
+- `wire.py` — settings.json wiring CLI (dry-run by default; `--write` to apply).
+- `e2e_check.py` — real-Claude end-to-end verifier (4 scenarios).
+- `settings.json.example` — reference wiring (`wire.py` produces a more comprehensive one).
 - `mapping.md` — Claude Code hook → ACS step method table, plus disposition translation.
-- `tests/test_adapter.py` — end-to-end round-trip tests. Run with `python3 -m unittest tests.test_adapter`.
-- `tests/test_live.py` — automated live integration test against a real `claude --print` session.
+- `tests/` — round-trip + schema + live integration tests.
 - `tests/example_payloads.md` — masked real-world payload examples showing exactly what Claude Code emits.
+
+The adapter shares `adapters/_common/` with the Cursor and NAT adapters (signing, handshake cache, audit events, URL allowlist).
 
 ## Configuration
 
-The adapter is configured by environment variables, which `settings.json.example` sets per hook:
+The adapter is configured by environment variables, typically set per-hook by `wire.py`:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ACS_GUARDIAN_URL` | `http://127.0.0.1:8787/acs` | Guardian endpoint to POST requests to. |
-| `ACS_SESSION_ID` | derived from `$PWD` | Session id sent on every request. Stable across calls in the same working directory by default. |
-| `ACS_DEFAULT_DENY` | `1` | If `1`, deny on Guardian-unreachable or adapter errors (fail-closed). Set to `0` for fail-open with audit. |
+| `ACS_GUARDIAN_URL` | `http://127.0.0.1:8787/acs` | Guardian endpoint. http/https only; SSRF allowlist refuses other schemes. |
+| `ACS_HMAC_SECRET_FILE` | (unset) | Path to a 0600 file holding the shared HMAC secret. |
+| `ACS_HMAC_SECRET` | (unset) | Inline secret. Less secure (visible in `ps eauxw`). Prefer the file. |
+| `ACS_DEFAULT_DENY` | `0` | Fail-open with audit (§6.4 default). Set to `1` for fail-closed. |
+| `ACS_HANDSHAKE` | `1` | Set to `0` to disable the handshake/hello call on first use. |
+| `ACS_AGENT_ID` | derived from cwd | Stable agent identifier sent in `metadata.agent_id`. |
+| `ACS_HANDSHAKE_CACHE` | `~/.cache/acs-adapter-handshake/` | Per-session ServerHello cache dir. |
+| `ACS_GUARDIAN_HOST_ALLOWLIST` | (unset) | Optional comma-separated hostname allowlist (defense in depth). |
 
-## Running the tests
+## On-disk state
 
-```bash
-cd adapters/claude-code
-python3 -m unittest tests.test_adapter -v
-```
-
-Test breakdown:
-- `tests/test_adapter.py` — 13 round-trip tests against the example Guardian (happy path, deny paths, lifecycle hooks, unknown hooks, fail-closed and fail-open posture).
-- `tests/test_envelope_schema.py` — 17 spec-validation tests. Every mapped hook's envelope + payload validates against the canonical v0.1.0 `request-envelope.json` and `hooks/<hook>.json`. Hard-FAILs if the canonical schemas are not present at `$ACS_SPEC_DIR` (default `/tmp/acs-spec-source/specification/v0.1.0`).
-- `tests/test_live.py` — 2 live-Claude-CLI tests; require `claude` on PATH.
-
-## What this is not
-
-- A production Guardian. `example_guardian.py` is a teaching artifact with a small destructive-Bash regex set plus a protected-path list. Production Guardians plug in OPA/Rego, Cedar, or a vendor's policy engine.
-- A signed-envelope implementation. The adapter does not HMAC the outbound request body. ACS-Core (`docs/spec/conformance.md` §C.4) requires baseline HMAC-SHA256 signing on every envelope. **This is a known gap.** Without it, the adapter does not claim ACS-Core conformance; transport security (mTLS / signed reverse proxy) is necessary but does not satisfy the envelope-signature MUST.
-- A full handshake implementation. The adapter assumes the Guardian advertises ACS-Core at the endpoint. A production adapter performs `handshake/hello` at session start and caches the negotiated capabilities.
+- `~/.cache/acs-adapter-handshake/<sha256(session_id+url)>.json` — cached ServerHello per session. Adapter creates with mode 0600; refreshed when older than 1 hour.
+- `~/.cache/acs-guardian-state/<sha256(session_id)>.json` — Guardian-side per-session chain head + replay set; survives Guardian restart.
 
 ## Conformance status
 
@@ -110,15 +275,34 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 
 | ACS-Core item | Status |
 |---|---|
-| Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. Disable with `ACS_HANDSHAKE=0`. |
-| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`test_envelope_schema.py`); format checking enforces `uuid` and `date-time` |
-| Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd` |
-| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on all hooks; MODIFY partial (`PreToolUse` with `parameter_overrides` only) |
-| Unknown-disposition fail posture | ✓ default-deny honored on unknown Guardian verdicts (when `ACS_DEFAULT_DENY=1`); spec-default fail-open path emits audit event |
-| SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`) |
-| Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3 |
-| Baseline integrity (HMAC-SHA256 signature) | ✓ HKDF-derived per-session key signs every request and response when `ACS_HMAC_SECRET` is set; Guardian rejects unsigned/tampered with SIGNATURE_INVALID -32004 |
-| Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; spec-default fail-open posture emits structured `ACS_AUDIT` event on every bypass |
-| Liveness `system/ping` | ✓ Guardian implements always-allow ping that bypasses chain/replay/signature checks per §13 |
-| `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1 |
-| Wrapped MCP `protocols/MCP/*` | ✗ not implemented; Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path |
+| Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`tests/test_envelope_schema.py`); format checking enforces `uuid` and `date-time`. |
+| Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. |
+| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on all hooks; MODIFY partial (`PreToolUse` with `parameter_overrides` only). |
+| Unknown-disposition fail posture | ✓ default-deny honored on unknown verdicts when `ACS_DEFAULT_DENY=1`; spec-default fail-open path emits audit event. |
+| SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`). |
+| Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3. |
+| Baseline integrity (HMAC-SHA256 signature) | ✓ HKDF-derived per-session key signs every request and response when `ACS_HMAC_SECRET[_FILE]` is set; Guardian rejects unsigned/tampered with SIGNATURE_INVALID -32004. |
+| Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; spec-default fail-open posture emits structured `ACS_AUDIT` event on every bypass; audit `cause` field distinguishes failure modes. |
+| Liveness `system/ping` | ✓ Guardian implements always-allow ping that bypasses chain/replay/signature checks per §13. |
+| `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1. |
+| Wrapped MCP `protocols/MCP/*` | ✗ not implemented; Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path. |
+
+## What this is not
+
+- A production Guardian. `example_guardian.py` is a teaching artifact with a small destructive-Bash regex set plus a protected-path list. Production Guardians plug in OPA/Rego, Cedar, or a vendor's policy engine via the `evaluate(method, params)` entry point.
+- A full MCP wrapping implementation. Claude Code's MCP traffic goes through its own mechanism; the adapter would need a separate wrapping path to forward `protocols/MCP/*` envelopes through the Guardian.
+- A service manager. The Guardian process is your responsibility (terminal window, `launchd`, `systemd`, container, etc.).
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Adapter exits 0 with empty stdout; Guardian terminal silent | Adapter pointed at the wrong URL (check `ACS_GUARDIAN_URL` in your settings.json); check stderr for `ACS_AUDIT cause=transport_failure`. |
+| Every hook gets denied | Likely `ACS_DEFAULT_DENY=1` + Guardian down. Check the Guardian process is running. |
+| Adapter says `SecretFilePermissionsError` | The HMAC secret file is mode > 0600. `chmod 600 ~/.acs/hmac.key`. |
+| Guardian returns `-32004 SIGNATURE_INVALID` | Adapter and Guardian aren't reading the same secret. `cat ~/.acs/hmac.key` on both sides should match. |
+| Guardian returns `-32006 TIMESTAMP_OUT_OF_WINDOW` | Clock skew between adapter and Guardian > 5 minutes. Sync time (`sudo sntp -sS time.apple.com` on macOS). |
+| Guardian returns `-32600 Invalid Request` for `metadata.session_id` | Session ID isn't a UUID. Real Claude Code always sends UUIDs; if you're hand-crafting envelopes for testing, fix the fixture. |
+
+Everything the adapter does that's not policy decision-making is audited on stderr as a JSON line prefixed `ACS_AUDIT`. The `cause` field tells you which failure mode fired.

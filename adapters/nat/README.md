@@ -77,6 +77,10 @@ The adapter works across multiple NAT releases by feature-detecting the block me
 - **NAT 1.7.0 (public release):** blocks by raising `ACSGuardianDenied` (NAT documents "Raises: Any exception to abort execution" for `pre_invoke`).
 - **NAT dev branch (with `InvocationAction.SKIP`):** prefers setting `context.action = InvocationAction.SKIP` (cleaner, no exception in logs). The adapter detects the symbol's availability at import time.
 
+## Decision honoring (§6.4)
+
+ACS-Core §6.4 requires the framework to wait for the verdict and apply it before the action executes. NAT provides this guarantee via `function_middleware_invoke`: `pre_invoke` must complete before `call_next(...)` runs, so a deny from the Guardian (whether surfaced as a raised exception or as `InvocationAction.SKIP`) is applied before the wrapped function would execute. The adapter relies on this ordering — without it, a Guardian deny would arrive after the side effect.
+
 ## Conformance status
 
 **Conformance posture**: the adapter now exposes ACS-Core's 6-hook minimum on its own by combining two NAT integration points: the `FunctionMiddleware` (for `toolCallRequest` / `toolCallResult`) and a lifecycle observer that subscribes to NAT's `IntermediateStepManager` for `WORKFLOW_START` / `WORKFLOW_END` events. Those events fire `sessionStart` + `userMessage` (on workflow start with input) and `agentResponse` + `sessionEnd` (on workflow end with output). The observer is auto-subscribed on the first `pre_invoke` call.

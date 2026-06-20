@@ -78,6 +78,10 @@ Same architectural pattern (shell-stdin/stdout, JSON in, JSON out), different pr
 
 The adapter handles all these protocol differences internally; the Guardian sees the same ACS JSON-RPC shape from both.
 
+## Decision honoring (§6.4)
+
+ACS-Core §6.4 requires the framework to wait for the verdict and apply it before the action executes. Cursor provides this guarantee through its hook protocol: like Claude Code, the adapter is invoked as a blocking subprocess and Cursor reads its stdout (or exit code, for `beforeSubmitPrompt`) for the decision before the action runs. The adapter relies on this — without it, a Guardian deny would arrive after the side effect.
+
 ## Configuration
 
 Environment variables:

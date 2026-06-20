@@ -11,37 +11,7 @@ cd adapters
 python -m unittest test_acs_core_conformance
 ```
 
-`test_acs_core_conformance.py` enumerates every MUST from `docs/spec/conformance.md` ACS-Core (handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit, system/ping, wrapped MCP). Each test docstring quotes the spec line it falsifies. **44/44 pass on this reference implementation.** If you fork and modify the adapters, run this — any fail names the specific MUST you broke, with citation.
-
-## Status
-
-| Adapter | Status | Mapping | Working adapter | Round-trip | Spec-schema | Live |
-|---|---|---|---|---|---|---|
-| [claude-code](./claude-code/) | Reference implementation | ✓ | ✓ | 13 passed | 17 passed | ✓ `test_live.py` ALLOW + DENY against real `claude --print` |
-| [cursor](./cursor/) | Reference implementation | ✓ | ✓ | 13 passed | 36 passed | ✓ Manual procedure in `tests/live_verification.md` (Cursor is a desktop app, no headless mode) |
-| [nat](./nat/) | Reference implementation | ✓ | ✓ | 7 passed (require `nvidia-nat-core==1.7.0`) | 6 passed (work without NAT) | ✓ `test_live.py` (5) + `test_lifecycle.py` (2 — lifecycle hooks on workflow boundary) — all require `nvidia-nat-core` |
-| [example-guardian](./example-guardian/) | Test substrate (not a production Guardian) | — | — | — | — | Behavior verified by the Core conformance suite (`adapters/test_acs_core_conformance.py`) — handshake, replay, skew, signing, chain, ping, dispositions |
-
-**NAT note:** the adapter now combines `FunctionMiddleware` (for
-toolCallRequest/Result) with an `IntermediateStepManager` lifecycle
-observer (for sessionStart/userMessage/agentResponse/sessionEnd on
-WORKFLOW_START / WORKFLOW_END events). A NAT deployment using this
-adapter satisfies ACS-Core's 6-hook minimum on its own. See
-`adapters/nat/README.md` and `adapters/nat/tests/test_lifecycle.py`.
-
-**Spec-schema tests** load the canonical schemas from a local clone of
-`Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at
-`specification/v0.1.0/`). They are hard-FAIL if the schemas are
-missing — not skipped — because spec validation is non-negotiable.
-Format checking (`uuid`, `date-time`) is enforced.
-
-**Core conformance tests** in `adapters/test_acs_core_conformance.py`
-exercise: rolling chain hash per §8.2, REPLAY_DETECTED + TIMESTAMP_OUT_OF_WINDOW
-per §10.3, HMAC-SHA256 sign/verify per §10, handshake/hello per §4,
-system/ping per §13, and response-envelope schema validation for every
-response shape (allow, deny, handshake, ping, error).
-
----
+`test_acs_core_conformance.py` enumerates every MUST from `docs/spec/conformance.md` ACS-Core (handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit + audit-cause differentiation, system/ping, wrapped MCP). Each test docstring quotes the spec line it falsifies. The suite loads the canonical schemas from a clone of `Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at `specification/v0.1.0/`); schemas missing is a hard FAIL, not a skip — spec validation is non-negotiable. Format checking (`uuid`, `date-time`) is enforced.
 
 ## How adapters work
 
@@ -84,6 +54,12 @@ Six steps:
 ### Concrete walkthrough: Claude Code, ALLOW path
 
 You ask Claude Code to `echo hello`.
+
+For brevity, this walkthrough shows the envelope SHAPES and omits the
+HMAC-SHA256 `signature` block on each envelope and the once-per-session
+`handshake/hello` round-trip that precedes the first content-bearing
+event. Both are present in real envelopes — run `python3 adapters/claude-code/e2e_check.py`
+to see verbatim envelopes including signatures.
 
 **Step 1.** Claude Code is about to call its Bash tool. Before it runs, Claude Code's hook system fires `PreToolUse`. Your `settings.json` configures `PreToolUse` to run `python3 acs_adapter.py`. Claude Code spawns that process and pipes the event to stdin:
 
@@ -177,26 +153,9 @@ The general pattern is identical. The framework-specific translation differs:
 
 The Guardian-side wire format is **the same** for all three. The adapter is bilingual: it knows the framework's protocol on one side and ACS on the other.
 
-### Why the in-process NAT adapter blocks differently
+### Decision honoring is a framework property
 
-Claude Code and Cursor both use the shell-stdin pattern: the adapter is a separate process, the framework reads its stdout to learn what to do. Block by emitting a deny-shaped JSON.
-
-NAT is fundamentally different. The adapter runs inside the agent's process as a Python middleware class. When the Guardian denies, the adapter has two options:
-
-1. **Set `context.action = InvocationAction.SKIP`.** NAT's `function_middleware_invoke` checks the action after `pre_invoke` returns and skips the function call. Clean, no exception. Available on the NAT dev branch.
-
-2. **Raise an exception.** NAT's documented "Raises: Any exception to abort execution." Less clean (shows up in logs) but works on every NAT version including the public 1.7.0 release.
-
-The adapter feature-detects which is available and prefers the action-based path.
-
-### The behavior contract
-
-ACS-Core §6.4 requires the framework to **wait for the verdict and apply it before the action executes.** The adapter relies on this:
-
-- For Claude Code and Cursor, the hook subprocess has to return before the tool runs. The shell hook protocol guarantees this — the framework blocks on the subprocess.
-- For NAT, `pre_invoke` must complete before `call_next(...)` is invoked. NAT's `function_middleware_invoke` orchestration guarantees this.
-
-If a framework were to fire-and-forget the hook (run it asynchronously and continue the action without waiting), the adapter would still send to the Guardian and the audit chain would still record the decision — but the framework wouldn't actually apply it. That would be non-conformant. None of the three frameworks here does that.
+Every adapter relies on its framework providing the §6.4 guarantee: the framework MUST wait for the verdict and apply it before the action executes. If a framework fired the hook fire-and-forget and continued the action without waiting, the adapter would still send to the Guardian and the audit chain would still record the decision — but the framework wouldn't apply it. That would be non-conformant. None of the three frameworks here does that; how each one delivers the guarantee is in the per-adapter README.
 
 ### The key insight
 
