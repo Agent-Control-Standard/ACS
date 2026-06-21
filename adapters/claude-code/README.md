@@ -278,7 +278,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`tests/test_envelope_schema.py`); format checking enforces `uuid` and `date-time`. |
 | Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. |
-| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on all hooks; MODIFY partial (`PreToolUse` with `parameter_overrides` only). |
+| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on **pre-execution** hooks (`PreToolUse`, `UserPromptSubmit`); MODIFY partial (`PreToolUse` with `parameter_overrides` only). **Post-execution and lifecycle hooks (`PostToolUse`, `Notification → agentResponse`, `Stop`, `SessionEnd`) are observation-only** — Claude Code fires them after the side effect / message has occurred; a Guardian `deny` on those cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ default-deny honored on unknown verdicts when `ACS_DEFAULT_DENY=1`; spec-default fail-open path emits audit event. |
 | SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`). |
 | Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3. |

@@ -310,7 +310,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | Handshake (`handshake/hello`) | ✓ on first session call; cached per-session |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (36 tests) with format checking |
 | Hook taxonomy (6 minimum) | ✓ all six covered; 17 Cursor events mapped total (`subagentStop` intentionally omitted — see honesty table below) |
-| Dispositions | ALLOW / DENY / ASK supported on permission events. DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. |
+| Dispositions | ALLOW / DENY / ASK supported on **permission (pre-execution) events** (`preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeSubmitPrompt`, `subagentStart`). DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. **Lifecycle / post-execution hooks (`afterAgentResponse → steps/agentResponse`, `sessionStart`, `sessionEnd`, `afterShellExecution`, etc.) are observation-only** — Cursor fires them after the message / side effect has occurred; a Guardian `deny` cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ |
 | SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling SHA-256 chain |
 | Replay protection | ✓ Guardian enforcement (REPLAY_DETECTED -32005, TIMESTAMP_OUT_OF_WINDOW -32006) |

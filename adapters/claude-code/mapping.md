@@ -15,7 +15,7 @@ Each Claude Code hook event maps to an ACS `steps/*` method. The adapter (`acs_a
 | `PreCompact` | `steps/preCompact` | Memory compaction is about to occur. |
 | `PostCompact` | `steps/postCompact` | Compaction has completed. |
 | `SubagentStop` | `steps/subagentStop` | A sub-agent has completed. |
-| `Notification` | `steps/agentResponse` | Agent-emitted message visible to the user. |
+| `Notification` | `steps/agentResponse` | **Observation-only.** Claude Code's `Notification` fires *after* the assistant message is delivered to the user; the framework does not consult the hook return value. The adapter emits the ACS envelope for trace + audit, but a Guardian `deny` / `modify` cannot retroactively block or rewrite a message the user has already seen. ACS-Core §hooks.md describes `agentResponse` as decision-eligible; this adapter's mapping is honest about the framework constraint. |
 
 Claude Code hooks not currently mapped (the adapter passes them through unhandled, so Claude Code proceeds): `PreToolUseFailure`, `PostToolUseFailure`, `PermissionRequest`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `ConfigChange`, `TeammateIdle`, `TaskCompleted`, `MCPElicitation`. Most of these have no semantic ACS equivalent in v0.1.0 and can be added in follow-up PRs.
 
@@ -36,7 +36,7 @@ ASK and DEFER are substituted to BLOCK at the adapter layer because Claude Code'
 The Claude Code adapter implements ACS-Core's mandatory floor:
 
 - Handshake: not negotiated per-call; the adapter assumes the Guardian advertises ACS-Core support at the endpoint. A production deployment should perform `handshake/hello` at session start and cache the result.
-- Five dispositions: ALLOW / DENY / ASK / DEFER are honored as above. MODIFY is partially honored (only on `PreToolUse` with `parameter_overrides`).
+- Five dispositions: ALLOW / DENY / ASK / DEFER are honored as above for **pre-execution** hooks (`PreToolUse`, `UserPromptSubmit`). MODIFY is partially honored (only on `PreToolUse` with `parameter_overrides`). **Post-execution and lifecycle hooks (`PostToolUse`, `Notification → agentResponse`, `Stop`, `SessionEnd`) are observation-only**: Claude Code fires them after the action / message / session has completed; a Guardian `deny` on those hooks cannot undo the side effect. The adapter emits the audit envelope; deployments needing pre-delivery gating must place the gate at `UserPromptSubmit` for prompts or `PreToolUse` for tools.
 - Session context: the adapter sends `session_id` on every request, derived from the working directory hash unless `ACS_SESSION_ID` is set. Guardian-side audit chain accumulates against that id.
 - Replay protection: `request_id` (UUID) and `timestamp` are populated on every request.
 - Baseline integrity: not implemented in this minimal adapter (HMAC-SHA256 keying is out of scope for the example). A production adapter wraps `acs_adapter.py`'s outbound request in an HMAC envelope using a session key derived from deployment configuration.

@@ -22,6 +22,10 @@ The ACS adapter is implemented as a `FunctionMiddleware` that, for each wrapped 
 
 The minimal adapter in `acs_adapter.py` emits `steps/toolCallRequest` and `steps/toolCallResult` for every wrapped function call. The Guardian can dispatch on the tool name to apply different policy. Splitting into separate ACS step methods (e.g. `steps/knowledgeRetrieval` for retriever calls) is a configuration choice handled in the adapter's `pre_invoke` based on `function_context.name`; the example adapter uses a single method to keep the round-trip simple.
 
+### Lifecycle hooks are observation-only
+
+The adapter's `_on_intermediate_step` subscriber emits `steps/sessionStart` + `steps/userMessage` on `WORKFLOW_START` and `steps/agentResponse` + `steps/sessionEnd` on `WORKFLOW_END` via `_emit_lifecycle_hook`. **This path is fire-and-forget.** NAT's `IntermediateStepManager` subscription model is a notification stream — a subscriber callback cannot veto the event after the fact. So although ACS-Core §hooks.md lists `agentResponse` as decision-eligible (ALLOW / DENY / MODIFY), the adapter cannot actually block or rewrite the workflow's output through this path. The envelopes are for trace + audit; enforcement on outputs must be placed at `pre_invoke` / `post_invoke` of the function that produced them, or as a separate review function in the YAML the workflow calls before returning.
+
 ## ACS disposition → NAT behavior
 
 | ACS disposition | NAT action |

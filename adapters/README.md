@@ -17,14 +17,16 @@ Running the Guardian — terminal window, `launchd`, `systemd`, container — is
 
 ## ACS-Core conformance check
 
-One command verifies this whole stack is still ACS-Core conformant:
+One command verifies this stack against the ACS-Core baseline **minus full Wrapped MCP**, which is deferred:
 
 ```bash
 cd adapters
 python -m unittest test_acs_core_conformance
 ```
 
-`test_acs_core_conformance.py` enumerates every MUST from `docs/spec/conformance.md` ACS-Core (handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit + audit-cause differentiation, system/ping, wrapped MCP). Each test docstring quotes the spec line it falsifies. The suite loads the canonical schemas from a clone of `Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at `specification/v0.1.0/`); schemas missing is a hard FAIL, not a skip — spec validation is non-negotiable. Format checking (`uuid`, `date-time`) is enforced.
+`test_acs_core_conformance.py` enumerates every ACS-Core MUST from `docs/spec/conformance.md` — handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit + audit-cause differentiation, system/ping, and the `protocols/MCP/*` namespace shape. Each test docstring quotes the spec line it falsifies. The suite loads the canonical schemas from `Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at `specification/v0.1.0/`); schemas missing is a hard FAIL, not a skip — spec validation is non-negotiable. Format checking (`uuid`, `date-time`) is enforced via `rfc3339-validator`.
+
+**Wrapped MCP caveat.** The conformance suite verifies the wire-format shape of `protocols/MCP/*` (envelope validates, Guardian returns a structured response, no crash), but the reference Guardian does **not** implement full MCP request wrapping — incoming MCP requests are routed through the standard `steps/toolCallRequest` path with the tool name reflecting the MCP method, not as the wrapped `protocols/MCP/*` form. Deployments that need full MCP wrapping must extend the Guardian. This is a documented v0.2 deferral; a green conformance run means "ACS-Core baseline **minus** full Wrapped MCP", not "the whole baseline." See `test_acs_core_conformance.py::Core10_WrappedMcp`.
 
 ## How adapters work
 

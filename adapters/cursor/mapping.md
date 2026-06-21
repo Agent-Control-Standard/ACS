@@ -70,7 +70,7 @@ Cursor's `beforeSubmitPrompt` has no documented response keys; the adapter uses 
 
 ### Lifecycle events (`sessionStart`, `sessionEnd`, `stop`, `preCompact`, `afterAgentResponse`, `afterAgentThought`, `beforeReadFile`, `beforeTabFileRead`, `afterFileEdit`, `afterTabFileEdit`)
 
-The adapter emits empty output. ACS records the event in the audit chain; Cursor does not gate on these.
+**Observation-only.** The adapter emits empty output. Cursor fires these *after* the action / message / file edit has occurred (and `beforeReadFile` returns `{}` even on a denied response — the read still happens), so a Guardian `deny` / `modify` on them cannot undo the side effect or block the message. ACS records the event in the audit chain; enforcement on prompts must be placed at `beforeSubmitPrompt`, enforcement on tools at `preToolUse` / `beforeShellExecution` / `beforeMCPExecution`. ACS-Core §hooks.md describes `agentResponse` as decision-eligible; the framework constraint forces this adapter's mapping to honest observation-only.
 
 ## Matchers
 

@@ -295,7 +295,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | Handshake (`handshake/hello`) | ✓ on first `pre_invoke`; cached per session in process memory |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py`) |
 | Hook taxonomy (6 minimum) | ✓ all 6: `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. Function hooks from `FunctionMiddleware`; lifecycle hooks from `IntermediateStepManager` subscription. Verified in `test_lifecycle.py`. |
-| Dispositions | ALLOW / DENY / MODIFY supported. ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). |
+| Dispositions | ALLOW / DENY / MODIFY supported on **function-middleware (pre-execution)** hooks (`pre_invoke` for every wrapped function — tools, sub-workflows, LLM, retrievers). ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). **Lifecycle hooks from the `IntermediateStepManager` subscription (`steps/sessionStart`, `steps/userMessage`, `steps/agentResponse`, `steps/sessionEnd`) are observation-only** — subscription callbacks cannot veto a NAT event after it fires. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ |
 | Post-tool deny redaction | ✓ `post_invoke` clears `context.output` and sets `acs_post_invoke_redacted=True` per §6.4 output-redaction gate |
 | SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling chain |
