@@ -10,14 +10,22 @@ Run from the adapters/ directory:
     python -m unittest test_acs_core_conformance
 
 Result: a single "OK" with all-pass means this reference implementation
-is ACS-Core conformant against v0.1.0 as enumerated below.
+is conformant against the ACS-Core v0.1.0 baseline **minus full
+Wrapped MCP**. The MCP namespace is validated for wire-format shape
+(envelope validates, Guardian returns a structured response, no
+crash) but the reference Guardian does not implement full MCP
+request wrapping — that is a documented v0.2 deferral. See
+`Core10_WrappedMcp` for the exact scope of what is and is not
+checked. Deployments needing full MCP wrapping must extend the
+Guardian.
 
 Result: any FAIL/ERROR names the specific MUST that broke, with the
 spec citation in the test docstring.
 
 Adopter workflow: copy our adapters, modify for your stack, run this
-file. If it still passes, your fork is still ACS-Core. If it fails,
-the failure message tells you which spec line you broke.
+file. If it still passes, your fork is still ACS-Core (with the
+same Wrapped-MCP caveat). If it fails, the failure message tells
+you which spec line you broke.
 """
 from __future__ import annotations
 
@@ -100,6 +108,24 @@ class CoreHarness(unittest.TestCase):
                 "schemas. Set ACS_SPEC_DIR to a clone of "
                 "Agent-Control-Standard/ACS/specification/v0.1.0/. "
                 "This is a hard fail — schema validation is non-negotiable."
+            )
+        # Hard-fail if jsonschema's format checkers are silently degraded.
+        # Without `rfc3339-validator` installed, the `date-time` checker
+        # is a no-op and tests like `test_timestamp_is_iso8601` false-
+        # pass: an invalid timestamp goes through, the "must fail
+        # validation" assertion sees an empty error list, suite shows
+        # green on a real wire-format bug. Pin in requirements-test.txt
+        # and assert here so a future drop of the dep can't reintroduce
+        # the silent-pass mode.
+        from jsonschema import Draft202012Validator
+        _fc = Draft202012Validator.FORMAT_CHECKER
+        if _fc.conforms("not-a-date", "date-time"):
+            raise RuntimeError(
+                "jsonschema date-time format checker is degraded — "
+                "'not-a-date' was accepted as a valid date-time. "
+                "Install `rfc3339-validator` (pin in adapters/requirements-test.txt). "
+                "Without it, conformance tests that assert invalid "
+                "timestamps must fail validation will silently pass."
             )
         cls.port = _free_port()
         cls.url = f"http://127.0.0.1:{cls.port}/acs"
