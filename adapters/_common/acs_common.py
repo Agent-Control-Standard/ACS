@@ -294,7 +294,17 @@ def verify_signature(envelope: dict, *, key: bytes | None = None,
     unsigned_envelope = {**envelope, container_key: unsigned_container}
     expected_bytes = hmac.new(key, jcs_canonicalize(unsigned_envelope), hashlib.sha256).digest()
     import base64
-    return hmac.compare_digest(expected_bytes, base64.b64decode(expected_b64))
+    import binascii
+    # Malformed base64 (truncation, garbage chars, non-string) must NOT
+    # crash the request path — that turns a bad signature into a 500 /
+    # uncaught exception instead of the spec's SIGNATURE_INVALID
+    # (-32004) response. Return False so the caller emits the right
+    # error code and the audit event carries cause=signature_invalid_*.
+    try:
+        provided_bytes = base64.b64decode(expected_b64, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return False
+    return hmac.compare_digest(expected_bytes, provided_bytes)
 
 
 # ----- JSON-RPC error code → audit cause label -----

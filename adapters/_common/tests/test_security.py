@@ -10,6 +10,7 @@ mitigations documented in `adapters/SECURITY.md`.
 """
 from __future__ import annotations
 
+import binascii
 import json
 import os
 import socket
@@ -379,6 +380,60 @@ class Item14_ToolNameCaseInsensitive(unittest.TestCase):
                 self.assertEqual(result.get("decision"), "deny",
                     f"tool name {name!r} (Task variant) must hit subagent gate")
                 self.assertIn("subagent_gated", result.get("reason_codes", []))
+
+
+class Item15_VerifySignatureRobustToMalformedBase64(unittest.TestCase):
+    """Regression: verify_signature() called base64.b64decode() directly
+    without exception handling. A malformed signature value (truncation,
+    garbage characters, wrong padding) raised binascii.Error / ValueError
+    up to the request path instead of producing the spec's SIGNATURE_INVALID
+    (-32004) response. The Guardian only caught GuardianError around
+    signature checks, so the uncaught binascii.Error tore down the request
+    on the wire as a 500 / disconnected handler — security control
+    converted to a denial-of-service vector.
+
+    Every form of unparseable base64 MUST return False (signature invalid),
+    never crash."""
+
+    BAD_VALUES = [
+        "not-base64",                # raw garbage
+        "this is not!base64@@@",     # non-base64 characters
+        "!!!",                        # too short, illegal chars
+        "===",                        # padding only
+        "AB==CD",                    # padding mid-string
+        "A" * 1000003,               # huge, no padding alignment
+        "",                           # empty (this is "no signature" → False, no crash)
+    ]
+
+    def _make_envelope(self, sig_value):
+        return {
+            "params": {
+                "request_id": "00000000-0000-4000-8000-000000000001",
+                "metadata": {"session_id": "00000000-0000-4000-8000-000000000002"},
+                "signature": {"algorithm": "HMAC-SHA256", "value": sig_value},
+            }
+        }
+
+    def test_malformed_signature_returns_false_not_crashes(self) -> None:
+        import os
+        os.environ["ACS_HMAC_SECRET"] = "verify-sig-robustness-test-secret"
+        try:
+            for bad in self.BAD_VALUES:
+                with self.subTest(signature=bad[:30]):
+                    env = self._make_envelope(bad)
+                    try:
+                        result = acs_common.verify_signature(env)
+                    except (binascii.Error, ValueError, TypeError) as e:
+                        self.fail(
+                            f"REGRESSION: malformed signature {bad[:30]!r} "
+                            f"raised {type(e).__name__} instead of returning "
+                            f"False; this turns SIGNATURE_INVALID into a "
+                            f"crash on the request path")
+                    self.assertFalse(
+                        result,
+                        f"malformed signature {bad[:30]!r} must verify as False")
+        finally:
+            os.environ.pop("ACS_HMAC_SECRET", None)
 
 
 if __name__ == "__main__":
