@@ -34,7 +34,7 @@ flowchart TB
     subgraph Human["Human Identity & Authorization"]
         OAuth20["OAuth 2.0 (RFC 6749)"]:::existing
         OAuth21["OAuth 2.1"]:::existing
-        OIDC["OpenID Connect"]:::existing
+        OIDC["OpenID Connect"]:::existingF
         GNAP["GNAP (RFC 9635)"]:::existing
         AMR["AMR (RFC 8176)"]:::existing
     end
@@ -152,11 +152,23 @@ OAuth 2.0 is the foundation, but its design assumptions break for autonomous age
 | **Consent is grant-time, not action-time.** Approve scope once, client holds token until revoked. | Agents need consent that is **fresh** (user still present) and **granular** (this specific action, not just this scope). CAEP adds freshness signals; CIBA adds step-up, but **CIBA only covers client initiation**, not mid-execution re-authorization. AIMS §10.6 names this gap explicitly. | **ACS mid-execution step-up** and intent-aligned policy checks. |
 | **Scopes are pre-declared static strings** (`read`, `write`, `repo`). | Static scopes can't express per-action, per-resource, per-data-cell intent that agents operate at. | **RFC 9396 (RAR)**, required by ACS for non-trivial scopes. |
 | **Bearer tokens.** Possession is sufficient for use. | Agent memory, tool outputs, logs, and crash dumps are all token-leak surfaces. Prompt injection can exfiltrate tokens from working memory. | **DPoP (RFC 9449)** and **mTLS-bound tokens (RFC 8705)**, required by both AIMS and ACS. |
-| **Refresh tokens** assume "the same user, returning later." | Long-lived refresh tokens stored in prompt-injection-readable agent memory are the worst-case credential. | **Short-lived credentials with aggressive rotation** (AIMS §6; ACS §3.1 imposes tighter ceilings, e.g. 15 min for LLM, 5 min for MCP, 60 s for high-risk). |
+| **Access tokens can live for an hour.** [RFC 6749 §4.2.2](https://www.rfc-editor.org/rfc/rfc6749#section-4.2.2) leaves `expires_in` RECOMMENDED, not REQUIRED, and 60-minute defaults are common in production. | The agent threat surface is continuous, not session-bounded. Any access token that outlives the current reasoning step is standing authority: an indirect prompt injection landing mid-task can spend whatever the token still permits, long after the step that justified it. | **Per-step, short-lived credentials** minted close to the call (see refresh-token row); proposed ACS lifetime ceilings (open work item). |
+| **Permissions are stateless between requests.** Each API call is evaluated against the token's fixed scope; there is no concept of accumulated effective authority. | Agents with persistent memory accumulate context, credentials, and derived permissions across sessions. A token issued for Task A can remain in memory when the agent pivots to Task B, and a hijacked session inherits everything the agent has accumulated. Cross-session memory lets a compromised session poison the authority of future ones. Token scope stays fixed while de facto capability grows. | **Session-scoped credential isolation, memory-bound token invalidation, and per-action re-authorization** (ACS mid-execution step-up). Identity workstream open work item. |
+| **Refresh tokens** assume the same user returning later to resume a session. | Long-lived refresh tokens stored in prompt-injection-readable agent memory are the worst-case credential. | **Short-lived credentials with aggressive rotation** (AIMS §6 sets the baseline; tighter ACS ceilings such as 15 min for LLM, 5 min for MCP, and 60 s for high-risk actions are **proposed** and tracked as an open work item until a normative clause exists to cite). |
 | **The IdP is always reachable.** | Agents operate at machine speed. An IdP outage forces a choice between denial of service and security regression (fall back to cached credentials). Neither OAuth nor AIMS specifies a failure-mode contract. | **Open ACS work item:** fail-closed vs. fail-cached vs. tier-dependent policy. |
-| **Client behavior is deterministic.** | Restatement of row 1, and the deepest problem: every other limitation can be patched with an extension. This one **cannot**. It requires a runtime layer that observes the client, detects deviation from policy, and intercepts actions. | **ACS, by definition.** |
+| **Client behavior is deterministic.** | Restatement of row 1, and the deepest problem: every other limitation can be patched with an extension. This one **cannot**. It requires a runtime layer that confines the authenticated client to its declared intent and scope, and intercepts actions that fall outside them. | **ACS, by definition.** |
 
 > **Summary.** OAuth 2.0 plus its extensions (RAR, DPoP, mTLS-bound tokens, Token Exchange) plus the agent-specific drafts (AIMS, Transaction Tokens for Agents, Identity Chaining) cover **token issuance, binding, and propagation**. None of them cover **runtime enforcement of the authenticated agent's behavior**. That is the boundary ACS occupies.
+
+Runtime enforcement here is the identity-layer mechanism for the **Least Agency** principle from the [OWASP Top 10 for Agentic Applications](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/): agents get the minimum autonomy needed for the task, tool chains are constrained so individually safe capabilities cannot be composed into destructive ones, and agency is restricted at the action level. The controls in this document (per-call authorization against immutable intent, scope attenuation at every hop, mid-execution step-up) are how that principle gets enforced at the identity layer rather than stated as guidance.
+
+### Open Questions for the Working Group
+
+The following are real architectural questions the table above does not settle. They are recorded here as open items rather than positions.
+
+1. **Impersonation vs. delegation.** Should an agent ever impersonate a user, or must it always act on-behalf-of with attenuated scope and an explicit actor chain? The working assumption in this document is on-behalf-of only (impersonation collapses the delegation chain this workstream exists to preserve), but the position needs WG sign-off before it becomes normative.
+2. **Revocation vs. memory invalidation.** Revoking a token stops future API calls. It does not undo what the agent already read, derived, or cached under that token's access. Revocation in an agentic context may need to require purging derived context, not just killing the credential. No current standard specifies this.
+3. **Cross-resource scope union.** An agent holding valid tokens for calendar, email, and file storage has an effective permission set no single grant authorized. The dangerous triad (sensitive data access, untrusted input exposure, external communication) emerges from that union, and per-resource `aud` restrictions do not prevent it. Whether ACS should evaluate policy against the union of live credentials, rather than per-token, is open.
 
 ---
 
@@ -173,13 +185,14 @@ The following drafts are actively shaping identity for autonomous systems, AI ag
 
 | Draft | Description | Link |
 |---|---|---|
-| **AIMS, AI Agent Authentication and Authorization** | The de facto IETF reference point for agent identity. Composes WIMSE, SPIFFE, and OAuth 2.0 into a framework for agent auth. Treats agents as workloads; mandates WIMSE identifiers, short-lived credentials, attestation-fed issuance, and OAuth-derived tokens. **Security Considerations (§14): "TODO Security"**, explicitly leaving runtime enforcement out of scope. | [draft-klrc-aiagent-auth](https://datatracker.ietf.org/doc/draft-klrc-aiagent-auth/) |
+| **AIMS, AI Agent Authentication and Authorization** | The de facto IETF reference point for agent identity. Composes WIMSE, SPIFFE, and OAuth 2.0 into a framework for agent auth. Treats agents as workloads; mandates WIMSE identifiers, short-lived credentials, attestation-fed issuance, and OAuth-derived tokens. As of draft -02 (June 2026) the Security Considerations section is substantive; runtime enforcement of the authenticated agent's behavior remains out of AIMS's scope. | [draft-klrc-aiagent-auth](https://datatracker.ietf.org/doc/draft-klrc-aiagent-auth/) |
 | **AAuth** (Rosenberg, White) | OAuth 2.1 extension defining an **Agent Authorization Grant** for non-redirect-based agent token acquisition. Overlaps with, and in places competes with, parts of AIMS. | [draft-rosenberg-oauth-aauth-00](https://www.ietf.org/archive/id/draft-rosenberg-oauth-aauth-00.html) |
 | **Agentic JWT** | OAuth 2.0 extension addressing zero-trust drift caused by non-deterministic agentic AI clients, where the user's intent and the client application's actions can diverge. | [draft-goswami-agentic-jwt](https://datatracker.ietf.org/doc/draft-goswami-agentic-jwt/) |
+| **OAuth Client Instance Assertions** (McGuinness) | Names *which runtime instance* of a logical OAuth client is acting (a specific agent session, container, or function invocation), via a new `actor_token_type` presented on standard grants, and extends `actor_token` beyond token exchange. Prohibits bearer tokens under the profile, requires per-instance sender-constrained keys, and gives SPIFFE first-class support. Complements AIMS at the token endpoint by making the actor granular enough for ACS runtime records to attribute actions to a single instance. | [draft-mcguinness-oauth-client-instance-assertion](https://www.ietf.org/archive/id/draft-mcguinness-oauth-client-instance-assertion-00.html) |
 
 ### Workload Identity (WIMSE)
 
-The WIMSE working group's workload identity stack that AIMS composes onto. **ACS treats WIMSE identifiers as the normative agent identifier**, with SPIFFE SVIDs as a conformant implementation.
+The WIMSE working group's workload identity stack that AIMS composes onto. This page **proposes** WIMSE identifiers as the recommended agent identifier, with SPIFFE SVIDs as a conformant implementation. Whether ACS mandates a specific identifier scheme is an open working group question. The normative position remains [docs/concepts/identity.md](https://github.com/Agent-Control-Standard/ACS/blob/main/docs/concepts/identity.md), which mandates no authentication mechanism and keeps identifier schemes off the wire; a deployment using `posix_uid` or `oauth_subject` stays conformant today.
 
 | Draft | Description | Link |
 |---|---|---|
@@ -209,7 +222,7 @@ The emerging drafts extend the existing identity foundation to answer agent-spec
 
 ### What These Drafts Do **Not** Solve
 
-These drafts establish **trust and context**. They do not decide whether the resulting action **should** execute. AIMS's own Security Considerations section reads, in full, **"TODO Security."** That gap is not an oversight; it is the boundary between identity issuance and runtime enforcement.
+These drafts establish **trust and context**. They do not decide whether the resulting action **should** execute. AIMS scopes runtime enforcement out of its model: its Security Considerations (added in draft -02, June 2026) address token, transport, and delegation risks, and stop at the point where the authenticated agent starts acting. That gap is deliberate; it is the boundary between identity issuance and runtime enforcement.
 
 They do not answer:
 
@@ -255,8 +268,8 @@ If ACS and AIMS are positioned correctly, they are **complementary, not competin
 
 | Topic | Resolution |
 |---|---|
-| **Identifier model** | **WIMSE identifier required; SPIFFE conformant.** Aligns ACS with AIMS, WIMSE WG, and NIST. |
-| **Token lifetimes** | AIMS sets the baseline; ACS ceilings (15 min LLM / 5 min MCP / 60 s high-risk) are conformance refinements. |
+| **Identifier model** | **Proposed: WIMSE identifier recommended, SPIFFE conformant.** Would align ACS with AIMS, WIMSE WG, and NIST. Pending WG sign-off and reconciliation with [docs/concepts/identity.md](https://github.com/Agent-Control-Standard/ACS/blob/main/docs/concepts/identity.md), which currently mandates no identifier scheme. |
+| **Token lifetimes** | AIMS sets the baseline; proposed ACS ceilings (15 min LLM / 5 min MCP / 60 s high-risk) are open work items pending a normative spec clause. |
 | **Sender-constrained tokens** | Both require DPoP or mTLS. Cross-reference, no divergence. |
 | **Audit logging** | ACS identity blocks **extend** AIMS minimum audit event fields rather than diverging from them. |
 
@@ -270,7 +283,7 @@ ACS specifies the runtime enforcement contract that **consumes** the identity, d
 |---|---|
 | OAuth 2.0 / 2.1 / OIDC | Human authentication and authorization (foundation; insufficient alone for agents) |
 | SPIFFE / SPIRE | Workload identity (conformant WIMSE implementation) |
-| WIMSE | Normative workload identity stack |
+| WIMSE | Workload identity stack (proposed reference model; see note under [Workload Identity](#workload-identity-wimse)) |
 | AIMS | Agent authentication and token acquisition |
 | AAuth / Agentic JWT | Alternative or complementary agent token issuance models |
 | Token Exchange + Identity Chaining | Delegation and cross-domain attenuation |
@@ -281,6 +294,6 @@ ACS specifies the runtime enforcement contract that **consumes** the identity, d
 | **ACS Crypto** | Integrity, signatures, attestations, and non-repudiation |
 | **ACS** | Runtime enforcement and policy decisions |
 
-ACS verifies identity, delegation, scope, provenance, and intent **immediately before an action executes**, and fills AIMS's open "TODO Security" gap with a runtime contract.
+ACS verifies identity, delegation, scope, provenance, and intent **immediately before an action executes**, supplying the runtime enforcement contract that AIMS leaves out of scope.
 
 > ACS does not replace these standards. ACS **composes** with them.
