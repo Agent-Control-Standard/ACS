@@ -143,4 +143,4 @@ Identity does not solve any of the five challenges alone. It composes with Prove
 
 ## Read Next
 
-- [ACS in Action](./ACS_in_action_example.md)
+- [ACS in Action](../topics/ACS_in_action_example.md)
