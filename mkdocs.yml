@@ -76,6 +76,9 @@ nav:
     - Skill: concepts/skill.md
     - Provenance: concepts/provenance.md
     - Trust Basis: concepts/trust.md
+  - Identity:
+    - Overview: identity/overview.md
+    - Standards: identity/standards.md
   - Specification:
     - Conformance Profiles: spec/conformance.md
     - Instrument:
@@ -113,7 +116,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   # Callouts
   - admonition
   - pymdownx.details
