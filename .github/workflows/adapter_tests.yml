@@ -1,0 +1,108 @@
+name: adapter-tests
+
+# Runs the adapter + conformance test suites on every push/PR that
+# touches adapter or spec source. Pinned dependencies + Python 3.12 so
+# NAT-dependent tests run (don't skip). Skipped tests in the NAT job
+# fail the build — addresses the "skips read as passes" failure mode
+# that motivated this workflow (PR #22 review).
+
+on:
+  push:
+    paths:
+      - 'adapters/**'
+      - 'specification/**'
+      - '.github/workflows/adapter_tests.yml'
+  pull_request:
+    paths:
+      - 'adapters/**'
+      - 'specification/**'
+      - '.github/workflows/adapter_tests.yml'
+
+jobs:
+  conformance:
+    # Single-file 48-test suite at adapters/test_acs_core_conformance.py
+    # asserts every ACS-Core MUST against the canonical schemas. This
+    # runs without any framework deps — only the schema validators.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shared test deps
+        run: pip install -r adapters/requirements-test.txt
+      - name: Run ACS-Core conformance suite
+        env:
+          ACS_SPEC_DIR: ${{ github.workspace }}/specification/v0.1.0
+        run: |
+          cd adapters
+          python -m unittest test_acs_core_conformance -v 2>&1 | tee out.log
+          # Conformance is the spec floor; ZERO skips allowed.
+          if grep -E "skipped=[1-9]" out.log; then
+            echo "::error::Conformance tests skipped — every spec MUST must execute"
+            exit 1
+          fi
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {adapter: _common,     install_nat: false}
+          - {adapter: claude-code, install_nat: false}
+          - {adapter: cursor,      install_nat: false}
+          - {adapter: nat,         install_nat: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # NAT 1.7.0 supports 3.10–3.12; 3.13 has no wheel.
+          python-version: '3.12'
+
+      - name: Install shared test deps
+        run: pip install -r adapters/requirements-test.txt
+
+      - name: Install NAT runtime (pinned)
+        if: matrix.install_nat
+        # Pinned `nvidia-nat-core==1.7.0` per PR #22 review — an
+        # unpinned install would let a future NAT release shift the
+        # `InvocationContext` shape under us without test signal.
+        # `nvidia-nat-langchain` is the bridge `test_live.py` needs
+        # for end-to-end NAT-runtime tests; pinned to the matching
+        # NAT version.
+        run: |
+          pip install -r adapters/nat/requirements.txt
+          pip install nvidia-nat-langchain==1.7.0
+
+      - name: Run ${{ matrix.adapter }} tests
+        env:
+          ACS_SPEC_DIR: ${{ github.workspace }}/specification/v0.1.0
+        run: |
+          cd adapters/${{ matrix.adapter }}
+          python -m unittest discover -v tests 2>&1 | tee out.log
+
+      - name: Fail on unexpected skips in NAT job
+        # NAT IS installed in this job, so any test that skips on
+        # "NAT not installed" is a test-gating bug. Hard fail.
+        if: matrix.install_nat
+        run: |
+          cd adapters/${{ matrix.adapter }}
+          if grep -E "skipped=[1-9]" out.log; then
+            echo "::error::NAT job had skipped tests — NAT is installed, gating is broken"
+            cat out.log
+            exit 1
+          fi
+
+      - name: Surface skips in other adapters
+        # Claude Code's `test_live.py` gates on the `claude` CLI being
+        # on PATH; we don't install the CLI in CI. Cursor's `test_live.py`
+        # is a manual-procedure placeholder. Both legitimate. Warn so
+        # operators can see them; don't fail the build.
+        if: ${{ !matrix.install_nat }}
+        run: |
+          cd adapters/${{ matrix.adapter }}
+          if grep -E "skipped=[1-9]" out.log; then
+            echo "::warning::Tests skipped in ${{ matrix.adapter }} — review out.log"
+            grep -E "skipped|SKIPPED" out.log || true
+          fi

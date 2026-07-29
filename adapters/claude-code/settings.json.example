@@ -1,0 +1,73 @@
+{
+  "_comment": "Drop into ~/.claude/settings.json (or merge with your existing config). Replace ACS_GUARDIAN_URL with your deployment's endpoint.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/acs_adapter.py",
+            "env": {
+              "ACS_GUARDIAN_URL": "http://127.0.0.1:8787/acs",
+              "ACS_DEFAULT_DENY": "1"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/acs_adapter.py",
+            "env": {
+              "ACS_GUARDIAN_URL": "http://127.0.0.1:8787/acs"
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/acs_adapter.py",
+            "env": {
+              "ACS_GUARDIAN_URL": "http://127.0.0.1:8787/acs"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/acs_adapter.py",
+            "env": {
+              "ACS_GUARDIAN_URL": "http://127.0.0.1:8787/acs"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/acs_adapter.py",
+            "env": {
+              "ACS_GUARDIAN_URL": "http://127.0.0.1:8787/acs"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

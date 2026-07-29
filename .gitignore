@@ -4,3 +4,16 @@ book/
 site/
 references/
 .DS_Store
+
+# Adapter manual-test scratch dirs (project-level hook configs with
+# machine-specific paths from local probing — must never land in commits)
+adapters/*/.cursor/
+adapters/*/.claude/
+adapters/*/.acs-handshake-cache/
+
+# Python venvs (NAT manual test environment lives here; the path is
+# tied to the machine that built it and must not ship)
+adapters/*/.venv/
+adapters/*/.nat-venv/
+**/__pycache__/
+*.pyc
