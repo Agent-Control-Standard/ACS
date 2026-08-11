@@ -43,12 +43,12 @@ All submissions go through GitHub pull request review. See [GitHub's PR guide](h
 5. **Open a pull request** against `main`
 6. **Address review feedback** to land your change
 
-For changes to the spec itself (`acs_schema.json`, hooks, events), open a [Discussion](https://github.com/Agent-Control-Standard/ACS/discussions) before submitting a PR — these affect downstream implementers and warrant a longer conversation.
+For changes to the spec itself (`acs_schema.json`, hooks, events), open a [Discussion](https://github.com/GenAI-Security-Project/agent-control-standard/discussions) before submitting a PR — these affect downstream implementers and warrant a longer conversation.
 
 ## What We Need
 
 **High Priority:**
-Look for unassigned [Open Issues](https://github.com/Agent-Control-Standard/ACS/issues).
+Look for unassigned [Open Issues](https://github.com/GenAI-Security-Project/agent-control-standard/issues).
 
 **Always Welcome:**
 - Documentation improvements
@@ -62,7 +62,7 @@ Project maintainers handle formal releases. Focus on contributing great features
 
 ## Reporting Security Issues
 
-**Do not file public issues for security vulnerabilities.** Use GitHub's [private vulnerability reporting](https://github.com/Agent-Control-Standard/ACS/security/advisories/new) to disclose privately. We'll acknowledge within 72 hours and coordinate a fix and disclosure timeline with you.
+**Do not file public issues for security vulnerabilities.** Use GitHub's [private vulnerability reporting](https://github.com/GenAI-Security-Project/agent-control-standard/security/advisories/new) to disclose privately. We'll acknowledge within 72 hours and coordinate a fix and disclosure timeline with you.
 
 ## Developer's Certificate of Origin 1.1
 
@@ -91,7 +91,7 @@ This guide is based on [github-contributing](https://raw.githubusercontent.com/s
 
 ## Community
 
-- **[GitHub Discussions](https://github.com/Agent-Control-Standard/ACS/discussions)**: Ask questions, share ideas
-- **[Issues](https://github.com/Agent-Control-Standard/ACS/issues)**: Report bugs, request features
+- **[GitHub Discussions](https://github.com/GenAI-Security-Project/agent-control-standard/discussions)**: Ask questions, share ideas
+- **[Issues](https://github.com/GenAI-Security-Project/agent-control-standard/issues)**: Report bugs, request features
 
 We're building the future of AI agent observability and control. Join us.
