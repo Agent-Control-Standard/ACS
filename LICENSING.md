@@ -38,7 +38,7 @@ For a document derived from ACS prose:
 
 ```markdown
 Adapted from the Agent Control Standard, licensed under CC BY-SA 4.0.
-Source: https://github.com/genai-security-project/agent-control-standard
+Source: https://github.com/GenAI-Security-Project/agent-control-standard
 ```
 
 ## Contributing

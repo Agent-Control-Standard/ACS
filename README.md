@@ -27,15 +27,15 @@ The standard covers the following aspects
 
 ## Getting Started
 
-- 📚 **Explore the Documentation:** Visit the [Documentation Site](https://agentcontrolstandard.org) for a complete overview, the full specification, tutorials, and guides.
-- 📝 **View the Specification:** [Specification](https://github.com/Agent-Control-Standard/ACS/tree/main/specification)
+- 📚 **Explore the Documentation:** Visit the [Documentation Site](https://agentcontrolstandard.ai) for a complete overview, the full specification, tutorials, and guides.
+- 📝 **View the Specification:** [Specification](https://github.com/GenAI-Security-Project/agent-control-standard/tree/main/specification)
 
 ## Contributing
 
 We welcome community contributions to enhance and evolve ACS!
 
-- **Questions & Discussions:** Join our [GitHub Discussions](https://github.com/Agent-Control-Standard/ACS/discussions).
-- **Issues & Feedback:** Report issues or suggest improvements via [GitHub Issues](https://github.com/Agent-Control-Standard/ACS/issues).
+- **Questions & Discussions:** Join our [GitHub Discussions](https://github.com/GenAI-Security-Project/agent-control-standard/discussions).
+- **Issues & Feedback:** Report issues or suggest improvements via [GitHub Issues](https://github.com/GenAI-Security-Project/agent-control-standard/issues).
 - **Contribution Guide:** See our [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute.
 
 ## What's next

@@ -5,9 +5,9 @@ site_description: >-
    to enable enterprise-wide adoption with confidence.
 
 # Repository
-repo_name: Agent-Control-Standard/ACS
-repo_url: https://github.com/Agent-Control-Standard/ACS
-edit_uri: edit/dev/docs/
+repo_name: GenAI-Security-Project/agent-control-standard
+repo_url: https://github.com/GenAI-Security-Project/agent-control-standard
+edit_uri: edit/main/docs/
 
 # Copyright
 copyright: Copyright &copy; 2025-2026 The OWASP GenAI Security Project and the ACS contributors. Documentation licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.
