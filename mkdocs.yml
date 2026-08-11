@@ -10,7 +10,7 @@ repo_url: https://github.com/Agent-Control-Standard/ACS
 edit_uri: edit/dev/docs/
 
 # Copyright
-copyright: Copyright &copy; 2025 ACS
+copyright: Copyright &copy; 2025-2026 The OWASP GenAI Security Project and the ACS contributors. Documentation licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.
 
 docs_dir: docs
 

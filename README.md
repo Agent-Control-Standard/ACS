@@ -1,6 +1,7 @@
 # Agent Control Standard
 
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE.txt)
+[![Code: Apache 2.0](https://img.shields.io/badge/Code-Apache%202.0-blue.svg)](./LICENSE)
+[![Docs: CC BY-SA 4.0](https://img.shields.io/badge/Docs-CC%20BY--SA%204.0-lightgrey.svg)](./LICENSE-DOCS)
 
 ![ACS Banner](docs/assets/banner.png)
 
@@ -64,4 +65,6 @@ We welcome community contributions to enhance and evolve ACS!
 
 ## About
 
-The ACS is an open-source project under the [MIT License](LICENSE.txt), and is open to contributions from the community.
+ACS is an open project of the [OWASP GenAI Security Project](https://genai.owasp.org/), open to contributions from the community.
+
+Code and schemas are licensed under the [Apache License 2.0](./LICENSE). Documentation is licensed under [CC BY-SA 4.0](./LICENSE-DOCS). See [LICENSING.md](./LICENSING.md) for the scope map.

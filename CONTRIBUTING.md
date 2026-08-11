@@ -85,7 +85,7 @@ By making a contribution to this project, I certify that:
   including my sign-off) is maintained indefinitely and may be redistributed consistent
   with this project or the open source license(s) involved.
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE.txt) — the same license that covers the rest of the project.
+By contributing, you agree that your contributions will be licensed under the license that governs the file you touch. Code and schemas fall under the [Apache License 2.0](./LICENSE). Documentation falls under [CC BY-SA 4.0](./LICENSE-DOCS). See [LICENSING.md](./LICENSING.md) for the scope map.
 
 This guide is based on [github-contributing](https://raw.githubusercontent.com/standard/.github/refs/heads/master/CONTRIBUTING.md).
 

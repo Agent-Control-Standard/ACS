@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors
 """
 Script to synchronize version from version.txt to all project files.
 """
