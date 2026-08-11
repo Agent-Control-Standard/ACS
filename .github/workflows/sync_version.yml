@@ -77,18 +77,17 @@ jobs:
           commit-message: "Automated: sync version to ${{ steps.version.outputs.version }}"
           title: "Sync version to ${{ steps.version.outputs.version }}"
           body: |
-            Synchronizes the version across project files to `${{ steps.version.outputs.version }}`.
+            Synchronizes the release version in `pyproject.toml` to
+            `${{ steps.version.outputs.version }}`, read from `version.txt` and
+            validated as semver.
 
-            Updated files:
-            - `pyproject.toml`
-            - `docs/spec/instrument/specification.md`
-            - `specification/ACS/acs_schema.json`
-
-            The version was read from `version.txt` and validated as semver.
+            The specification version is deliberately not touched. It lives in
+            the schema `$id`, the `specification/v0.1.0/` directory name, and
+            the `$ref` links between those files. It moves only when the
+            specification changes, through a migration that renames the
+            directory and rewrites the references together.
           branch: version-sync-${{ steps.version.outputs.version }}
           delete-branch: true
           sign-commits: true
           add-paths: |
             pyproject.toml
-            docs/spec/instrument/specification.md
-            specification/ACS/acs_schema.json
