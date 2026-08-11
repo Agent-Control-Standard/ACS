@@ -1,0 +1,28 @@
+# Code owners for the Agent Control Standard.
+#
+# Owners listed here are required reviewers on the paths they own, enforced by
+# the ruleset on main. Everyone below has write access, which GitHub requires
+# for CODEOWNERS entries to take effect.
+#
+# Keep this file in sync with repository collaborator roles. A handle that
+# loses write access stops being a valid owner and GitHub fails the entry
+# silently.
+
+# Default owners for anything not matched below.
+*                       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule
+
+# The specification is the highest-blast-radius surface in the repository.
+# A schema change propagates to every downstream implementer.
+/specification/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule
+/docs/spec/             @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule
+
+# CI runs with write access to the repository. Changes here are a
+# privilege-escalation surface and warrant admin review.
+/.github/               @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+
+# Licensing and security policy changes are governance decisions.
+/LICENSE                @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/LICENSE-DOCS           @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/LICENSING.md           @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/NOTICE                 @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/SECURITY.md            @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
