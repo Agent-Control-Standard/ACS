@@ -1,0 +1,18 @@
+Agent Control Standard (ACS)
+Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors
+
+This product includes software and specifications developed by the
+OWASP GenAI Security Project (https://genai.owasp.org/).
+
+Code and machine-readable schemas in this repository are licensed under the
+Apache License, Version 2.0. See LICENSE.
+
+Prose documentation in this repository is licensed under the Creative Commons
+Attribution-ShareAlike 4.0 International License. See LICENSE-DOCS.
+
+See LICENSING.md for the full scope map.
+
+Prior history: releases up to and including v0.1.0 were published under the MIT
+License, Copyright (c) 2025-2026 Agent Control Standard. That grant is not
+revoked. Anyone who obtained those releases under the MIT License keeps their
+rights under it.
