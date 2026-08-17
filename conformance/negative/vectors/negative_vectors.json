@@ -1,0 +1,513 @@
+{
+  "$schema": "../vector.schema.json",
+  "suite": "enforcement-negative-v0",
+  "vectors": [
+    {
+      "id": "neg-cat1-001",
+      "category": 1,
+      "description": "Correctly-signed action targeting an item whose state no longer carries it: the auction is already settled. Signature verification alone passes; only consulting state catches it.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-41",
+          "amount": "1000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "scope": "auction-41"
+        },
+        "state": {
+          "auction-41": {
+            "open": false,
+            "settled": true
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "CONTEXT_NOT_SUPPORTED",
+        "reason_must_mention": [
+          "settled"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat1-002",
+      "category": 1,
+      "description": "Correctly-signed action exceeding a declared bound: amount above the ceiling the state carries. Almost right: same signer, same target, open state.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-42",
+          "amount": "9000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "scope": "auction-42"
+        },
+        "state": {
+          "auction-42": {
+            "open": true,
+            "settled": false,
+            "ceiling": "5000"
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "CONTEXT_NOT_SUPPORTED",
+        "reason_must_mention": [
+          "ceiling"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat1-001",
+      "category": 1,
+      "description": "POSITIVE CONTROL. Identical to neg-cat1-002 except the amount sits under the ceiling. MUST pass: an enforcement layer that rejects this is indistinguishable from one that rejects everything.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-42",
+          "amount": "1000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "scope": "auction-42"
+        },
+        "state": {
+          "auction-42": {
+            "open": true,
+            "settled": false,
+            "ceiling": "5000"
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "neg-cat2-001",
+      "category": 2,
+      "description": "Replayed authorization: the same one-time approval presented for a second act. One authorization covers one act; the second presentation must fail even though every byte is valid.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-43",
+          "amount": "1000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "one_time_id": "auth-777",
+          "consumed": true
+        },
+        "state": {
+          "auction-43": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "REPLAY_CONSUMED",
+        "reason_must_mention": [
+          "already"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat2-002",
+      "category": 2,
+      "description": "Replay across sessions: an approval secret captured from a previous armed session, structurally valid, presented by a fresh confirmer. The session binding, not the secret's shape, is what must be checked.",
+      "input": {
+        "action": {
+          "type": "confirm_transaction",
+          "target": "tx-pending-9"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "session_secret": "SECRET_OF_SESSION_N_MINUS_1",
+          "current_session": "N"
+        },
+        "state": {
+          "tx-pending-9": {
+            "awaiting_confirmation": true,
+            "session": "N"
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "REPLAY_CONSUMED",
+        "reason_must_mention": [
+          "session"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat3-001",
+      "category": 3,
+      "description": "Stale decision: evidence older than the declared freshness bound. The decision was genuine when written; only its age disqualifies it. Expiry only — revocation vectors are a declared gap, see README.",
+      "input": {
+        "action": {
+          "type": "launch_bidder",
+          "target": "auction-44"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "decision_written_at": "2026-08-16T14:46:02Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-16T15:15:08Z",
+          "auction-44": {
+            "open": true
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "STALE_DECISION",
+        "reason_must_mention": [
+          "fresh"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat3-001",
+      "category": 3,
+      "description": "POSITIVE CONTROL. Identical decision, re-issued inside the freshness bound. MUST pass.",
+      "input": {
+        "action": {
+          "type": "launch_bidder",
+          "target": "auction-44"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "decision_written_at": "2026-08-16T15:16:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-16T15:16:25Z",
+          "auction-44": {
+            "open": true
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "neg-cat4-001",
+      "category": 4,
+      "description": "Approval bound to the wrong principal: the decision names agent-B, the actor is agent-A. Everything else matches.",
+      "input": {
+        "action": {
+          "type": "launch_bidder",
+          "target": "auction-45",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "decision_for": "agent-B"
+        },
+        "state": {
+          "auction-45": {
+            "open": true
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "PRINCIPAL_MISMATCH",
+        "reason_must_mention": [
+          "agent"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat4-002",
+      "category": 4,
+      "description": "Wrong signing device: the operation requires the device holding key K1, the connected device derives K2. The check must happen by reading the device, never by asking the operator which one is plugged in.",
+      "input": {
+        "action": {
+          "type": "sign_transaction",
+          "required_signer": "0xAAAA"
+        },
+        "authorization": {
+          "connected_device_derives": "0xBBBB"
+        },
+        "state": {}
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "PRINCIPAL_MISMATCH",
+        "reason_must_mention": [
+          "device"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat5-001",
+      "category": 5,
+      "description": "Malformed evidence, regulation length: the payload has exactly the right byte length but does not encode the declared type (leading bytes non-zero where an address encoding requires zeros). A length check alone fails open here.",
+      "input": {
+        "action": {
+          "type": "read_context",
+          "target": "auction-46"
+        },
+        "authorization": {
+          "signature": "VALID"
+        },
+        "state": {
+          "oracle_response": {
+            "shape": "address",
+            "bytes_hex": "ffffffffffffffffffffffff1111111111111111111111111111111111111111"
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "MALFORMED_EVIDENCE",
+        "reason_must_mention": [
+          "encod"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat5-002",
+      "category": 5,
+      "description": "Truncated evidence: two fields served where six are declared. The consumer must refuse to conclude, never zero-fill the missing fields.",
+      "input": {
+        "action": {
+          "type": "read_context",
+          "target": "auction-47"
+        },
+        "authorization": {
+          "signature": "VALID"
+        },
+        "state": {
+          "oracle_response": {
+            "shape": "auction_struct_6_fields",
+            "fields_served": 2
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "MALFORMED_EVIDENCE",
+        "reason_must_mention": [
+          "6"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat5-003",
+      "category": 5,
+      "description": "Oracle unreachable: the state needed to judge cannot be read at all. Absence of measurement is never a pass, and the code must differ from a measured rejection.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-48",
+          "amount": "1000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "scope": "auction-48"
+        },
+        "state": {
+          "oracle_response": null
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "ORACLE_UNAVAILABLE",
+        "reason_must_mention": [
+          "measur"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat6-001",
+      "category": 6,
+      "description": "Stripped observability reference: the action's required registry reference is zeroed. The enforcement point must refuse the omission itself, before judging anything else.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-49",
+          "amount": "1000",
+          "registry_ref": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "scope": "auction-49"
+        },
+        "state": {
+          "auction-49": {
+            "open": true
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "REFERENCE_MISSING",
+        "reason_must_mention": [
+          "reference"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat6-002",
+      "category": 6,
+      "description": "Mismatched observability reference: a non-zero reference that diverges from the one already bound to this context by a prior act. Naming something is required; naming a DIFFERENT something must fail.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-50",
+          "amount": "2000",
+          "registry_ref": "0xbbbb..."
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-B",
+          "scope": "auction-50"
+        },
+        "state": {
+          "auction-50": {
+            "open": true,
+            "bound_registry_ref": "0xaaaa..."
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "REFERENCE_MISMATCH",
+        "reason_must_mention": [
+          "bound"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat6-001",
+      "category": 6,
+      "description": "POSITIVE CONTROL. Same action naming the SAME reference as the one bound. MUST pass: the check is on divergence, not on novelty.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-50",
+          "amount": "2000",
+          "registry_ref": "0xaaaa..."
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-B",
+          "scope": "auction-50"
+        },
+        "state": {
+          "auction-50": {
+            "open": true,
+            "bound_registry_ref": "0xaaaa..."
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "pos-cat2-001",
+      "category": 2,
+      "description": "POSITIVE CONTROL. Same shape as neg-cat2-001 but the one-time authorization is unconsumed. MUST pass.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-43",
+          "amount": "1000"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "one_time_id": "auth-778",
+          "consumed": false
+        },
+        "state": {
+          "auction-43": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "pos-cat4-001",
+      "category": 4,
+      "description": "POSITIVE CONTROL. The connected device derives exactly the required key. MUST pass.",
+      "input": {
+        "action": {
+          "type": "sign_transaction",
+          "required_signer": "0xAAAA"
+        },
+        "authorization": {
+          "connected_device_derives": "0xAAAA"
+        },
+        "state": {}
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "pos-cat5-001",
+      "category": 5,
+      "description": "POSITIVE CONTROL. Well-formed evidence of the declared shape (address encoding with zeroed leading bytes). MUST pass: strictness is about shape, not about refusing evidence per se.",
+      "input": {
+        "action": {
+          "type": "read_context",
+          "target": "auction-46"
+        },
+        "authorization": {
+          "signature": "VALID"
+        },
+        "state": {
+          "oracle_response": {
+            "shape": "address",
+            "bytes_hex": "0000000000000000000000001111111111111111111111111111111111111111"
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    }
+  ]
+}
