@@ -86,7 +86,7 @@ python3 wire.py \
   --write
 ```
 
-What it wires by default (ACS-Core minimum 6, mapped to Cursor's vocabulary):
+What it wires by default (the ACS-Core minimum set, mapped to Cursor's vocabulary):
 
 | Cursor event | ACS step method | Posture |
 |---|---|---|
@@ -96,6 +96,7 @@ What it wires by default (ACS-Core minimum 6, mapped to Cursor's vocabulary):
 | `postToolUse` | toolCallResult | fail-open |
 | `afterAgentResponse` | agentResponse | fail-open |
 | `sessionEnd` | sessionEnd | fail-open |
+| `subagentStart` | subagentStart | **fail-CLOSED** (gate — confused-deputy spawn gate, Core floor post-#21) |
 
 Gate hooks get **both** `ACS_DEFAULT_DENY=1` (our env var) AND `failClosed: true` (Cursor's native flag) — defense in depth: two independent mechanisms that both must fail open for a gate to leak.
 
@@ -116,7 +117,7 @@ python3 e2e_check.py
 
 Cursor is a GUI app — it has no headless CLI like `claude --print`. The e2e check is therefore **semi-automated**: the script does everything programmatic (Guardian setup, hooks wiring into a temp workspace, validation of envelopes) and prints precise instructions for actions you perform in Cursor. Wall-clock ~5-10 minutes total.
 
-The final line is `YOUR CURSOR INSTALL IS ACS-CONFORMANT` (exit 0) or a per-scenario failure list (exit 1).
+The final line is `ACS-CORE SMOKE PASS (cursor)` (exit 0) — a smoke verdict, not a conformance certification — or a per-scenario failure list (exit 1).
 
 You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests) below).
 
@@ -124,10 +125,7 @@ You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests)
 
 - **Cursor** installed — <https://cursor.com>
 - **Python 3.10+** with `jsonschema` and `rfc8785` — `pip install -r ../requirements-test.txt`
-- **Canonical ACS schemas** reachable on disk. Default location `/tmp/acs-spec-source/specification/v0.1.0/`; override via `ACS_SPEC_DIR`. Clone with:
-  ```bash
-  git clone https://github.com/Agent-Control-Standard/ACS.git /tmp/acs-spec-source
-  ```
+- **Canonical ACS schemas** — the in-repo copy at `specification/v0.1.0/` is the default, so no setup is needed when running from a clone of this repo. Set `ACS_SPEC_DIR` only to validate against a different spec checkout.
 
 ## Smoke tests
 
@@ -135,22 +133,15 @@ Five tests, ordered from broadest to most specific. Run any/all.
 
 ### Smoke #1 — automated test suite (unit + integration, ~30s)
 
-Run from `adapters/` (the conformance suite lives at the top level):
+Run from `adapters/`:
 
 ```bash
 cd "$ACS_REPO/adapters"
-
-python3 -m unittest test_acs_core_conformance
-# Expect: Ran 48 tests in ~10s / OK   (every ACS-Core MUST)
-
-(cd cursor && python3 -m unittest discover tests)
-# Expect: Ran 50 tests / OK (skipped=1)   (round-trip + schema + manual placeholder)
-
-(cd _common && python3 -m unittest discover tests)
-# Expect: Ran 38 tests / OK            (security + edge cases)
+python3 run_conformance.py cursor
+# Runs the shared Guardian and _common checks, then Cursor's suite.
 ```
 
-If any of those fail, the failure message names the specific spec MUST or property that broke.
+The command reports passes, skips, and failures separately. It fails on any test failure or unexpected skip. The manual Cursor procedure is an expected skip in headless runs.
 
 ### Smoke #2 — semi-automated Cursor end-to-end (~5-10 minutes)
 
@@ -202,14 +193,17 @@ python3 "$ACS_REPO/adapters/cursor/acs_adapter.py" preToolUse 2>&1 <<'EOF'
 EOF
 ```
 
-Expected stderr — note the `cause` field:
+Expected stderr — a signature refusal fails CLOSED regardless of
+posture (a refusal is an alive Guardian rejecting the envelope; spec
+issue #32), and stdout carries `{"permission": "deny", ...}`:
 
 ```
 acs-adapter: Guardian returned JSON-RPC error -32004 (signature_invalid_response): SIGNATURE_INVALID
-ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "signature_invalid_response", ...}
+ACS_AUDIT {"acs_audit_event": "guardian_refusal_fail_closed", "cause": "signature_invalid_response", ...}
 ```
 
-Guardian unreachable (different cause, same disposition):
+Guardian unreachable (a decision FAILURE, not a refusal — this one
+follows the §6.4 posture, fail-open by default):
 
 ```bash
 ACS_GUARDIAN_URL="http://127.0.0.1:1/dead" \
@@ -225,7 +219,10 @@ acs-adapter: Guardian unreachable: <urlopen error ...>
 ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "transport_failure", ...}
 ```
 
-Same `acs_audit_event`, distinct `cause`. Operators grep on `cause=` to triage.
+Distinct `acs_audit_event` AND distinct `cause`: refusals are always
+`guardian_refusal_fail_closed`; failures carry the posture
+(`fail_open_bypass` / `decision_failure_fail_closed`). Operators grep
+on either to triage.
 
 ### Smoke #5 — pre-flight inventory (paranoid)
 
@@ -287,10 +284,14 @@ The adapter is configured by environment variables, typically set per-hook by `w
 | `ACS_GUARDIAN_URL` | `http://127.0.0.1:8787/acs` | Guardian endpoint. http/https only; SSRF allowlist refuses other schemes. |
 | `ACS_HMAC_SECRET_FILE` | (unset) | Path to a 0600 file holding the shared HMAC secret. |
 | `ACS_HMAC_SECRET` | (unset) | Inline secret. Less secure (visible in `ps eauxw`). Prefer the file. |
-| `ACS_DEFAULT_DENY` | `0` | Fail-open with audit (§6.4 default). Set to `1` for fail-closed. |
+| `ACS_DEFAULT_DENY` | `0` | Fail-open with audit (§6.4 default). Set to `1` for fail-closed. The ServerHello's `on_decision_failure: deny` also flips it (most-restrictive-wins). Guardian refusals (bad signature, replay, malformed/oversized envelope) always fail closed regardless of this setting — see spec issue #32. |
 | `ACS_HANDSHAKE` | `1` | Set to `0` to disable the handshake/hello call on first use. |
 | `ACS_AGENT_ID` | derived from cwd | Stable agent identifier sent in `metadata.agent_id`. |
 | `ACS_HANDSHAKE_CACHE` | `~/.cache/acs-adapter-handshake/` | Per-session ServerHello cache dir. |
+| `ACS_HANDSHAKE_TIMEOUT_SECONDS` | `5` | Network timeout for handshake/hello. |
+| `ACS_HANDSHAKE_FAILURE_CACHE_TTL_SECONDS` | `30` | Failed handshakes are negative-cached this long, so a dead Guardian costs one timeout, not one per hook event. |
+| `ACS_AUDIT_FILE` | (unset) | Append every `ACS_AUDIT` event to this file (created 0600) in addition to stderr. |
+| `ACS_DISABLED` | (unset) | `1` = incident kill switch: bypass all hooks immediately, no Guardian traffic. |
 | `ACS_GUARDIAN_HOST_ALLOWLIST` | (unset) | Optional comma-separated hostname allowlist (defense in depth). |
 
 The adapter is invoked as `python3 acs_adapter.py <event_name>`, where `<event_name>` is one of: `sessionStart`, `sessionEnd`, `stop`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `subagentStart`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `afterFileEdit`, `afterTabFileEdit`, `beforeSubmitPrompt`, `preCompact`, `afterAgentResponse`, `afterAgentThought`.
@@ -303,20 +304,20 @@ The adapter is invoked as `python3 acs_adapter.py <event_name>`, where `<event_n
 
 ## Conformance status
 
-Honest, MUST-by-MUST against `docs/spec/conformance.md`:
+Honest, item-by-item against `docs/spec/conformance.md` (post-#21 some items are SHOULD/conditional rather than MUST — the row notes say which):
 
 | ACS-Core item | Status |
 |---|---|
 | Handshake (`handshake/hello`) | ✓ on first session call; cached per-session |
-| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (36 tests) with format checking |
-| Hook taxonomy (6 minimum) | ✓ all six covered; 17 Cursor events mapped total (`subagentStop` intentionally omitted — see honesty table below) |
+| JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (emission suite), with format checking |
+| Hook taxonomy (Core minimum set) | ✓ full minimum set covered incl. `subagentStart` (Core floor post-#21); 17 Cursor events mapped total (`subagentStop` intentionally omitted — see honesty table below) |
 | Dispositions | ALLOW / DENY / ASK supported on **permission (pre-execution) events** (`preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeSubmitPrompt`, `subagentStart`). DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. **Lifecycle / post-execution hooks (`afterAgentResponse → steps/agentResponse`, `sessionStart`, `sessionEnd`, `afterShellExecution`, etc.) are observation-only** — Cursor fires them after the message / side effect has occurred; a Guardian `deny` cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ |
 | SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling SHA-256 chain |
 | Replay protection | ✓ Guardian enforcement (REPLAY_DETECTED -32005, TIMESTAMP_OUT_OF_WINDOW -32006) |
 | Baseline integrity (HMAC-SHA256) | ✓ when `ACS_HMAC_SECRET[_FILE]` is set; SIGNATURE_INVALID -32004 on tamper |
 | Decision honoring (§6.4) | ✓ Cursor blocks on permission deny; adapter uses exit-2 where stdout JSON is not available; fail-open emits `ACS_AUDIT` event; audit `cause` field distinguishes failure modes (transport vs signature vs malformed envelope vs replay vs skew) |
-| Liveness `system/ping` | ✓ Guardian-side |
+| Liveness `system/ping` | ✓ Guardian-side only — the adapter does NOT emit system/ping; liveness is the Guardian answering probes (§13). |
 | `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1 |
 | Wrapped MCP `protocols/MCP/*` | ⚠ partial — Cursor's `beforeMCPExecution` is mapped to `steps/toolCallRequest`, not to the `protocols/MCP/*` wrapped form. Real wrapping requires forwarding the full MCP request shape, not flattening it; this adapter does not do that. |
 
@@ -328,7 +329,7 @@ Cursor does not expose every field the ACS v0.1.0 hook schemas require. Where th
 |---|---|---|---|
 | `subagentStart` → `steps/subagentStart` | `subagent_session_id` (deterministic uuid5 of `parent_session + subagent_id`); `parent_session_id` (the envelope's actual `session_id`); `parent_step_id` (last step_id the adapter has seen in this session, tracked in `~/.cache/acs-adapter-session/`); `subagent_descriptor.{agent_id,agent_name}` (from Cursor's `subagent_id` / `subagent_type`) | `intent_derivation = "derived_from_parent"` (defensible default for IDE-spawned subagents) | — |
 | `preCompact` → `steps/preCompact` | `entries_to_compact` (list of step_ids the adapter has observed in this session, snapshotted from session state); `triggered_by` (Cursor's `trigger` field) | `triggered_by = "framework_initiated"` only when Cursor omits `trigger` | — |
-| `subagentStop` → `steps/subagentStop` | — | — | **Not forwarded.** Required `final_chain_hash` is genuinely unknowable (Cursor maintains no chain). Better to omit than fabricate. |
+| `subagentStop` → `steps/subagentStop` | — | — | **Not forwarded** (`KNOWN_UNMAPPED` in the adapter). `final_chain_hash` is genuinely unknowable (Cursor maintains no chain) — better to omit than fabricate. The field is now **optional** for chain-less frameworks (PR #21), so honest wiring becomes possible; tracked for the rebase. |
 
 These hooks are emitted only when Cursor's `hooks.json` wires them to the adapter. Per-session state for `parent_step_id` / `entries_to_compact` requires the adapter to be wired to at least one earlier hook in the same session (typically `preToolUse`); the adapter records each step's `request_id` to the session-state file on every invocation.
 

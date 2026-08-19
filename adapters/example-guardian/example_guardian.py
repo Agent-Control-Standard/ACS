@@ -94,9 +94,13 @@ _REQUEST_ENVELOPE_VALIDATOR = None
 try:
     from jsonschema import Draft202012Validator  # type: ignore[import-not-found]
     from jsonschema.validators import RefResolver  # type: ignore[import-not-found]
+    # Default to the in-repo schemas (this file lives at
+    # adapters/example-guardian/, schemas at specification/v0.1.0/ two
+    # directories up) so validation works from a fresh clone.
+    # ACS_SPEC_DIR overrides.
     _spec_dir_env = os.environ.get(
         "ACS_SPEC_DIR",
-        "/tmp/acs-spec-source/specification/v0.1.0",
+        str(Path(__file__).resolve().parents[2] / "specification" / "v0.1.0"),
     )
     _spec_dir = Path(_spec_dir_env)
     _envelope_schema_path = _spec_dir / "request-envelope.json"
@@ -112,8 +116,27 @@ try:
             format_checker=Draft202012Validator.FORMAT_CHECKER,
         )
         _SPEC_VALIDATION_AVAILABLE = True
+    else:
+        _spec_validation_unavailable_reason = (
+            f"canonical schemas not found at {_spec_dir} "
+            "(set ACS_SPEC_DIR to your spec checkout)"
+        )
 except ImportError:
-    pass
+    _spec_validation_unavailable_reason = (
+        "jsonschema is not installed (pip install jsonschema)"
+    )
+
+if not _SPEC_VALIDATION_AVAILABLE:
+    # Loud, not silent: without envelope validation, malformed envelopes
+    # reach policy code unchecked, and replay/skew checks degrade on
+    # envelopes that omit request_id/timestamp entirely (PR #22 review).
+    print(
+        "[guardian] WARNING: envelope schema validation DISABLED — "
+        + _spec_validation_unavailable_reason
+        + ". Malformed envelopes will NOT be rejected before policy "
+        "evaluation.",
+        file=sys.stderr,
+    )
 
 
 SKEW_WINDOW_MS = int(os.environ.get("ACS_SKEW_WINDOW_MS", str(DEFAULT_SKEW_WINDOW_MS)))
@@ -154,11 +177,18 @@ DESTRUCTIVE_BASH_PATTERNS: tuple[re.Pattern, ...] = (
 
 PROTECTED_PATH_PREFIXES: tuple[str, ...] = ("/etc/", "/usr/", "/bin/", "/sbin/", "/boot/")
 
+# Methods this teaching policy acknowledges with unconditional allow.
+# steps/subagentStart is deliberately NOT here: it is the confused-deputy
+# gate (a sub-agent is an Observed Agent under delegated authority), and
+# a Guardian that unconditionally allows it waves through a spawn that
+# widens the parent's authority (PR #22 review). It gets a real policy
+# branch in evaluate_step. steps/subagentStop stays informational — it
+# is audit-only per hooks.md (the subagent has already terminated).
 INFORMATIONAL_METHODS = {
     "steps/sessionStart", "steps/sessionEnd", "steps/userMessage",
     "steps/toolCallResult", "steps/agentResponse",
     "steps/preCompact", "steps/postCompact",
-    "steps/subagentStart", "steps/subagentStop",
+    "steps/subagentStop",
     "steps/knowledgeRetrieval", "steps/memoryStore", "steps/memoryContextRetrieval",
     "steps/turnStart", "steps/turnEnd", "steps/agentTrigger",
 }
@@ -233,9 +263,9 @@ class SessionState:
                         pass
             self.previous_hash = data.get("previous_hash")
             sr = data.get("seen_request_ids", {})
-            self.seen_request_ids = sr if isinstance(sr, dict) else {x: 0.0 for x in sr}
+            self.seen_request_ids = sr if isinstance(sr, dict) else {x: time.time() for x in sr}  # legacy list form: stamp now so the eviction cutoff keeps them a full window
             sn = data.get("seen_nonces", {})
-            self.seen_nonces = sn if isinstance(sn, dict) else {x: 0.0 for x in sn}
+            self.seen_nonces = sn if isinstance(sn, dict) else {x: time.time() for x in sn}  # legacy list form: stamp now so the eviction cutoff keeps them a full window
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -283,14 +313,14 @@ class SessionState:
                         disk_seen = disk.get("seen_request_ids") or {}
                         # Backwards-compat: tolerate list form from earlier versions
                         if isinstance(disk_seen, list):
-                            disk_seen = {x: 0.0 for x in disk_seen}
+                            disk_seen = {x: time.time() for x in disk_seen}  # legacy list form: stamp now so the eviction cutoff keeps them a full window
                         for k, v in disk_seen.items():
                             # Keep the EARLIEST timestamp (so eviction works correctly)
                             if k not in merged_seen or merged_seen[k] > v:
                                 merged_seen[k] = v
                         disk_nonces = disk.get("seen_nonces") or {}
                         if isinstance(disk_nonces, list):
-                            disk_nonces = {x: 0.0 for x in disk_nonces}
+                            disk_nonces = {x: time.time() for x in disk_nonces}  # legacy list form: stamp now so the eviction cutoff keeps them a full window
                         for k, v in disk_nonces.items():
                             if k not in merged_nonces or merged_nonces[k] > v:
                                 merged_nonces[k] = v
@@ -300,6 +330,22 @@ class SessionState:
                             merged_prev = disk["previous_hash"]
                     except (OSError, json.JSONDecodeError):
                         pass
+
+                # Apply the eviction cutoff to the MERGED result, not
+                # just the in-memory dict. Without this, entries that
+                # evict_old_request_ids dropped in memory are re-added
+                # from disk on every persist, the state file never
+                # shrinks, and per-request re-parsing grows until it
+                # trips the decision timeout — which is a transport
+                # failure, which is a fail-open (PR #22 review).
+                # Safe because replay of an evicted id is already
+                # rejected by the skew check (-32006): the cutoff is
+                # 2× the skew window.
+                cutoff = time.time() - 2 * (SKEW_WINDOW_MS / 1000.0)
+                merged_seen = {k: v for k, v in merged_seen.items()
+                               if v >= cutoff}
+                merged_nonces = {k: v for k, v in merged_nonces.items()
+                                 if v >= cutoff}
 
                 self.seen_request_ids = merged_seen
                 self.seen_nonces = merged_nonces
@@ -476,12 +522,39 @@ def check_signature(envelope: dict, session_id: str) -> None:
 
 # ----- Method evaluators -----
 
+def _major(version: str) -> str | None:
+    """Major component of an X.Y.Z version string, or None if unparseable."""
+    parts = str(version).split(".")
+    return parts[0] if parts and parts[0].isdigit() else None
+
+
 def evaluate_handshake(params: dict, request_id: str) -> dict:
     """§4: ClientHello in payload; return ServerHello in result.payload."""
     client_hello = params.get("payload") or {}
+
+    # ClientHello required fields (handshake.json $defs/ClientHello). A
+    # missing required field is an invalid ClientHello and MUST be
+    # refused, not silently accepted (PR #22 conformance probe). Unknown
+    # EXTRA fields are ignored per the forward-compatibility rule.
+    missing = [f for f in ("acs_versions_supported", "methods_implemented",
+                           "transports_supported", "provenance_producer")
+               if f not in client_hello]
+    if missing:
+        raise GuardianError(-32600,
+            f"Invalid Request: ClientHello missing required field(s): {missing}")
+
+    # Forward compatibility (§4, 'Accept X.Y.Z matching major version'):
+    # accept the client when it shares the Guardian's MAJOR version, even
+    # if the exact X.Y.Z differs (e.g. a 0.1.1 client vs a 0.1.0
+    # Guardian). Rejecting on exact-version mismatch violated the rule
+    # (PR #22 conformance probe). Negotiate to the Guardian's own
+    # version — the one it actually speaks.
     client_versions = client_hello.get("acs_versions_supported") or []
-    if ACS_VERSION not in client_versions:
-        raise GuardianError(-32001, f"UNSUPPORTED_VERSION: client supports {client_versions}, Guardian speaks {ACS_VERSION}")
+    our_major = _major(ACS_VERSION)
+    if not any(_major(v) == our_major for v in client_versions):
+        raise GuardianError(-32001,
+            f"UNSUPPORTED_VERSION: client majors "
+            f"{[_major(v) for v in client_versions]}, Guardian major {our_major}")
 
     server_hello = {
         "negotiated_version": ACS_VERSION,
@@ -569,6 +642,29 @@ def evaluate_step(method: str, params: dict, request_id: str, chain_hash: str) -
 
         return {**base, "decision": "allow"}
 
+    if method == "steps/subagentStart":
+        # The confused-deputy gate. Subagent spawns are gated by default
+        # (same posture as the Task-tool branch above — adapters that
+        # route spawns through the proper hook must not get a WEAKER
+        # gate than ones sending a generic tool call; PR #22 fourth
+        # review). A "fresh" intent_derivation claims authority NOT
+        # derived from the parent and gets its own reason code. A
+        # production Guardian would check the declared subagent_intent
+        # against the parent's Intent.parsed instead of a blanket gate.
+        derivation = (payload.get("intent_derivation") or "").lower()
+        if not ALLOW_SUBAGENT:
+            code = ("subagent_fresh_intent_gated" if derivation == "fresh"
+                    else "subagent_gated")
+            return {**base, "decision": "deny",
+                    "reasoning": (
+                        "subagent spawns are gated by default"
+                        + (" — and intent_derivation 'fresh' claims "
+                           "authority not derived from the parent"
+                           if derivation == "fresh" else "")
+                        + ". Set ACS_ALLOW_SUBAGENT=1 to allow."),
+                    "reason_codes": [code]}
+        return {**base, "decision": "allow"}
+
     if method in INFORMATIONAL_METHODS:
         return {**base, "decision": "allow"}
 
@@ -578,6 +674,22 @@ def evaluate_step(method: str, params: dict, request_id: str, chain_hash: str) -
 
 
 # ----- Request dispatch -----
+
+def _error_envelope(request_id, session_id: str, code: int, message: str) -> dict:
+    """Build a SIGNED JSON-RPC error envelope.
+
+    conformance.md:23 — 'every request and response carries a
+    signature' — includes error responses: an unsigned spoofable error
+    under a fail-open posture is an allow (PR #22 third review). Signed
+    whenever the per-session key is derivable (session_id present);
+    errors raised before a session_id is resolvable surface as
+    HTTP-level refusals in do_POST instead."""
+    envelope = {"jsonrpc": "2.0", "id": request_id,
+                "error": {"code": code, "message": message}}
+    if _hmac_secret() and session_id:
+        sign_envelope(envelope, session_id=session_id)
+    return envelope
+
 
 def handle_request(request: dict) -> dict:
     method = request.get("method", "")
@@ -601,23 +713,31 @@ def handle_request(request: dict) -> dict:
                 f"{'.'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}"
                 for e in errors[:5]
             )
-            return {"jsonrpc": "2.0", "id": request_id,
-                    "error": {"code": -32600,
-                              "message": f"Invalid Request: envelope failed schema: {paths}"}}
+            return _error_envelope(request_id, session_id, -32600,
+                                   f"Invalid Request: envelope failed schema: {paths}")
 
-    # system/ping and handshake/hello are exempt from signature/chain/replay
-    # constraints per §13 (ping) and §4.1 (handshake bootstraps signing).
+    # system/ping is the ONLY signature-exempt method (§13: no signature
+    # required, so liveness probing survives key-resolution outages).
     if method == "system/ping":
         result = evaluate_ping(params, acs_request_id)
         envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
         return envelope
 
     if method == "handshake/hello":
+        # The handshake is NOT signature-exempt. conformance.md:23 /
+        # §10 say every request and response carries a signature, and
+        # nothing needs bootstrapping: the per-session HMAC key derives
+        # from the pre-shared secret + session_id, both known before the
+        # handshake (v0.1 has no in-band key exchange). An earlier
+        # version exempted it citing a §4.1 rule that doesn't exist —
+        # letting an unsigned ClientHello negotiate a session
+        # (PR #22 second review). Chain/replay still don't apply: the
+        # chain roots at sessionStart, after negotiation.
         try:
+            check_signature(request, session_id)
             result = evaluate_handshake(params, acs_request_id)
         except GuardianError as e:
-            return {"jsonrpc": "2.0", "id": request_id,
-                    "error": {"code": e.code, "message": e.message}}
+            return _error_envelope(request_id, session_id, e.code, e.message)
         envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
         if _hmac_secret():
             sign_envelope(envelope, session_id=session_id)
@@ -629,8 +749,7 @@ def handle_request(request: dict) -> dict:
         check_skew(timestamp)
         check_replay(session_id, acs_request_id)
     except GuardianError as e:
-        return {"jsonrpc": "2.0", "id": request_id,
-                "error": {"code": e.code, "message": e.message}}
+        return _error_envelope(request_id, session_id, e.code, e.message)
 
     # Compute chain entry BEFORE evaluating, then include head in result.
     payload_canonical = jcs_canonicalize(params).decode("utf-8")
@@ -639,8 +758,7 @@ def handle_request(request: dict) -> dict:
     try:
         result = evaluate_step(method, params, acs_request_id, chain_hash)
     except GuardianError as e:
-        return {"jsonrpc": "2.0", "id": request_id,
-                "error": {"code": e.code, "message": e.message}}
+        return _error_envelope(request_id, session_id, e.code, e.message)
 
     envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
     if _hmac_secret():
@@ -673,6 +791,18 @@ class GuardianHandler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._respond(400, {"jsonrpc": "2.0", "id": None,
                                 "error": {"code": -32700, "message": "Parse error"}})
+            return
+
+        # A JSON value that is not an object is not a valid single
+        # JSON-RPC request. A top-level array is a JSON-RPC BATCH, which
+        # ACS v0.1 does not support. Both MUST return -32600, not crash
+        # with AttributeError on `.get` (PR #22 conformance probe).
+        if not isinstance(request, dict):
+            kind = "batch" if isinstance(request, list) else type(request).__name__
+            self._respond(400, {"jsonrpc": "2.0", "id": None,
+                                "error": {"code": -32600,
+                                          "message": f"Invalid Request: expected a JSON-RPC "
+                                                     f"object, got {kind} (batches unsupported in v0.1)"}})
             return
 
         method = request.get("method", "")

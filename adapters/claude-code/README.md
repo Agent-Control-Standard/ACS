@@ -103,7 +103,7 @@ cd "$ACS_REPO/adapters/claude-code"
 python3 e2e_check.py
 ```
 
-Real Claude is driven through four scenarios — allow, deny, Read tool, multi-tool handshake-once — every envelope is printed verbatim, you read PASS/FAIL per scenario. Wall-clock ~60-90s because real Claude is in the loop. The final line is either `YOUR CLAUDE CODE INSTALL IS ACS-CONFORMANT` (exit 0) or a per-scenario failure list (exit 1).
+Real Claude is driven through four scenarios — allow, deny, Read tool, multi-tool handshake-once — every envelope is printed verbatim, you read PASS/FAIL per scenario. Wall-clock ~60-90s because real Claude is in the loop. The final line is either `ACS-CORE SMOKE PASS (claude-code)` (exit 0) — a smoke verdict, not a conformance certification — or a per-scenario failure list (exit 1).
 
 You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests) below).
 
@@ -111,10 +111,7 @@ You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests)
 
 - **`claude` CLI** installed and authenticated — install guide: <https://docs.claude.com/claude-code>
 - **Python 3.10+** with `jsonschema` and `rfc8785` — `pip install -r ../requirements-test.txt`
-- **Canonical ACS schemas** reachable on disk. Default location `/tmp/acs-spec-source/specification/v0.1.0/`; override via `ACS_SPEC_DIR`. Clone with:
-  ```bash
-  git clone https://github.com/Agent-Control-Standard/ACS.git /tmp/acs-spec-source
-  ```
+- **Canonical ACS schemas** — the in-repo copy at `specification/v0.1.0/` is the default, so no setup is needed when running from a clone of this repo. Set `ACS_SPEC_DIR` only to validate against a different spec checkout.
 
 ## Smoke tests
 
@@ -122,22 +119,15 @@ Five tests, ordered from broadest to most specific. Run any/all.
 
 ### Smoke #1 — automated test suite (unit + integration, ~30s)
 
-Run from `adapters/` (the conformance suite lives at the top level):
+Run from `adapters/`:
 
 ```bash
 cd "$ACS_REPO/adapters"
-
-python3 -m unittest test_acs_core_conformance
-# Expect: Ran 48 tests in ~10s / OK   (every ACS-Core MUST)
-
-(cd claude-code && python3 -m unittest discover tests)
-# Expect: Ran 32 tests / OK            (round-trip + schema + live)
-
-(cd _common && python3 -m unittest discover tests)
-# Expect: Ran 33 tests / OK            (security + edge cases)
+python3 run_conformance.py claude
+# Runs the shared Guardian and _common checks, then Claude Code's suite.
 ```
 
-If any of those fail, the failure message names the specific spec MUST or property that broke.
+The command reports passes, skips, and failures separately. It fails on any test failure or unexpected skip.
 
 ### Smoke #2 — real Claude end-to-end (~60-90s)
 
@@ -190,11 +180,19 @@ python3 $ACS_REPO/adapters/claude-code/acs_adapter.py 2>&1 <<'EOF'
 EOF
 ```
 
-Expected stderr — note the `cause` field:
+Expected stderr — note the `cause` field, and that a signature refusal
+fails CLOSED regardless of posture (a refusal is an alive Guardian
+rejecting the envelope; spec issue #32):
 
 ```
 acs-adapter: Guardian returned JSON-RPC error -32004 (signature_invalid_response): SIGNATURE_INVALID
-ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "signature_invalid_response", ...}
+ACS_AUDIT {"acs_audit_event": "guardian_refusal_fail_closed", "cause": "signature_invalid_response", ...}
+```
+
+And stdout carries a real deny:
+
+```
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", ...}}
 ```
 
 Guardian unreachable (different cause, same disposition):
@@ -213,7 +211,10 @@ acs-adapter: Guardian unreachable: <urlopen error ...>
 ACS_AUDIT {"acs_audit_event": "fail_open_bypass", "cause": "transport_failure", ...}
 ```
 
-Same `acs_audit_event`, distinct `cause`. Operators grep on `cause=` to triage.
+Distinct `acs_audit_event` AND distinct `cause`: refusals are always
+`guardian_refusal_fail_closed`; failures carry the posture
+(`fail_open_bypass` / `decision_failure_fail_closed`). Operators grep
+on either to triage.
 
 ### Smoke #5 — pre-flight inventory (paranoid)
 
@@ -258,10 +259,14 @@ The adapter is configured by environment variables, typically set per-hook by `w
 | `ACS_GUARDIAN_URL` | `http://127.0.0.1:8787/acs` | Guardian endpoint. http/https only; SSRF allowlist refuses other schemes. |
 | `ACS_HMAC_SECRET_FILE` | (unset) | Path to a 0600 file holding the shared HMAC secret. |
 | `ACS_HMAC_SECRET` | (unset) | Inline secret. Less secure (visible in `ps eauxw`). Prefer the file. |
-| `ACS_DEFAULT_DENY` | `0` | Fail-open with audit (§6.4 default). Set to `1` for fail-closed. |
+| `ACS_DEFAULT_DENY` | `0` | Fail-open with audit (§6.4 default). Set to `1` for fail-closed. The ServerHello's `on_decision_failure: deny` also flips it (most-restrictive-wins). Guardian refusals (bad signature, replay, malformed/oversized envelope) always fail closed regardless of this setting — see spec issue #32. |
 | `ACS_HANDSHAKE` | `1` | Set to `0` to disable the handshake/hello call on first use. |
 | `ACS_AGENT_ID` | derived from cwd | Stable agent identifier sent in `metadata.agent_id`. |
 | `ACS_HANDSHAKE_CACHE` | `~/.cache/acs-adapter-handshake/` | Per-session ServerHello cache dir. |
+| `ACS_HANDSHAKE_TIMEOUT_SECONDS` | `5` | Network timeout for handshake/hello. |
+| `ACS_HANDSHAKE_FAILURE_CACHE_TTL_SECONDS` | `30` | Failed handshakes are negative-cached this long, so a dead Guardian costs one timeout, not one per hook event. |
+| `ACS_AUDIT_FILE` | (unset) | Append every `ACS_AUDIT` event to this file (created 0600) in addition to stderr — the durable audit half of §6.4's fail-open trade. |
+| `ACS_DISABLED` | (unset) | `1` = incident kill switch: bypass all hooks immediately, no Guardian traffic. |
 | `ACS_GUARDIAN_HOST_ALLOWLIST` | (unset) | Optional comma-separated hostname allowlist (defense in depth). |
 
 ## On-disk state
@@ -271,20 +276,20 @@ The adapter is configured by environment variables, typically set per-hook by `w
 
 ## Conformance status
 
-Honest, MUST-by-MUST against `docs/spec/conformance.md`:
+Honest, item-by-item against `docs/spec/conformance.md` (post-#21 some items are SHOULD/conditional rather than MUST — the row notes say which):
 
 | ACS-Core item | Status |
 |---|---|
 | Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`tests/test_envelope_schema.py`); format checking enforces `uuid` and `date-time`. |
-| Hook taxonomy (6 minimum) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. |
+| Hook taxonomy (Core minimum set) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`; plus `subagentStart` via the PreToolUse(Task) remap (Core floor post-#21, see mapping.md) and `subagentStop` (best-effort payload, see mapping.md). `preCompact` deliberately unmapped — the platform exposes no entry list (mapping.md). |
 | Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on **pre-execution** hooks (`PreToolUse`, `UserPromptSubmit`); MODIFY partial (`PreToolUse` with `parameter_overrides` only). **Post-execution and lifecycle hooks (`PostToolUse`, `Notification → agentResponse`, `Stop`, `SessionEnd`) are observation-only** — Claude Code fires them after the side effect / message has occurred; a Guardian `deny` on those cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ default-deny honored on unknown verdicts when `ACS_DEFAULT_DENY=1`; spec-default fail-open path emits audit event. |
 | SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`). |
 | Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3. |
 | Baseline integrity (HMAC-SHA256 signature) | ✓ HKDF-derived per-session key signs every request and response when `ACS_HMAC_SECRET[_FILE]` is set; Guardian rejects unsigned/tampered with SIGNATURE_INVALID -32004. |
 | Decision honoring (§6.4) | ✓ adapter blocks on subprocess return; spec-default fail-open posture emits structured `ACS_AUDIT` event on every bypass; audit `cause` field distinguishes failure modes. |
-| Liveness `system/ping` | ✓ Guardian implements always-allow ping that bypasses chain/replay/signature checks per §13. |
+| Liveness `system/ping` | ✓ Guardian-side only — Guardian implements an always-allow ping bypassing chain/replay/signature (§13); the adapter does NOT emit it. |
 | `nonce` (optional replay field) | ✗ adapter does not emit `nonce`; the envelope field is OPTIONAL in v0.1. |
 | Wrapped MCP `protocols/MCP/*` | ✗ not implemented; Claude Code's MCP traffic flows through its own mechanism and would need a separate wrapping path. |
 

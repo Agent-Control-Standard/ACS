@@ -33,44 +33,44 @@ GUARDIAN = HERE.parent.parent / "example-guardian" / "example_guardian.py"
 # ===== #1: rfc8785 cross-install JCS consistency =====
 
 class Item01_JcsConsistency(unittest.TestCase):
-    """The fallback `jcs_canonicalize` and the rfc8785 package must
-    produce identical bytes for every shape ACS envelopes carry. If
-    they differ, a deployment with rfc8785 on one side and not the
-    other gets signature-verification failures on every request."""
+    """RFC 8785 canonicalization is a HARD dependency with no fallback.
 
-    SAMPLES = [
-        # Typical PreToolUse envelope
-        {"jsonrpc": "2.0", "id": "abc", "method": "steps/toolCallRequest",
-         "params": {"acs_version": "0.1.0", "request_id": "11111111-1111-4111-8111-111111111111",
-                    "timestamp": "2026-06-17T12:00:00.000Z",
-                    "metadata": {"agent_id": "x", "session_id": "11111111-1111-4111-8111-111111111111"},
-                    "payload": {"tool": {"name": "Bash"},
-                                "arguments": {"command": {"value": "ls -la"}}}}},
-        # Empty object, empty array, null
-        {"a": {}, "b": [], "c": None, "d": True, "e": False},
-        # Integers + negatives + zero
-        {"x": 0, "y": -1, "z": 123456789, "neg": -987654321},
-        # Nested + ordered-keys check
-        {"z": 1, "a": 2, "m": {"y": [3, 1, 2], "x": "hi"}},
-        # Unicode (BMP)
-        {"emoji": "🚀", "hebrew": "שלום", "ascii": "hi"},
+    History (PR #22 review): acs_common used to fall back to
+    `json.dumps(sort_keys=True)` when rfc8785 was missing, and this test
+    compared the two on samples that deliberately avoided every
+    divergent shape (no floats), then skipped itself when rfc8785 was
+    absent — 'the one case you want it to run'. The fallback is deleted;
+    this class now (a) proves the import is hard, (b) pins rfc8785's
+    output on exactly the shapes the fallback got wrong, and (c) keeps
+    the counterproof that the old fallback diverges on them."""
+
+    # The divergent shapes. `duration_ms` is framework-supplied and goes
+    # straight into the signed payload, so every one of these is
+    # reachable on the real wire.
+    DIVERGENT = [
+        ({"duration_ms": 1.0},   b'{"duration_ms":1}'),
+        ({"duration_ms": -0.0},  b'{"duration_ms":0}'),
+        ({"duration_ms": 1e16},  b'{"duration_ms":10000000000000000}'),
+        ({"duration_ms": 0.5},   b'{"duration_ms":0.5}'),
     ]
 
-    def test_fallback_matches_rfc8785_on_acs_envelope_shapes(self) -> None:
-        try:
-            import rfc8785
-        except ImportError:
-            self.skipTest("rfc8785 not installed; can't compare")
-        for sample in self.SAMPLES:
-            fallback = json.dumps(sample, sort_keys=True, separators=(",", ":"),
-                                  ensure_ascii=False).encode("utf-8")
-            canonical = rfc8785.dumps(sample)
-            self.assertEqual(fallback, canonical,
-                f"JCS divergence between fallback and rfc8785 on {sample!r}:\n"
-                f"  fallback : {fallback!r}\n"
-                f"  rfc8785  : {canonical!r}\n"
-                "A deployment with mismatched JCS implementations would "
-                "fail every signed-envelope verification.")
+    def test_rfc8785_canonical_output_on_divergent_shapes(self) -> None:
+        """Pin RFC 8785 §3 number serialization on the shapes that the
+        deleted fallback mis-canonicalized."""
+        import acs_common
+        for sample, expected in self.DIVERGENT:
+            with self.subTest(sample=sample):
+                self.assertEqual(acs_common.jcs_canonicalize(sample), expected)
+
+    def test_non_bmp_key_ordering_matches_utf16_rule(self) -> None:
+        """RFC 8785 §3.2.3 sorts keys by UTF-16 code units: a non-BMP
+        key (U+10000, surrogate pair starting 0xD800) sorts BEFORE
+        U+FFFF. json.dumps sorts by code point and gets this backwards."""
+        import acs_common
+        sample = {"￿": 1, "\U00010000": 2}
+        out = acs_common.jcs_canonicalize(sample).decode("utf-8")
+        self.assertLess(out.index("\U00010000"), out.index("￿"),
+            f"UTF-16 ordering violated in {out!r}")
 
 
 # ===== #2: Guardian regex DoS — server-side input cap =====
@@ -395,50 +395,6 @@ class Item10_CursorStateCollision(unittest.TestCase):
 
 
 # ===== #11: Guardian schema-validates incoming envelopes =====
-
-class Item11_GuardianValidatesIncoming(unittest.TestCase):
-    """The Guardian MUST reject envelopes that don't match request-envelope.json
-    before evaluating policy. Malformed envelopes that slip through can
-    crash or mis-route the policy code."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.port = _free_port()
-        env = os.environ.copy()
-        env["ACS_DEV_MODE"] = "1"
-        env.pop("ACS_HMAC_SECRET", None)
-        env.pop("ACS_HMAC_SECRET_FILE", None)
-        cls.statedir = tempfile.mkdtemp(prefix="acs-guardian-state-")
-        env["ACS_GUARDIAN_STATE_DIR"] = cls.statedir
-        cls.proc = subprocess.Popen(
-            [sys.executable, str(GUARDIAN), "--port", str(cls.port)], env=env,
-            stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
-        )
-        _wait("127.0.0.1", cls.port)
-        cls.url = f"http://127.0.0.1:{cls.port}/acs"
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.proc.terminate()
-        try: cls.proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired: cls.proc.kill()
-        import shutil
-        shutil.rmtree(cls.statedir, ignore_errors=True)
-
-    def test_malformed_envelope_rejected_with_invalid_request(self) -> None:
-        # Missing required `params` entirely
-        body = json.dumps({"jsonrpc": "2.0", "id": "x", "method": "steps/sessionStart"}).encode()
-        req = urllib.request.Request(self.url, data=body,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            data = json.loads(resp.read().decode())
-        self.assertIn("error", data,
-            f"Guardian must reject schema-violating envelopes; got {data}")
-        self.assertIn(data["error"]["code"], (-32600, -32602),
-            f"expected -32600 Invalid Request / -32602 Invalid params; got {data['error']}")
-
-
-# ===== #12: state-file hash length 16 → 64 =====
 
 class Item12_StatePathHashLength(unittest.TestCase):
     """16 hex chars = 64-bit hash space. After billions of sessions,

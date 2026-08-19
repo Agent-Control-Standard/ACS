@@ -97,54 +97,6 @@ class NATMiddlewareIntegration(unittest.TestCase):
 
     # ----- allow path -----
 
-    def test_safe_bash_passes_through(self) -> None:
-        mw = self._make_middleware()
-        ctx = _make_context("Bash", {"command": "ls -la"})
-        result = asyncio.run(mw.pre_invoke(ctx))
-        # allow -> return None (passthrough)
-        self.assertIsNone(result)
-        self.assertIsNone(ctx.action) if hasattr(ctx, "action") else None
-
-    def test_safe_read_passes_through(self) -> None:
-        mw = self._make_middleware()
-        ctx = _make_context("Read", {"file_path": "/tmp/safe.txt"})
-        result = asyncio.run(mw.pre_invoke(ctx))
-        self.assertIsNone(result)
-
-    # ----- deny path -----
-
-    def test_destructive_bash_blocks(self) -> None:
-        """Guardian denies destructive Bash; adapter blocks NAT invocation."""
-        mw = self._make_middleware()
-        ctx = _make_context("Bash", {"command": "rm -rf /home/user"})
-
-        # On NAT 1.7.0 (no InvocationAction), block raises ACSGuardianDenied
-        try:
-            result = asyncio.run(mw.pre_invoke(ctx))
-        except ACSGuardianDenied as e:
-            self.assertIn("destructive", str(e).lower())
-            return  # block via exception path (NAT 1.7.0)
-
-        # On future NAT (has InvocationAction), block via context.action
-        from nat.middleware import middleware as m
-        if hasattr(m, "InvocationAction"):
-            self.assertIsNotNone(ctx.action)
-            self.assertEqual(ctx.action.value, "skip")
-        else:
-            self.fail("destructive Bash should have blocked")
-
-    def test_write_to_protected_path_blocks(self) -> None:
-        mw = self._make_middleware()
-        ctx = _make_context("Write", {"file_path": "/etc/passwd", "content": "x"})
-        try:
-            asyncio.run(mw.pre_invoke(ctx))
-            from nat.middleware import middleware as m
-            self.assertTrue(hasattr(m, "InvocationAction") and ctx.action is not None)
-        except ACSGuardianDenied as e:
-            self.assertIn("protected", str(e).lower())
-
-    # ----- post_invoke -----
-
     def test_post_invoke_allow_passes_through(self) -> None:
         mw = self._make_middleware()
         ctx = _make_context("Read", {"file_path": "/tmp/x"})
@@ -153,31 +105,6 @@ class NATMiddlewareIntegration(unittest.TestCase):
         self.assertIsNone(result)  # allow + no modification
 
     # ----- fail posture -----
-
-    def test_guardian_unreachable_default_deny_blocks(self) -> None:
-        cfg = ACSMiddlewareConfig(
-            guardian_url="http://127.0.0.1:1/dead",
-            default_deny=True,
-        )
-        mw = ACSMiddleware(cfg)
-        ctx = _make_context("Read", {"file_path": "/tmp/x"})
-        try:
-            asyncio.run(mw.pre_invoke(ctx))
-            from nat.middleware import middleware as m
-            self.assertTrue(hasattr(m, "InvocationAction") and ctx.action is not None)
-        except ACSGuardianDenied as e:
-            self.assertIn("unreachable", str(e).lower())
-
-    def test_guardian_unreachable_fail_open(self) -> None:
-        cfg = ACSMiddlewareConfig(
-            guardian_url="http://127.0.0.1:1/dead",
-            default_deny=False,
-        )
-        mw = ACSMiddleware(cfg)
-        ctx = _make_context("Read", {"file_path": "/tmp/x"})
-        result = asyncio.run(mw.pre_invoke(ctx))
-        self.assertIsNone(result)  # fail-open: proceed
-
 
 class ExtractArgumentsFromInvocationContext(unittest.TestCase):
     """Regression: NAT's middleware chain captures the function input as

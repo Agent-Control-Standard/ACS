@@ -87,7 +87,8 @@
         },
         "steps/subagentStop": {
           "span_name": "acs.subagent.end",
-          "required_attributes": ["acs.subagent.session_id", "acs.subagent.outcome", "acs.subagent.final_chain_hash"]
+          "required_attributes": ["acs.subagent.session_id", "acs.subagent.outcome"],
+          "optional_attributes": ["acs.subagent.final_chain_hash"]
         },
         "agbom/snapshot": {
           "span_name": "acs.agbom",

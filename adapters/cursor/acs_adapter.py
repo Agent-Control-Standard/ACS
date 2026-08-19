@@ -14,14 +14,19 @@ v0.1.0 hook schemas require.
   - `subagentStart` — three of four required fields (subagent_session_id,
     parent_session_id, parent_step_id) are populated from real session
     data via deterministic UUID5 and the adapter's session-state tracking
-    of the last step_id. The fourth, `intent_derivation`, is hardcoded to
-    `derived_from_parent` (the defensible default for IDE-spawned subagents).
+    of the last step_id. When NO prior step is recorded, parent_step_id
+    is the spawn event's own request_id (the spawn is the first observed
+    parent step) with a `subagent_start_parent_step_unknown` audit event
+    — never the session id masquerading as a step id. The fourth field,
+    `intent_derivation`, is hardcoded to `derived_from_parent` (the
+    defensible default for IDE-spawned subagents).
   - `preCompact` — both required fields are real: `entries_to_compact` is
     the list of step_ids the adapter has observed in this session;
     `triggered_by` comes from Cursor's `trigger` field.
-  - `subagentStop` — NOT forwarded. The required `final_chain_hash` is
-    genuinely unknowable (Cursor maintains no chain). Better to omit than
-    to fabricate.
+  - `subagentStop` — NOT forwarded. `final_chain_hash` is genuinely
+    unknowable (Cursor maintains no chain); better to omit than
+    fabricate. The field is now optional for chain-less frameworks
+    (PR #21), so honest wiring is possible — tracked for the rebase.
 
 See the README per-hook honesty table for the full mapping.
 
@@ -32,9 +37,20 @@ Environment variables (same defaults / semantics as the Claude Code adapter):
   ACS_GUARDIAN_URL    Guardian endpoint (default: http://127.0.0.1:8787/acs)
   ACS_DEFAULT_DENY    "1" = fail-closed. Default "0" (spec default per §6.4).
                       Cursor also honors per-hook `failClosed: true` in hooks.json.
-  ACS_HMAC_SECRET     Shared secret for HMAC-SHA256 signing per §10. Unset = no signing (local dev).
+                      The ServerHello's `on_decision_failure` also applies
+                      (most-restrictive-wins). Guardian REFUSALS
+                      (SIGNATURE_INVALID, REPLAY_DETECTED, malformed /
+                      oversized envelope) always fail closed regardless of
+                      posture — every refusal is attacker-reachable.
+  ACS_HMAC_SECRET     Shared secret for HMAC-SHA256 signing per §10 (or
+                      ACS_HMAC_SECRET_FILE, preferred). Unset = no signing
+                      (local dev, loud audit event).
   ACS_AGENT_ID        Explicit agent_id; defaults to cursor:<sha8(workspace)>.
   ACS_HANDSHAKE       "0" disables handshake. Default "1".
+  ACS_AUDIT_FILE      Append every ACS_AUDIT event to this file (0600) in
+                      addition to stderr.
+  ACS_DISABLED        "1" = incident kill switch: exit immediately, no
+                      Guardian traffic, no output (one stderr line).
 """
 from __future__ import annotations
 
@@ -52,13 +68,16 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 from acs_common import (  # noqa: E402
     ACS_VERSION,
+    MAX_REQUEST_BODY_BYTES,
     audit_event,
     coerce_uuid,
     ensure_session_handshake,
     guardian_error_cause,
+    is_guardian_refusal,
     iso8601_now,
     load_session_state,
     record_step,
+    response_matches_request,
     save_session_state,
     sign_envelope,
     validate_guardian_url,
@@ -66,23 +85,48 @@ from acs_common import (  # noqa: E402
 )
 
 
+class RequestTooLargeError(Exception):
+    """Serialized envelope exceeds the Guardian's body cap. Checked
+    adapter-side BEFORE the POST — an oversized envelope is attacker-
+    constructable and its HTTP 413 / mid-read reset previously fell to
+    the fail-open posture as transport_failure (PR #22 second review)."""
+
+
+class GuardianHTTPRefusalError(Exception):
+    """Guardian answered non-2xx: alive and refusing at the HTTP layer.
+    urllib raises HTTPError before the JSON-RPC error body is parsed,
+    so this was bucketed as transport_failure → fail-open."""
+
+    def __init__(self, status: int, jsonrpc_error: dict | None):
+        self.status = status
+        self.jsonrpc_error = jsonrpc_error or {}
+        super().__init__(f"HTTP {status}")
+
+
+# Version stamp: distribution is copy-paste, so a defect is only scopeable
+# if adopters can answer "what version do you run?" (PR #22 review).
+# Bump on EVERY behavior change to this file. Carried in request metadata
+# and printed by --version.
+ADAPTER_VERSION = "0.1.1"
+
 GUARDIAN_URL = os.environ.get("ACS_GUARDIAN_URL", "http://127.0.0.1:8787/acs")
 DEFAULT_DENY = os.environ.get("ACS_DEFAULT_DENY", "0") == "1"
 HANDSHAKE_ENABLED = os.environ.get("ACS_HANDSHAKE", "1") == "1"
+
+# Effective fail posture = most-restrictive of the local env var and the
+# Guardian's negotiated ServerHello `on_decision_failure` (§6.4). Updated
+# once per invocation in main(). See the Claude Code adapter for the full
+# rationale (PR #22 review: the ServerHello was fetched and never read).
+_SERVER_DENY = False
+
+
+def _effective_default_deny() -> bool:
+    return DEFAULT_DENY or _SERVER_DENY
 
 
 # ─── Hook taxonomy ──────────────────────────────────────────────────────────
 
 # Cursor hook event -> ACS step method.
-#
-# Intentionally OMITTED from this map (documented gap, not synthesis):
-#   subagentStop — `final_chain_hash` (64-hex SHA-256 of the subagent's
-#                  ContextEntry chain) is genuinely unknowable because
-#                  Cursor does not maintain a chain on its side. Emitting
-#                  a fabricated hash would be schema-valid but
-#                  semantically meaningless. Cursor's subagentStop event
-#                  is therefore not forwarded. The Cursor README per-hook
-#                  honesty table documents the gap.
 HOOK_MAP: dict[str, str] = {
     "sessionStart":         "steps/sessionStart",
     "sessionEnd":           "steps/sessionEnd",
@@ -101,6 +145,20 @@ HOOK_MAP: dict[str, str] = {
     "afterAgentResponse":   "steps/agentResponse",
     "afterAgentThought":    "steps/agentResponse",
     "afterTabFileEdit":     "steps/toolCallResult",
+}
+
+# Cursor events we deliberately do NOT map, with the reason. An event
+# outside HOOK_MAP and outside this set gets an `unmapped_hook_event`
+# audit line, so a renamed upstream hook shows up as an ungoverned
+# session instead of a quiet one (PR #22 review).
+KNOWN_UNMAPPED: dict[str, str] = {
+    # `final_chain_hash` (64-hex SHA-256 of the subagent's ContextEntry
+    # chain) is genuinely unknowable because Cursor maintains no chain.
+    # Emitting a fabricated hash would be schema-valid but semantically
+    # meaningless. PR #21 makes the field optional; wiring subagentStop
+    # honestly becomes possible after it lands and is tracked for the
+    # rebase. The Cursor README per-hook honesty table documents the gap.
+    "subagentStop": "final_chain_hash unknowable (no chain on Cursor side)",
 }
 
 # Cursor events whose deny shape is `{"permission": "deny", ...}`
@@ -305,7 +363,23 @@ def _payload_subagent_start(event: dict[str, Any]) -> dict[str, Any]:
     sub_raw = event.get("subagent_id", "")
     sid = _session_id(event)
     st = load_session_state(sid, workspace=_workspace(event))
-    parent_step_id = st.get("last_step_id") or sid
+    parent_step_id = st.get("last_step_id")
+    if not parent_step_id:
+        # No prior step recorded (spawn is the first event the adapter
+        # sees in this session, or the session-state cache was cleared).
+        # Previously this fell back to the session_id — which is NOT a
+        # step id; the schema says parent_step_id is the step that
+        # triggered the spawn, and a session id masquerading as one is
+        # fabricated lineage (PR #22 fourth review). The honest value is
+        # self-referential: the spawn event itself IS the first parent
+        # step this adapter observed, so build_request patches in this
+        # envelope's own request_id (sentinel None here) and the
+        # degraded lineage is audited.
+        audit_event("subagent_start_parent_step_unknown",
+                    session_id=sid,
+                    detail="no prior step recorded; parent_step_id set "
+                           "to the spawn event's own request_id")
+        parent_step_id = None
     payload = {
         "subagent_session_id": str(uuid.uuid5(
             uuid.NAMESPACE_URL, f"cursor-subagent:{sid}:{sub_raw or 'unknown'}")),
@@ -388,6 +462,7 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
         "agent_id": _agent_id(event),
         "session_id": session_id,
         "platform": "cursor",
+        "adapter_version": ADAPTER_VERSION,
         "cursor_event": event_name,
     }
     if event.get("cwd") or event.get("workspace_path"):
@@ -402,6 +477,13 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
     else:
         request_id = str(uuid.uuid4())
 
+    payload = build_payload(event_name, event)
+    # subagentStart with no recorded prior step: the spawn event itself
+    # is the first observed parent step, so its own request_id is the
+    # honest parent_step_id (see _payload_subagent_start).
+    if method == "steps/subagentStart" and payload.get("parent_step_id") is None:
+        payload["parent_step_id"] = request_id
+
     envelope = {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4()),
@@ -411,23 +493,24 @@ def build_request(event_name: str, event: dict[str, Any]) -> dict[str, Any]:
             "request_id": request_id,
             "timestamp": iso8601_now(),
             "metadata": metadata,
-            "payload": build_payload(event_name, event),
+            "payload": payload,
         },
     }
     sign_envelope(envelope, session_id=session_id)
     return envelope
 
 
-def _maybe_handshake(event: dict[str, Any]) -> None:
+def _maybe_handshake(event: dict[str, Any]) -> dict | None:
     """Called on every hook event. Idempotent per session via disk
     cache — only the first event of a session actually POSTs
-    handshake/hello. See ensure_session_handshake's docstring."""
+    handshake/hello. Returns the negotiated ServerHello (cached or
+    fresh) or None. See ensure_session_handshake's docstring."""
     if not HANDSHAKE_ENABLED:
-        return
+        return None
     sid = _session_id(event)
     if not sid:
-        return
-    ensure_session_handshake(
+        return None
+    return ensure_session_handshake(
         guardian_url=GUARDIAN_URL,
         session_id=sid,
         agent_id=_agent_id(event),
@@ -439,12 +522,22 @@ def _maybe_handshake(event: dict[str, Any]) -> None:
 def call_guardian(request: dict[str, Any]) -> dict[str, Any]:
     validate_guardian_url(GUARDIAN_URL)  # SSRF: refuse file://, ftp://, etc.
     body = json.dumps(request).encode("utf-8")
+    if len(body) > MAX_REQUEST_BODY_BYTES:
+        raise RequestTooLargeError(len(body))
     req = urllib.request.Request(
         GUARDIAN_URL, data=body,
         headers={"Content-Type": "application/json"}, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=5.0) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        parsed = None
+        try:
+            parsed = json.loads(e.read().decode("utf-8")).get("error")
+        except Exception:  # noqa: BLE001
+            pass
+        raise GuardianHTTPRefusalError(e.code, parsed) from e
 
 
 # ─── Response translation — dispatch table by event category ──────────────
@@ -500,13 +593,19 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
     reasoning = result.get("reasoning", "")
     modifications = result.get("modifications", {})
 
-    # Unknown disposition under fail-closed → emit a deny in the hook's shape.
-    if decision not in KNOWN_DECISIONS and DEFAULT_DENY:
-        reason = f"unknown Guardian disposition '{decision}' (default-deny)"
-        if event_name in PERMISSION_EVENTS:
-            return _permission_response("deny", reason)
-        if event_name == "beforeSubmitPrompt":
-            return {"__exit_code": 2, "_reasoning": reason}
+    # Unknown or missing disposition: ALWAYS audited — the fail-open
+    # branch is the shipped default and §6.4 says every step that
+    # proceeds without a decision MUST be recorded (PR #22 review).
+    if decision not in KNOWN_DECISIONS:
+        audit_event("unknown_disposition",
+                    disposition=decision or "(missing)", event=event_name,
+                    posture="deny" if _effective_default_deny() else "proceed")
+        if _effective_default_deny():
+            reason = f"unknown Guardian disposition '{decision}' (default-deny)"
+            if event_name in PERMISSION_EVENTS:
+                return _permission_response("deny", reason)
+            if event_name == "beforeSubmitPrompt":
+                return {"__exit_code": 2, "_reasoning": reason}
 
     if event_name in PERMISSION_EVENTS:
         return _translate_permission(decision, reasoning, modifications, event_name)
@@ -525,6 +624,16 @@ def translate_response(acs_response: dict[str, Any], event_name: str) -> dict[st
 # ─── Main flow ──────────────────────────────────────────────────────────────
 
 def main() -> int:
+    global _SERVER_DENY
+    if len(sys.argv) > 1 and sys.argv[1] == "--version":
+        print(f"acs-adapter (cursor) {ADAPTER_VERSION}")
+        return 0
+    if os.environ.get("ACS_DISABLED") == "1":
+        # Incident kill switch: no Guardian traffic, no output. One
+        # stderr line so the bypass is at least visible in debug logs.
+        sys.stderr.write("acs-adapter: ACS_DISABLED=1 — hook bypassed\n")
+        return 0
+
     if len(sys.argv) < 2:
         sys.stderr.write("acs-adapter: missing event name argument (usage: acs_adapter.py <event_name>)\n")
         return 1
@@ -540,9 +649,17 @@ def main() -> int:
         return _fail(event_name, cause="invalid_stdin_json")
 
     if event_name not in HOOK_MAP:
+        if event_name not in KNOWN_UNMAPPED:
+            # Likely an upstream rename or an event wired in hooks.json
+            # that this adapter doesn't know. Going quiet would make an
+            # ungoverned session look like a quiet one (PR #22 review).
+            audit_event("unmapped_hook_event", event=event_name,
+                        session_id=_session_id(event))
         return 0
 
-    _maybe_handshake(event)
+    server_hello = _maybe_handshake(event)
+    if server_hello and server_hello.get("on_decision_failure") == "deny":
+        _SERVER_DENY = True
 
     request = None
     try:
@@ -562,7 +679,25 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             pass
         response = call_guardian(request)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+    except RequestTooLargeError as e:
+        sys.stderr.write(f"acs-adapter: envelope exceeds body cap: {e}\n")
+        return _force_deny(event_name, _session_id(event),
+                           cause="request_exceeds_max_payload",
+                           body_bytes=e.args[0],
+                           method=(request or {}).get("method"))
+    except GuardianHTTPRefusalError as e:
+        code = e.jsonrpc_error.get("code")
+        cause = (guardian_error_cause(code) if code is not None
+                 else f"http_{e.status}_refusal")
+        sys.stderr.write(
+            f"acs-adapter: Guardian refused at HTTP layer "
+            f"({e.status}, {cause})\n")
+        return _force_deny(event_name, _session_id(event),
+                           cause=cause, http_status=e.status,
+                           error_code=code,
+                           error_message=e.jsonrpc_error.get("message"),
+                           method=(request or {}).get("method"))
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
         sys.stderr.write(f"acs-adapter: Guardian unreachable: {e}\n")
         return _fail(event_name, _session_id(event),
                      cause="transport_failure",
@@ -574,25 +709,50 @@ def main() -> int:
         return _fail(event_name, _session_id(event),
                      cause="adapter_exception", error=str(e))
 
+    # Bind the response to THIS request before anything else — the HMAC
+    # proves origin, not correspondence; a captured signed ALLOW for a
+    # benign call verifies fine replayed against a destructive one
+    # (PR #22 review). Mis-bound responses always fail closed.
+    if not response_matches_request(request, response):
+        sys.stderr.write("acs-adapter: response not bound to request\n")
+        return _force_deny(event_name, _session_id(event),
+                           cause="response_binding_mismatch")
+
     # Guardian responded — was it a result or a JSON-RPC error?
+    # Refusal codes mean the Guardian is ALIVE and REFUSED this envelope;
+    # each is attacker-reachable, so they fail closed regardless of
+    # posture (PR #22 review). Non-refusal errors follow §6.4.
     if "error" in response:
+        # Error responses are signed too — a spoofable unsigned error
+        # under a fail-open posture is an allow (PR #22 third review).
+        if not verify_signature(response, session_id=_session_id(event)):
+            sys.stderr.write("acs-adapter: error response signature invalid\n")
+            claimed = response.get("error") or {}
+            return _force_deny(event_name, _session_id(event),
+                               cause="error_signature_invalid",
+                               # UNVERIFIED — for triage only.
+                               claimed_error_code=claimed.get("code"),
+                               claimed_cause=guardian_error_cause(claimed.get("code")))
         err = response.get("error") or {}
         code = err.get("code")
         cause = guardian_error_cause(code)
         sys.stderr.write(
             f"acs-adapter: Guardian returned JSON-RPC error "
             f"{code} ({cause}): {err.get('message','')}\n")
-        return _fail(event_name, _session_id(event),
-                     cause=cause,
-                     error_code=code,
-                     error_message=err.get("message"),
-                     request_id=(request or {}).get("params", {}).get("request_id"),
-                     method=(request or {}).get("method"))
+        common = dict(cause=cause, error_code=code,
+                      error_message=err.get("message"),
+                      request_id=(request or {}).get("params", {}).get("request_id"),
+                      method=(request or {}).get("method"))
+        if is_guardian_refusal(code):
+            return _force_deny(event_name, _session_id(event), **common)
+        return _fail(event_name, _session_id(event), **common)
 
+    # An invalid signature on a well-formed response is spoofing or key
+    # mismatch — fail closed, never posture.
     if not verify_signature(response, session_id=_session_id(event)):
         sys.stderr.write("acs-adapter: response signature invalid\n")
-        return _fail(event_name, _session_id(event),
-                     cause="response_signature_invalid")
+        return _force_deny(event_name, _session_id(event),
+                           cause="response_signature_invalid")
 
     out = translate_response(response, event_name)
 
@@ -626,24 +786,40 @@ def _fail(event_name: str = "", session_id: str | None = None, *,
     envelope (client bug) doesn't get confused with an unreachable
     Guardian (ops issue).
     """
-    if DEFAULT_DENY:
-        msg = f"ACS adapter: decision-failure ({cause})"
-        if event_name in PERMISSION_EVENTS:
-            _emit(_permission_response("deny", msg))
-            audit_event("decision_failure_fail_closed",
-                        cause=cause, event=event_name, session_id=session_id, **audit_extras)
-            return 0
-        if event_name == "beforeSubmitPrompt":
-            sys.stderr.write(f"acs-adapter: prompt blocked ({cause})\n")
-            audit_event("decision_failure_fail_closed",
-                        cause=cause, event=event_name, session_id=session_id, **audit_extras)
-            return 2
-        audit_event("decision_failure_fail_closed",
-                    cause=cause, event=event_name, session_id=session_id, **audit_extras)
-        return 0
+    if _effective_default_deny():
+        return _deny_with_audit("decision_failure_fail_closed",
+                                event_name, session_id, cause, audit_extras)
 
     audit_event("fail_open_bypass",
                 cause=cause, event=event_name, session_id=session_id, **audit_extras)
+    return 0
+
+
+def _force_deny(event_name: str = "", session_id: str | None = None, *,
+                cause: str = "unknown", **audit_extras) -> int:
+    """Fail closed REGARDLESS of posture.
+
+    For attacker-shaped conditions where 'proceed' is a bypass primitive:
+    Guardian refusals (GUARDIAN_REFUSAL_CODES), response↔request binding
+    mismatches, and invalid response signatures (PR #22 review)."""
+    return _deny_with_audit("guardian_refusal_fail_closed",
+                            event_name, session_id, cause, audit_extras)
+
+
+def _deny_with_audit(audit_type: str, event_name: str,
+                     session_id: str | None, cause: str,
+                     audit_extras: dict) -> int:
+    """Emit a deny in the event's native shape + one audit event."""
+    audit_event(audit_type,
+                cause=cause, event=event_name, session_id=session_id,
+                **audit_extras)
+    if event_name in PERMISSION_EVENTS:
+        _emit(_permission_response(
+            "deny", f"ACS adapter: decision-failure ({cause})"))
+        return 0
+    if event_name == "beforeSubmitPrompt":
+        sys.stderr.write(f"acs-adapter: prompt blocked ({cause})\n")
+        return 2
     return 0
 
 

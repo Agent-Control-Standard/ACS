@@ -108,10 +108,7 @@ python3 -m unittest tests.test_live -v
 
 - **NAT installed** — `pip install nvidia-nat-core` (>=1.7.0)
 - **Python 3.10+** with `ruamel.yaml`, `jsonschema`, `rfc8785` — `pip install -r requirements.txt -r ../requirements-test.txt`
-- **Canonical ACS schemas** reachable on disk. Default `/tmp/acs-spec-source/specification/v0.1.0/`; override via `ACS_SPEC_DIR`. Clone with:
-  ```bash
-  git clone https://github.com/Agent-Control-Standard/ACS.git /tmp/acs-spec-source
-  ```
+- **Canonical ACS schemas** — the in-repo copy at `specification/v0.1.0/` is the default, so no setup is needed when running from a clone of this repo. Set `ACS_SPEC_DIR` only to validate against a different spec checkout.
 
 ## Coverage discipline (the YAML-only rule)
 
@@ -135,17 +132,11 @@ Five tests, ordered from broadest to most specific. Run any/all.
 
 ```bash
 cd "$ACS_REPO/adapters"
-
-python3 -m unittest test_acs_core_conformance
-# Expect: Ran 48 tests / OK   (every ACS-Core MUST)
-
-(cd nat && python3 -m unittest discover tests)
-# Expect: schema + adapter + lifecycle + failure_modes pass; live tests
-# skip cleanly if nvidia-nat-core is not installed.
-
-(cd _common && python3 -m unittest discover tests)
-# Expect: Ran 38 tests / OK   (security + edge cases)
+nat/.nat-venv/bin/python run_conformance.py nat
+# Runs the shared Guardian and _common checks, then NAT's suite.
 ```
+
+Use an interpreter with `nvidia-nat-core` installed. A missing NAT dependency produces an unexpected skip and fails the command.
 
 ### Smoke #2 — `wire.py --check` (CI gate)
 
@@ -173,7 +164,7 @@ Five fully-automated scenarios against the **real `example_guardian.evaluate_ste
 | 4 | HANDSHAKE-ONCE | 3 sequential invocations on the same middleware → exactly 1 `handshake/hello` envelope arrived |
 | 5 | LIFECYCLE | `WORKFLOW_START`/`WORKFLOW_END` pushed through `IntermediateStepManager` → emits `steps/sessionStart` + `steps/userMessage` + `steps/agentResponse` + `steps/sessionEnd` envelopes with the workflow input/output in the payload (the observability backstop must actually backstop) |
 
-The final line is `YOUR NAT INSTALL IS ACS-CONFORMANT` (exit 0) or a per-scenario failure list (exit 1).
+The final line is `ACS-CORE SMOKE PASS (nat)` (exit 0) — a smoke verdict, not a conformance certification — or a per-scenario failure list (exit 1).
 
 Schema validation is against the canonical `request-envelope.json` from `ACS_SPEC_DIR` — adapter ↔ spec, not adapter ↔ test fixture. A drift between adapter and the spec fails this check, not the other way around.
 
@@ -267,7 +258,7 @@ The shared protocol layer is identical: the Guardian sees the same ACS JSON-RPC 
 |---|---|---|
 | `_type` | `acs_guardian` (required) | Registers the middleware via NAT's `register_middleware` decorator. |
 | `guardian_url` | `http://127.0.0.1:8787/acs` | Guardian endpoint. http/https only. |
-| `default_deny` | `false` | Fail-open with audit (§6.4 default). Set `true` for fail-closed. |
+| `default_deny` | `false` | Fail-open with audit (§6.4 default). Set `true` for fail-closed. The ServerHello's `on_decision_failure: deny` also flips it (most-restrictive-wins). Guardian refusals (bad signature, replay, malformed/oversized envelope) always fail closed regardless — input gate blocks, output gate redacts. See spec issue #32. |
 | `timeout_s` | `5.0` | Per-request Guardian round-trip timeout. |
 | `session_id` | (auto, per-process) | UUID; auto-generated and stable for the process lifetime. |
 | `target_function_or_group` | (unset) | Optional metadata label; derives `agent_id` if `ACS_AGENT_ID` env is unset. |
@@ -288,13 +279,13 @@ NAT runs the adapter in-process; there is no per-event subprocess state to persi
 
 ## Conformance status
 
-Honest, MUST-by-MUST against `docs/spec/conformance.md`:
+Honest, item-by-item against `docs/spec/conformance.md` (post-#21 some items are SHOULD/conditional rather than MUST — the row notes say which):
 
 | ACS-Core item | Status |
 |---|---|
 | Handshake (`handshake/hello`) | ✓ on first `pre_invoke`; cached per session in process memory |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema (`test_envelope_schema.py`) |
-| Hook taxonomy (6 minimum) | ✓ all 6: `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. Function hooks from `FunctionMiddleware`; lifecycle hooks from `IntermediateStepManager` subscription. Verified in `test_lifecycle.py`. |
+| Hook taxonomy (Core minimum set) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`. `subagentStart` (Core floor post-#21 for subagent-capable clients) is a documented gap: NAT exposes no distinct spawn boundary at the middleware seam, so the floor is satisfied vacuously — see mapping.md. Function hooks from `FunctionMiddleware`; lifecycle hooks from `IntermediateStepManager` subscription. Verified in `test_lifecycle.py`. |
 | Dispositions | ALLOW / DENY / MODIFY supported on **function-middleware (pre-execution)** hooks (`pre_invoke` for every wrapped function — tools, sub-workflows, LLM, retrievers). ASK/DEFER substituted to DENY at the middleware boundary; deployments wanting pause-and-resume should compose with NAT's HITL middleware (`nat.middleware.hitl`). **Lifecycle hooks from the `IntermediateStepManager` subscription (`steps/sessionStart`, `steps/userMessage`, `steps/agentResponse`, `steps/sessionEnd`) are observation-only** — subscription callbacks cannot veto a NAT event after it fires. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ |
 | Post-tool deny redaction | ✓ `post_invoke` clears `context.output = None` and emits an `ACS_AUDIT` `post_invoke_redacted` event per §6.4 output-redaction gate. (NAT's `InvocationContext` is a strict Pydantic model with `validate_assignment=True` — ad-hoc attributes like `acs_post_invoke_redacted` would crash; downstream consumers MUST read the audit event for the redaction signal, not an extra attribute.) |
@@ -303,7 +294,7 @@ Honest, MUST-by-MUST against `docs/spec/conformance.md`:
 | Baseline integrity (HMAC-SHA256) | ✓ when `ACS_HMAC_SECRET[_FILE]` is set; signed responses verified by adapter (pre_invoke + post_invoke reject SIGNATURE_INVALID) |
 | Decision honoring (§6.4) | ✓ NAT's middleware contract guarantees the function will not execute if `pre_invoke` raises or sets SKIP — verified in `test_live.py` (deny tests assert `executed["count"] == 0`); fail-open emits `ACS_AUDIT` events |
 | `cause` field on every audit event | ✓ `transport_failure`, `adapter_exception`, `response_signature_invalid`, plus 7 JSON-RPC error code → cause mappings (`unsupported_version_response`, `provenance_required_response`, `signature_invalid_response`, `replay_detected_response`, `timestamp_out_of_window_response`, `malformed_envelope_response`, `parse_error_response`) with `guardian_error_response` as the catch-all fallback for unknown codes |
-| Liveness `system/ping` | ✓ Guardian-side |
+| Liveness `system/ping` | ✓ Guardian-side only — the adapter does NOT emit system/ping; liveness is the Guardian answering probes (§13). |
 | `request_id_ref` correlation | ✓ `post_invoke` populates with a deterministic uuid5 derived from session + function + kwargs, linking result to request |
 | **Coverage of every tool call** | ⚠ **opt-in via YAML wiring** — see [Coverage discipline](#coverage-discipline-the-yaml-only-rule) above. `wire.py --check` is the CI gate that makes this enforceable. |
 

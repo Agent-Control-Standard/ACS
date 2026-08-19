@@ -15,7 +15,7 @@ Each Cursor hook event maps to an ACS `steps/*` method. The adapter (`acs_adapte
 | `postToolUse` | `steps/toolCallResult` | Tool result available. |
 | `postToolUseFailure` | `steps/toolCallResult` | Tool failed; treated as a result for ACS purposes. |
 | `subagentStart` | `steps/subagentStart` | |
-| `subagentStop` | `steps/subagentStop` | |
+| `subagentStop` | — not forwarded | Deliberately unmapped (`KNOWN_UNMAPPED` in the adapter): `final_chain_hash` is genuinely unknowable — Cursor maintains no session-chain — and the field is now optional for chain-less frameworks (PR #21), so honest wiring becomes possible and is tracked for the rebase. Until then the event emits an `unmapped_hook_event`-free quiet skip with the reason documented, never a fabricated hash. |
 | `beforeShellExecution` | `steps/toolCallRequest` (tool name = "Shell") | Shell-specific gating; Cursor exposes this distinct from preToolUse. |
 | `afterShellExecution` | `steps/toolCallResult` | |
 | `beforeMCPExecution` | `steps/toolCallRequest` (tool name = "MCP:`server`:`tool`") | MCP tool gating. |
@@ -92,10 +92,10 @@ Cursor's per-hook `failClosed: true` makes Cursor block when the hook crashes, t
 
 The Cursor adapter implements ACS-Core's mandatory floor in the same shape as the Claude Code adapter:
 
-- Handshake: assumed-advertised at the endpoint (production adapter performs `handshake/hello` and caches)
-- Hook taxonomy minimum (6): all covered, plus many additional Cursor events
+- Handshake: `handshake/hello` performed once per session (idempotent disk cache). ServerHello signature-verified, bound to the ClientHello, and its `on_decision_failure` participates in the effective fail posture (most-restrictive-wins with `ACS_DEFAULT_DENY`). Failures negative-cached so a dead Guardian costs one timeout, not one per event.
+- Hook taxonomy minimum: all covered, plus many additional Cursor events. `subagentStop` deliberately unmapped (`final_chain_hash` unknowable — optional per PR #21, wiring tracked for the rebase); unknown events emit an `unmapped_hook_event` audit line rather than going quiet.
 - Dispositions: ALLOW / DENY / ASK supported on permission events; MODIFY supported on `preToolUse`; DEFER → ASK substitution (Cursor has no native defer)
 - SessionContext: session_id sent every request
 - Replay protection: ✓
-- Baseline integrity: deferred to transport layer in this minimal adapter
+- Baseline integrity: HMAC-SHA256 per §10 over the RFC 8785 (JCS) canonical envelope, HKDF per-session key (`ACS_HMAC_SECRET_FILE` / `ACS_HMAC_SECRET`); `rfc8785` is a hard dependency. Responses signature-verified and bound to their request; refusals, binding mismatches, and bad response signatures fail closed regardless of posture (spec issue #32). Unsigned mode is announced with a loud `unsigned_mode` audit event.
 - Decision honoring: ✓ (Cursor enforces the permission verdict; adapter uses exit-2 where Cursor's protocol uses exit code rather than JSON)

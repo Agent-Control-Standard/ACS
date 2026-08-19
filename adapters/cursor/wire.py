@@ -82,6 +82,13 @@ DEFAULT_ADAPTER_PATH = HERE / "acs_adapter.py"
 #   postToolUse        — ACS toolCallResult
 #   afterAgentResponse — ACS agentResponse
 #   sessionEnd         — ACS sessionEnd
+#   subagentStart      — ACS subagentStart (Core floor post-#21 for
+#                        subagent-capable clients; the confused-deputy
+#                        gate). Cursor exposes subagentStart, so the
+#                        default installer MUST wire it — omitting it
+#                        left users following wire.py without the gate
+#                        even though the adapter and hooks.json.example
+#                        supported it (PR #22 sixth review).
 ACS_CORE_HOOKS = [
     "sessionStart",
     "beforeSubmitPrompt",
@@ -89,6 +96,7 @@ ACS_CORE_HOOKS = [
     "postToolUse",
     "afterAgentResponse",
     "sessionEnd",
+    "subagentStart",
 ]
 
 # Hooks whose ACS verdict ACTUALLY GATES the action — the framework
@@ -307,7 +315,7 @@ def validate_inputs(args: argparse.Namespace) -> list[str]:
             warnings.append(
                 f"NOTE: wiring a SUBSET of ACS-Core's minimum hooks. "
                 f"Missing: {sorted(missing)}. ACS-Core conformance requires "
-                f"all 6 ({', '.join(ACS_CORE_HOOKS)}).")
+                f"all {len(ACS_CORE_HOOKS)} ({', '.join(ACS_CORE_HOOKS)}).")
 
     return warnings
 

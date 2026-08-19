@@ -119,7 +119,11 @@
           "description": "JSON-RPC error code. ACS reserves -32000 to -32099 for application errors."
         },
         "message": { "type": "string" },
-        "data": {}
+        "data": {},
+        "signature": {
+          "$ref": "request-envelope.json#/$defs/Signature",
+          "description": "Signature over this error envelope, computed on the canonical input defined in Specification 10 (the JCS canonicalization of the envelope with the signature field removed). Optional in the schema; mandatory under ACS-Core whenever the Guardian can derive the per-session key (i.e., the request carried a resolvable session_id) — 'every request and response carries a signature' includes error responses, since an unsigned spoofable error under a fail-open posture is an allow. Errors emitted before a session_id is resolvable (unparseable body, oversized frame rejected at the HTTP layer) are surfaced as HTTP-level refusals instead. Mirrors the signature placement inside each envelope's container: params for requests, result for decision responses, error here."
+        }
       }
     }
   }

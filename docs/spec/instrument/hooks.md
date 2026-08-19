@@ -233,7 +233,7 @@ Each subagent has its own SessionContext and audit chain; the parent–child rel
 
 Schema: [`hooks/subagent-stop.json`](https://github.com/afogel/ACS_official/blob/dev/specification/v0.1.0/hooks/subagent-stop.json).
 
-**Payload:** `subagent_session_id`, `outcome` (`completed`, `failed`, `cancelled`), the subagent's `final_chain_hash`, optional `summary` of what was returned to the parent. The summary's `provenance` follows the standard monotonicity rule.
+**Payload:** `subagent_session_id`, `outcome` (`completed`, `failed`, `cancelled`), optional `final_chain_hash` (the subagent's chain head at sessionEnd — frameworks that maintain no session-chain MAY omit it rather than fabricate an integrity value; a Guardian MUST treat omission as "chain not maintained", not as an integrity failure), optional `summary` of what was returned to the parent. The summary's `provenance` follows the standard monotonicity rule.
 
 **Decision:** Audit only.
 

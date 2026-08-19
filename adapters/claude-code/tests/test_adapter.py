@@ -95,16 +95,6 @@ class AdapterRoundTrip(unittest.TestCase):
         self.assertEqual(payload["hookSpecificOutput"]["hookEventName"], "PreToolUse")
         self.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "allow")
 
-    def test_safe_bash_allows(self) -> None:
-        rc, out, _ = self._run_adapter(_claude_code_event(
-            "PreToolUse", tool_name="Bash", tool_input={"command": "ls -la"},
-        ))
-        self.assertEqual(rc, 0)
-        payload = json.loads(out)
-        self.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "allow")
-
-    # ----- PreToolUse: deny path -----
-
     def test_destructive_bash_denied(self) -> None:
         rc, out, _ = self._run_adapter(_claude_code_event(
             "PreToolUse", tool_name="Bash", tool_input={"command": "rm -rf /home/user"},

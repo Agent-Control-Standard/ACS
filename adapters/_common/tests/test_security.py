@@ -343,17 +343,6 @@ class Item14_ToolNameCaseInsensitive(unittest.TestCase):
             "steps/toolCallRequest", params,
             "00000000-0000-4000-8000-000000000001", "0" * 64)
 
-    def test_lowercase_shell_destructive_denied(self) -> None:
-        """The exact regression: tool name 'shell' (lowercase) MUST hit
-        the destructive policy branch — discovered when a real Vertex-
-        driven react_agent's `shell` tool ran `rm -rf` and Guardian
-        allowed."""
-        result = self._call("shell", "rm -rf /tmp/x/")
-        self.assertEqual(result.get("decision"), "deny",
-            "REGRESSION: lowercase 'shell' tool with rm -rf MUST be denied; "
-            "the case-sensitive name check let real destructive commands through")
-        self.assertIn("destructive_command", result.get("reason_codes", []))
-
     def test_every_reasonable_casing_denied(self) -> None:
         for name in ("Bash", "BASH", "bash", "Shell", "SHELL", "shell", "ShElL"):
             with self.subTest(tool_name=name):
@@ -434,6 +423,160 @@ class Item15_VerifySignatureRobustToMalformedBase64(unittest.TestCase):
                         f"malformed signature {bad[:30]!r} must verify as False")
         finally:
             os.environ.pop("ACS_HMAC_SECRET", None)
+
+
+class Item16_ResponseRequestBinding(unittest.TestCase):
+    """The per-session HMAC proves a response came from the Guardian;
+    it does NOT prove it answers THIS request. A captured signed ALLOW
+    for a benign `ls` verifies fine when replayed against `rm -rf ~/`
+    (PR #22 review). Binding = JSON-RPC `id` + `result.request_id`."""
+
+    REQ = {"jsonrpc": "2.0", "id": "rpc-1", "method": "steps/toolCallRequest",
+           "params": {"request_id": "11111111-1111-4111-8111-111111111111"}}
+
+    def test_bound_response_accepted(self) -> None:
+        resp = {"jsonrpc": "2.0", "id": "rpc-1",
+                "result": {"request_id": "11111111-1111-4111-8111-111111111111",
+                           "decision": "allow"}}
+        self.assertTrue(acs_common.response_matches_request(self.REQ, resp))
+
+    def test_wrong_jsonrpc_id_rejected(self) -> None:
+        """A replayed response carries the OLD exchange's id."""
+        resp = {"jsonrpc": "2.0", "id": "rpc-OTHER",
+                "result": {"request_id": "11111111-1111-4111-8111-111111111111",
+                           "decision": "allow"}}
+        self.assertFalse(acs_common.response_matches_request(self.REQ, resp))
+
+    def test_wrong_request_id_rejected(self) -> None:
+        resp = {"jsonrpc": "2.0", "id": "rpc-1",
+                "result": {"request_id": "99999999-9999-4999-8999-999999999999",
+                           "decision": "allow"}}
+        self.assertFalse(acs_common.response_matches_request(self.REQ, resp))
+
+    def test_result_missing_request_id_rejected(self) -> None:
+        """response-envelope.json requires request_id on every result;
+        a result without one cannot be bound and must not be trusted."""
+        resp = {"jsonrpc": "2.0", "id": "rpc-1",
+                "result": {"decision": "allow"}}
+        self.assertFalse(acs_common.response_matches_request(self.REQ, resp))
+
+    def test_error_response_binds_by_id_alone(self) -> None:
+        """Error responses carry no result — the JSON-RPC id is the
+        only binding, and it must still match."""
+        ok = {"jsonrpc": "2.0", "id": "rpc-1",
+              "error": {"code": -32005, "message": "replay"}}
+        bad = {"jsonrpc": "2.0", "id": "rpc-2",
+               "error": {"code": -32005, "message": "replay"}}
+        self.assertTrue(acs_common.response_matches_request(self.REQ, ok))
+        self.assertFalse(acs_common.response_matches_request(self.REQ, bad))
+
+
+class Item17_GuardianRefusalClassification(unittest.TestCase):
+    """Refusal codes = the Guardian is ALIVE and REFUSED this envelope.
+    Every one is attacker-reachable (oversize the body, replay the
+    deterministic request_id, strip the signature), so adapters fail
+    closed on them regardless of posture (spec issue #32)."""
+
+    def test_refusal_codes(self) -> None:
+        for code in (-32000, -32004, -32005, -32006, -32600, -32700):
+            with self.subTest(code=code):
+                self.assertTrue(acs_common.is_guardian_refusal(code))
+
+    def test_non_refusal_codes_follow_posture(self) -> None:
+        """Version/negotiation errors and unknowns are decision
+        failures, not refusals — they follow the §6.4 posture."""
+        for code in (None, -32001, -32002, -32003, -32099, 500):
+            with self.subTest(code=code):
+                self.assertFalse(acs_common.is_guardian_refusal(code))
+
+
+class Item18_AuditFileSink(unittest.TestCase):
+    """ACS_AUDIT_FILE gives §6.4's audit half somewhere durable to land
+    — hook-process stderr is collected by nothing in the default
+    configs (PR #22 review)."""
+
+    def test_audit_event_appends_to_file_mode_0600(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            audit_path = os.path.join(d, "audit.log")
+            os.environ["ACS_AUDIT_FILE"] = audit_path
+            try:
+                acs_common.audit_event("test_sink", foo="bar")
+                acs_common.audit_event("test_sink_2", baz=1)
+            finally:
+                os.environ.pop("ACS_AUDIT_FILE", None)
+            content = open(audit_path).read()
+            self.assertIn("test_sink", content)
+            self.assertIn("test_sink_2", content)
+            self.assertEqual(len(content.strip().splitlines()), 2,
+                "each audit_event appends exactly one line")
+            mode = stat.S_IMODE(os.stat(audit_path).st_mode)
+            self.assertEqual(mode, 0o600,
+                f"audit file must be 0600, got {oct(mode)}")
+
+    def test_unwritable_audit_file_does_not_crash_hook_path(self) -> None:
+        os.environ["ACS_AUDIT_FILE"] = "/nonexistent-dir/audit.log"
+        try:
+            acs_common.audit_event("still_works")  # must not raise
+        finally:
+            os.environ.pop("ACS_AUDIT_FILE", None)
+
+
+class Item19_SecretFileUnreadableRaises(unittest.TestCase):
+    """A configured-but-unreadable ACS_HMAC_SECRET_FILE previously
+    downgraded BOTH ends to unsigned silently — turning off the only
+    integrity control ACS-Core mandates with no operator signal
+    (PR #22 review)."""
+
+    def test_missing_secret_file_raises(self) -> None:
+        os.environ["ACS_HMAC_SECRET_FILE"] = "/nonexistent-secret-file"
+        try:
+            with self.assertRaises(acs_common.SecretFileUnreadableError):
+                acs_common.load_hmac_secret()
+        finally:
+            os.environ.pop("ACS_HMAC_SECRET_FILE", None)
+
+    def test_no_secret_at_all_is_still_devmode_empty(self) -> None:
+        """No configuration at all stays dev-mode (b\"\") — only a
+        CONFIGURED-and-broken path is an incident."""
+        os.environ.pop("ACS_HMAC_SECRET_FILE", None)
+        old = os.environ.pop("ACS_HMAC_SECRET", None)
+        try:
+            self.assertEqual(acs_common.load_hmac_secret(), b"")
+        finally:
+            if old is not None:
+                os.environ["ACS_HMAC_SECRET"] = old
+
+
+class Item20_HandshakeNegativeCache(unittest.TestCase):
+    """A dead Guardian previously cost the full handshake timeout on
+    EVERY hook event (measured ~10s/event against a hanging listener;
+    PR #22 review). Failures are now negative-cached for a short TTL."""
+
+    def test_second_failure_is_fast_and_cached(self) -> None:
+        import time as _time
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["ACS_HANDSHAKE_CACHE"] = d
+            # Force module to re-read the cache dir env
+            import importlib
+            importlib.reload(acs_common)
+            try:
+                kw = dict(guardian_url="http://127.0.0.1:1/acs",
+                          session_id="cache-test", agent_id="a",
+                          platform="test",
+                          methods_implemented=["steps/toolCallRequest"],
+                          timeout=2.0)
+                t0 = _time.time()
+                self.assertIsNone(acs_common.ensure_session_handshake(**kw))
+                first = _time.time() - t0
+                t1 = _time.time()
+                self.assertIsNone(acs_common.ensure_session_handshake(**kw))
+                second = _time.time() - t1
+                self.assertLess(second, 0.1,
+                    f"second handshake attempt took {second:.3f}s — the "
+                    f"failure was not negative-cached (first: {first:.3f}s)")
+            finally:
+                os.environ.pop("ACS_HANDSHAKE_CACHE", None)
+                importlib.reload(acs_common)
 
 
 if __name__ == "__main__":

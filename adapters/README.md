@@ -15,18 +15,46 @@ Production deployments swap the policy code in the example Guardian's `evaluate(
 
 Running the Guardian — terminal window, `launchd`, `systemd`, container — is the operator's responsibility. The adapter expects it to be reachable at `$ACS_GUARDIAN_URL`; if it isn't, the §6.4 fail posture applies and an `ACS_AUDIT` event is emitted.
 
-## ACS-Core conformance check
+## ACS v0.1.0 emission-conformance check
 
-One command verifies this stack against the ACS-Core baseline **minus full Wrapped MCP**, which is deferred:
+**What this proves — and what it does not.** This suite proves **emission conformance**: the reference adapters, driven through their real production entry points, emit schema-valid, signed ACS v0.1.0 Core traffic and honor the decisions it tests. It is **not** a requirement-by-requirement audit of every ACS-Core MUST — `docs/spec/conformance.md` and the sections it cites contain far more normative requirements (handshake/negotiation edge cases, full decision semantics, two-sided live payload validation, hook-completeness, Wrapped MCP) than are checked here. A full ACS-Core deployment-conformance claim also spans the Guardian, the framework wiring, and production configuration — not the adapter alone. That larger program is tracked as a separate milestone (requirement ledger + behavioral tests); do not read a green run here as "ACS-Core conformant."
+
+Known limitations kept in view: Cursor's real-framework wiring is a manual GUI procedure; Wrapped MCP is validated for namespace shape only, not full wrapping (its normative status in Core is a pending spec-owner decision).
+
+One authoritative command runs the shared Guardian checks, shared-library tests, and the adapter suites you name. At least one platform is required; there is no implicit run-all default. Name one, two, or all three platforms in any order:
 
 ```bash
 cd adapters
-python -m unittest test_acs_core_conformance
+
+# One platform
+python3 run_conformance.py cursor
+
+# Two platforms
+python3 run_conformance.py claude cursor
+
+# All platforms. Use an interpreter with nvidia-nat-core when NAT is
+# selected, or the NAT suite's skips count as unexpected and fail.
+nat/.nat-venv/bin/python run_conformance.py claude cursor nat
 ```
 
-`test_acs_core_conformance.py` enumerates every ACS-Core MUST from `docs/spec/conformance.md` — handshake, envelope shape, the 6 minimum hooks, all 5 dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline, decision honoring + fail-open audit + audit-cause differentiation, system/ping, and the `protocols/MCP/*` namespace shape. Each test docstring quotes the spec line it falsifies. The suite loads the canonical schemas from `Agent-Control-Standard/ACS` (set `ACS_SPEC_DIR` to point at `specification/v0.1.0/`); schemas missing is a hard FAIL, not a skip — spec validation is non-negotiable. Format checking (`uuid`, `date-time`) is enforced via `rfc3339-validator`.
+`claude-code` is also accepted as an alias for `claude`. Repeating a platform does not run it twice. Guardian and `_common` checks run once for every command, regardless of the platform selection.
 
-**Wrapped MCP caveat.** The conformance suite verifies the wire-format shape of `protocols/MCP/*` (envelope validates, Guardian returns a structured response, no crash), but the reference Guardian does **not** implement full MCP request wrapping — incoming MCP requests are routed through the standard `steps/toolCallRequest` path with the tool name reflecting the MCP method, not as the wrapped `protocols/MCP/*` form. Deployments that need full MCP wrapping must extend the Guardian. This is a documented v0.2 deferral; a green conformance run means "ACS-Core baseline **minus** full Wrapped MCP", not "the whole baseline." See `test_acs_core_conformance.py::Core10_WrappedMcp`.
+It prints every skip by name + reason and fails on any failure **or any _unexpected_ skip** — a skip not on the exact allowlist. The allowlist tolerates only real-framework smoke tests that need an interactive product no runner has (the Cursor GUI, an authenticated `claude` CLI); a dependency-gated test (NAT when `nvidia-nat-core` is installed) that silently skips is a failure, never green. `--strict` additionally fails on the allowlisted skips too, for a fully-provisioned gate.
+
+Under the hood it drives two complementary layers:
+
+**1. Guardian checks** — `python -m unittest test_acs_core_conformance` exercises the Core requirements enumerated in `docs/spec/conformance.md`'s summary (handshake incl. forward-compat + malformed-ClientHello refusal, envelope shape, the minimum hook set, dispositions, rolling chain, replay + skew rejection, HMAC-SHA256 baseline incl. signed errors, decision honoring + fail-open audit + audit-cause differentiation) **plus reference-stack coverage of SHOULD/conditional items** (MODIFY, system/ping, the `protocols/MCP/*` namespace shape). These are the summary-level Core checks, **not** an enumeration of all normative MUST occurrences in the linked sections — the requirement-by-requirement ledger is the separate milestone. A deployment that legitimately omits a SHOULD/conditional item is not non-conformant for failing those specific tests. Each test docstring quotes the spec line it falsifies, and a `CitationGuard` class pins every cited line so spec edits that move or rewrite them turn the suite red.
+
+**2. Emission conformance** — each adapter's `tests/test_emission.py` runs the **production adapter** (the real subprocess for Claude Code / Cursor; the real `pre_invoke` / `post_invoke` / lifecycle-observer middleware for NAT) against a validating **CaptureGuardian** and asserts the *exact bytes it sends* pass the canonical schemas. Two layers of checks:
+
+- *Per-event:* each Core method is emitted exactly once, envelope + payload validate against the canonical schemas, and per-envelope invariants hold — UUID `request_id`, RFC 3339 `timestamp`, `agent_id`/`session_id`/`platform` metadata, the `{value: …}` argument wrapper, and an **independently-recomputed** HMAC-SHA256 signature (a from-scratch HKDF+HMAC+JCS verifier in `capture_guardian.py`, *not* the adapter's own `acs_common` code, so a shared signing+verifying bug can't pass both sides; pinned by a frozen known-answer vector).
+- *Per-session* (`*SequentialSession`, one Guardian + one handshake cache across an ordered sequence): the handshake fires exactly once, all `request_id`s are unique, `toolCallResult.request_id_ref` links back to its `toolCallRequest`, and — the real honesty check — the handshake's advertised `methods_implemented` **equals** the set of methods **actually emitted in the run** (equality, not just subset: catches over- *and* under-advertising), not merely methods that happen to have a schema.
+
+Breaking any adapter's method mapping, envelope/payload field, or signing turns the suite red against the schema files themselves. The oracle is proven non-vacuous by `_common/tests/test_capture_guardian.py` (feed it broken envelopes, assert it flags each defect class + the signature KAT). Schemas load from the in-repo `specification/v0.1.0/` by default (`ACS_SPEC_DIR` overrides); missing schemas are a hard FAIL. Format checking (`uuid`, `date-time`) is enforced via `rfc3339-validator`.
+
+**Where each adapter's emission is actually exercised:** Claude Code and Cursor run headless here and in CI (real subprocess). NAT's emission tests drive the real middleware and require `nvidia-nat-core`; they run in the CI `authoritative` job (which installs it) and `skipUnless` it locally — a skip is never counted as a pass (`run_conformance.py nat` and the CI job both fail on an unexpected NAT skip). Cursor's *end-to-end framework* wiring (real Cursor GUI in the loop) remains a manual procedure in `tests/live_verification.md`; the emission suite proves the adapter, the manual test proves the wiring.
+
+**Wrapped MCP caveat.** The suite verifies the wire-format *shape* of `protocols/MCP/*` only (a harness-built envelope validates, the Guardian returns a structured response, no crash). Nothing here demonstrates real MCP **wrapping**: the adapters flatten MCP onto `steps/toolCallRequest`/`Result` (Cursor's `beforeMCPExecution`, Claude's `mcp__*` tools) rather than emitting the wrapped `protocols/MCP/*` form, and the reference Guardian does not implement intact wrapping, version negotiation, or request/result correlation for it. **Do not read any of this as "we wrap MCP."** Whether Wrapped MCP belongs in ACS-Core at all — vs. generic tool-call collapsing being explicitly conformant — is an unresolved spec-owner decision (tracked in the ACS-Core conformance milestone, #33), not something a green run here settles. See `test_acs_core_conformance.py::Core10_WrappedMcp`.
 
 ## How adapters work
 
@@ -143,7 +171,9 @@ Notice the shape: `acs_version` / `request_id` / `timestamp` / `metadata` live i
 
 **Step 6.** Claude Code reads stdout, sees `permissionDecision: "allow"`, executes the Bash tool. You see `hello` printed.
 
-The whole round-trip is ~10 ms. The agent doesn't know any of this happened.
+**What this costs, measured honestly.** For the shell-spawned adapters (Claude Code, Cursor), the dominant cost is NOT the Guardian round-trip — it's the per-event Python process spawn: interpreter start plus imports. Measured on an M-series MacBook (warm cache, local Guardian): ~60–90 ms per hook event end-to-end, of which the Guardian's policy evaluation is single-digit milliseconds. Your numbers will differ with hardware and Python version; measure with `/usr/bin/time` before quoting any. The first event of a session additionally pays the `handshake/hello` round-trip (cached afterward). NAT's adapter runs in-process and pays no spawn cost — its overhead is the HTTP round-trip alone.
+
+**Degraded-Guardian behavior.** A Guardian that accepts connections but never responds costs one handshake timeout (default 5s, `ACS_HANDSHAKE_TIMEOUT_SECONDS`) on the first event; the failure is then negative-cached (default 30s, `ACS_HANDSHAKE_FAILURE_CACHE_TTL_SECONDS`) so subsequent events fail fast to the deployment's posture instead of hanging per event. **Incident procedure:** set `ACS_DISABLED=1` in the adapter's environment to bypass all hooks immediately (one stderr line per event, no Guardian traffic); unset to re-enable. This is faster and more reversible than editing hook config files per machine mid-incident.
 
 ### DENY path differs only in steps 4–6
 

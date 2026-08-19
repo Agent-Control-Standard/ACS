@@ -7,3 +7,11 @@ nvidia-nat-core==1.7.0
 # wire.py / --check uses ruamel.yaml so YAML round-trips preserve user
 # comments, key order, and formatting (pyyaml strips all three).
 ruamel.yaml>=0.17
+
+# RUNTIME dependency, not just test: envelope signing canonicalizes via
+# RFC 8785 (JCS) and spec §10 permits no alternative canonicalization.
+# acs_common refuses to import without it — a near-JCS fallback diverges
+# on floats and turns a canonicalization mismatch into SIGNATURE_INVALID
+# at the Guardian, which the fail posture converts into a policy bypass
+# (PR #22 review).
+rfc8785>=0.1,<1

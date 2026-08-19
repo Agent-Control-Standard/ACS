@@ -224,7 +224,11 @@ ACS's scope.
 
 ## How to report a finding
 
-Open an issue at `https://github.com/Agent-Control-Standard/ACS` with
-the `security` label, or email the maintainers listed in `CODEOWNERS`.
-Do not include exploit details in a public issue; request a private
-channel first.
+**Do not file public issues for security vulnerabilities.** Use
+GitHub's [private vulnerability reporting](https://github.com/Agent-Control-Standard/ACS/security/advisories/new)
+to disclose privately — the process and response commitment are in
+[`CONTRIBUTING.md` § Reporting Security Issues](../CONTRIBUTING.md#reporting-security-issues).
+(An earlier version of this paragraph said to open a labeled public
+issue, which contradicted CONTRIBUTING.md and pointed at a CODEOWNERS
+file that doesn't exist — a researcher following the nearest
+instruction file would have posted a public zero-day. PR #22 review.)

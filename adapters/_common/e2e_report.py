@@ -33,7 +33,7 @@ class Report:
         report.field("Marker:", marker)
         report.sub("Function executed", ok, "count=1")
         report.finish("allow-path", all_passed)
-        return 0 if report.summary("YOUR INSTALL IS ACS-CONFORMANT") else 1
+        return 0 if report.summary("ACS-CORE SMOKE PASS") else 1
     """
 
     def __init__(self) -> None:
@@ -108,6 +108,16 @@ class Report:
         self.entries.append((title, ok))
 
     def summary(self, success_banner: str, *, width: int = 70) -> bool:
+        """Print the pass/fail summary.
+
+        The banner is scoped to what actually ran: N smoke scenarios.
+        It deliberately does NOT say "conformant" — a handful of live
+        scenarios is not an enumeration of the ACS-Core requirement set;
+        that instrument is `adapters/test_acs_core_conformance.py`.
+        The previous banner ("YOUR X INSTALL IS ACS-CONFORMANT") is the
+        artifact that ends up in a screenshot, and it claimed a
+        certification these scripts never earned (PR #22 review).
+        """
         bar = "═" * width
         passed = sum(1 for _, ok in self.entries if ok)
         total = len(self.entries)
@@ -115,6 +125,8 @@ class Report:
         if passed == total:
             print(f"  Summary: {passed}/{total} scenarios passed — "
                   f"\033[1;32m{success_banner}\033[0m")
+            print("  (smoke test, not a conformance certification — run "
+                  "adapters/test_acs_core_conformance.py for the spec floor)")
         else:
             print(f"  Summary: {passed}/{total} scenarios passed — "
                   f"\033[1;31mFAILURES BELOW\033[0m")

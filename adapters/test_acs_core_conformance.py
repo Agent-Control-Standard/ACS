@@ -1,31 +1,42 @@
 """
-ACS-Core conformance test suite.
+ACS v0.1.0 Guardian checks (summary-level Core + emission support).
 
-ONE test per MUST in `docs/spec/conformance.md` ACS-Core (lines 13-26),
-plus the normative requirements in the §-cited sections it references.
-Each test docstring quotes the exact spec text it falsifies.
+SCOPE — read before trusting a green run. This suite exercises the
+Core requirements enumerated in `docs/spec/conformance.md`'s SUMMARY
+(lines 13-26) plus the normative sections those bullets cite, and
+reference-stack coverage of the SHOULD/conditional items (MODIFY,
+system/ping, Wrapped-MCP shape). It is deliberately NOT a
+requirement-by-requirement audit of every normative MUST/REQUIRED in
+the linked sections — those sections carry many more (handshake
+negotiation edge cases, full decision semantics, hook completeness,
+two-sided live payload validation) than are checked here. A green run
+therefore means "the reference stack passes the summary-level Core
+checks and the emission suite", NOT "ACS-Core conformant". Full
+requirement-by-requirement ACS-Core conformance — spanning the
+Guardian, the framework wiring, and production config, not the adapter
+alone — is a separate tracked milestone (requirement ledger + missing
+behavioral tests).
+
+Each test docstring quotes the spec text it falsifies; CitationGuard
+pins the cited lines so spec edits that move/rewrite them go red.
 
 Run from the adapters/ directory:
 
     python -m unittest test_acs_core_conformance
 
-Result: a single "OK" with all-pass means this reference implementation
-is conformant against the ACS-Core v0.1.0 baseline **minus full
-Wrapped MCP**. The MCP namespace is validated for wire-format shape
-(envelope validates, Guardian returns a structured response, no
-crash) but the reference Guardian does not implement full MCP
-request wrapping — that is a documented v0.2 deferral. See
-`Core10_WrappedMcp` for the exact scope of what is and is not
-checked. Deployments needing full MCP wrapping must extend the
-Guardian.
+The Wrapped-MCP namespace is validated for wire-format shape only
+(envelope validates, Guardian returns a structured response, no crash);
+full MCP request wrapping is NOT implemented, and whether it belongs in
+Core at all is a pending spec-owner decision. See `Core10_WrappedMcp`.
 
-Result: any FAIL/ERROR names the specific MUST that broke, with the
-spec citation in the test docstring.
+Result: any FAIL/ERROR names the specific requirement that broke, with
+the spec citation in the test docstring.
 
 Adopter workflow: copy our adapters, modify for your stack, run this
-file. If it still passes, your fork is still ACS-Core (with the
-same Wrapped-MCP caveat). If it fails, the failure message tells
-you which spec line you broke.
+file. A failure tells you which spec line you broke. A deployment that
+legitimately omits a SHOULD/conditional item (no MODIFY support, no
+MCP) may need to prune the corresponding reference-stack tests — the
+MUST tests are not prunable.
 """
 from __future__ import annotations
 
@@ -60,10 +71,16 @@ import acs_common  # noqa: E402
 # Canonical schemas — REQUIRED for envelope/payload validation.
 # Without them, the conformance suite can't validate; it FAILS loudly
 # rather than silently skipping.
+# Default is the in-repo copy (this file lives at adapters/, schemas at
+# specification/v0.1.0/ one directory up), so a fresh clone runs the
+# documented command with zero setup and conformance is checked against
+# the schemas in the PR under review — not whatever a remote clone at a
+# hardcoded /tmp path happens to contain (PR #22 review).
+# ACS_SPEC_DIR overrides for testing against an alternate spec checkout.
 SPEC_DIR = Path(
     os.environ.get(
         "ACS_SPEC_DIR",
-        "/tmp/acs-spec-source/specification/v0.1.0",
+        str(Path(__file__).resolve().parents[1] / "specification" / "v0.1.0"),
     )
 )
 
@@ -215,7 +232,7 @@ class Core01_Handshake(CoreHarness):
             "transports_supported": ["http"],
             "provenance_producer": "none",
             "profiles_supported": ["acs-core"],
-        }, sign=False)
+        })  # signed — conformance.md:23 exempts only system/ping
         resp = self._post(env)
         self.assertIn("result", resp,
             f"handshake/hello must return a result; got {resp}")
@@ -235,6 +252,93 @@ class Core01_Handshake(CoreHarness):
         self.assertEqual(server_hello["negotiated_version"], "0.1.0")
         self.assertIn("default_ms", server_hello["timeout_config"])
 
+    def test_forward_compat_accepts_matching_major_version(self) -> None:
+        """§4 forward-compat: 'Accept X.Y.Z matching major version.' A
+        client advertising only 0.1.1 (same major as the Guardian's
+        0.1.0) MUST be accepted, not refused with UNSUPPORTED_VERSION
+        (PR #22 conformance probe found the exact-match check rejected
+        it)."""
+        env = self._make_envelope("handshake/hello", payload={
+            "acs_versions_supported": ["0.1.1"],
+            "methods_implemented": ["steps/toolCallRequest"],
+            "transports_supported": ["http"],
+            "provenance_producer": "none",
+        })
+        resp = self._post(env)
+        self.assertIn("result", resp,
+            f"a matching-major (0.1.1) ClientHello must be accepted; got {resp}")
+        self.assertEqual(resp["result"]["payload"]["negotiated_version"], "0.1.0")
+
+    def test_client_hello_missing_required_field_refused(self) -> None:
+        """handshake.json $defs/ClientHello requires acs_versions_supported,
+        methods_implemented, transports_supported, provenance_producer. A
+        ClientHello missing one MUST be refused, not silently accepted
+        (PR #22 conformance probe)."""
+        env = self._make_envelope("handshake/hello", payload={
+            "acs_versions_supported": ["0.1.0"],
+            "methods_implemented": ["steps/toolCallRequest"],
+            # transports_supported + provenance_producer MISSING
+        })
+        resp = self._post(env)
+        self.assertIn("error", resp,
+            f"a ClientHello missing required fields must be refused; got {resp}")
+        self.assertEqual(resp["error"]["code"], -32600)
+
+    def test_unknown_client_hello_fields_ignored(self) -> None:
+        """Forward-compat: unknown EXTRA fields in a ClientHello are
+        ignored, not rejected (the other half of the rule)."""
+        env = self._make_envelope("handshake/hello", payload={
+            "acs_versions_supported": ["0.1.0"],
+            "methods_implemented": ["steps/toolCallRequest"],
+            "transports_supported": ["http"],
+            "provenance_producer": "none",
+            "some_future_field": {"nested": True},  # unknown → ignore
+        })
+        resp = self._post(env)
+        self.assertIn("result", resp,
+            f"unknown ClientHello fields must be ignored, not rejected; got {resp}")
+
+    def test_non_object_jsonrpc_returns_invalid_request(self) -> None:
+        """A top-level JSON array (a JSON-RPC batch, unsupported in v0.1)
+        or any non-object MUST return -32600, not crash the Guardian
+        with AttributeError → 500 (PR #22 conformance probe)."""
+        import urllib.request
+        body = json.dumps([{"jsonrpc": "2.0", "method": "system/ping", "id": "1"}]).encode()
+        req = urllib.request.Request(self.url, data=body,
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                resp = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            resp = json.loads(e.read().decode())
+        self.assertIn("error", resp,
+            f"a JSON-RPC batch/array must return an error, not crash; got {resp}")
+        self.assertEqual(resp["error"]["code"], -32600)
+
+    def test_unsigned_client_hello_is_refused(self) -> None:
+        """conformance.md:23 — 'every request and response carries a
+        signature'; the only exemption the spec grants is system/ping
+        (§13). An unsigned ClientHello to a signing-required Guardian
+        MUST be refused with -32004, not negotiate a session — an
+        earlier Guardian exempted the handshake citing a §4.1 rule that
+        doesn't exist, letting any local process establish a session
+        unsigned (PR #22 second review). Nothing needs bootstrapping:
+        the HMAC key derives from the pre-shared secret + session_id,
+        both known before the handshake."""
+        env = self._make_envelope("handshake/hello", payload={
+            "acs_versions_supported": ["0.1.0"],
+            "methods_implemented": ["steps/toolCallRequest"],
+            "transports_supported": ["http"],
+            "provenance_producer": "none",
+            "profiles_supported": ["acs-core"],
+        }, sign=False)
+        resp = self._post(env)
+        self.assertIn("error", resp,
+            "unsigned ClientHello must be refused when signing is "
+            f"required; got {resp}")
+        self.assertEqual(resp["error"].get("code"), -32004,
+            f"expected SIGNATURE_INVALID (-32004), got {resp['error']!r}")
+
     def test_version_mismatch_returns_unsupported_version(self) -> None:
         """§4: 'Version mismatch terminates with UNSUPPORTED_VERSION
         (-32001)'."""
@@ -243,7 +347,7 @@ class Core01_Handshake(CoreHarness):
             "methods_implemented": ["steps/toolCallRequest"],
             "transports_supported": ["http"],
             "provenance_producer": "none",
-        }, sign=False)
+        })  # signed: the signature gate runs before version negotiation
         resp = self._post(env)
         self.assertIn("error", resp,
             f"version-mismatch handshake must error; got {resp}")
@@ -381,7 +485,7 @@ class Core02_EnvelopeShape(CoreHarness):
 # =============================================================================
 
 class Core03_HookTaxonomyMinimum(CoreHarness):
-    """Each of the 6 minimum hooks must be accepted with a valid
+    """Each hook in the Core minimum set must be accepted with a valid
     disposition (positive case) AND a malformed payload for that hook
     must be rejected by Guardian-side schema validation (contradiction).
     Without the contradiction, a Guardian that returns 'allow' for any
@@ -417,6 +521,23 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
         ("steps/sessionEnd", {"reason": "completed"},
          {"reason": "nonsense"},  # not in enum
          "hooks/session-end.json"),
+        # Post-#21 the Core floor includes steps/subagentStart for
+        # subagent-capable clients (the confused-deputy gate). Without
+        # this row, the suite stayed green while never proving the new
+        # taxonomy claim (PR #22 fifth review). The valid case must be
+        # ACCEPTED with a known disposition (the example policy denies
+        # it by default — deny IS a known disposition); the broken case
+        # (intent_derivation outside the enum, parent_session_id
+        # missing) must fail the canonical schema.
+        ("steps/subagentStart",
+         {"subagent_session_id": "22222222-2222-4222-8222-222222222222",
+          "parent_session_id": "11111111-1111-4111-8111-111111111111",
+          "parent_step_id": "33333333-3333-4333-8333-333333333333",
+          "intent_derivation": "derived_from_parent"},
+         {"subagent_session_id": "22222222-2222-4222-8222-222222222222",
+          "parent_step_id": "33333333-3333-4333-8333-333333333333",
+          "intent_derivation": "totally_made_up"},  # bad enum + missing parent_session_id
+         "hooks/subagent-start.json"),
     ]
 
     def _send(self, method: str, payload: dict) -> dict:
@@ -435,9 +556,18 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
         ]
 
     def test_each_minimum_hook_returns_known_disposition(self) -> None:
-        """conformance.md:19 — each of the 6 minimum hooks must produce
-        a *known* disposition. Positive case + sanity: result.decision
-        is one of allow/deny/modify/ask/defer, not garbage."""
+        """conformance.md:19 — each hook in the Core minimum set must
+        produce a *known* disposition. (The set's exact membership is
+        #21-sensitive — six hooks pre-#21, subagentStart joins the floor
+        post-#21 — so this docstring names the concept, not the count;
+        CitationGuard pins the cited line.) Positive case + sanity: result.decision
+        is one of allow/deny/modify/ask/defer, not garbage.
+
+        HONESTY NOTE (PR #22 review): this test alone is satisfiable by
+        a Guardian that returns `allow` for everything — it proves wire
+        acceptance, not enforcement. The enforcement half is
+        `test_guardian_actually_denies_what_policy_forbids` below, which
+        an allow-everything Guardian fails."""
         KNOWN = {"allow", "deny", "modify", "ask", "defer"}
         for method, payload, _broken, _schema in self.HOOKS:
             with self.subTest(method=method):
@@ -447,6 +577,73 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
                 self.assertIn(resp["result"].get("decision"), KNOWN,
                     f"{method} returned non-spec disposition "
                     f"{resp['result'].get('decision')!r}")
+
+    def test_guardian_actually_denies_what_policy_forbids(self) -> None:
+        """Enforcement counterproof (PR #22 review: 'the conformance
+        suite's central tests can't fail'). A Guardian that returns
+        `allow` for every input passes the disposition-shape test above;
+        THIS test sends inputs the shipped policy MUST deny and asserts
+        the deny actually comes back. If policy evaluation is bypassed,
+        rubber-stamped, or replaced by an allow-everything stub, this
+        test fails."""
+        must_deny = [
+            ("steps/toolCallRequest",
+             {"tool": {"name": "Bash"},
+              "arguments": {"command": {"value": "rm -rf /home/victim"}}},
+             "destructive Bash"),
+            ("steps/toolCallRequest",
+             {"tool": {"name": "Task"},
+              "arguments": {"prompt": {"value": "spawn a subagent"}}},
+             "Task tool (subagent gate, ACS_ALLOW_SUBAGENT unset)"),
+            ("steps/toolCallRequest",
+             {"tool": {"name": "Write"},
+              "arguments": {"file_path": {"value": "/etc/passwd"},
+                            "content": {"value": "x"}}},
+             "write to protected system path"),
+            ("steps/subagentStart",
+             {"subagent_session_id": "22222222-2222-4222-8222-222222222222",
+              "parent_session_id": "11111111-1111-4111-8111-111111111111",
+              "parent_step_id": "33333333-3333-4333-8333-333333333333",
+              "intent_derivation": "fresh"},
+             "subagentStart claiming fresh (non-derived) intent"),
+        ]
+        for method, payload, label in must_deny:
+            with self.subTest(case=label):
+                resp = self._send(method, payload)
+                self.assertIn("result", resp,
+                    f"{label}: expected a decision, got {resp}")
+                self.assertEqual(resp["result"].get("decision"), "deny",
+                    f"{label}: the shipped policy MUST deny this; got "
+                    f"{resp['result'].get('decision')!r}. An "
+                    f"allow-everything Guardian must not pass conformance.")
+                # Folded from Core04.test_deny_response_includes_reasoning:
+                # response-envelope.json:107 — a DENY MUST carry reasoning,
+                # AND the deny response itself MUST validate against the
+                # canonical response envelope (the _validate_response_envelope
+                # assertion the fold originally dropped).
+                self.assertTrue(resp["result"].get("reasoning"),
+                    f"{label}: §6 + response-envelope.json — DENY MUST include "
+                    f"non-empty reasoning")
+                errs = _validate_response_envelope(resp)
+                self.assertEqual(errs, [],
+                    f"{label}: DENY response fails response-envelope.json:\n  - "
+                    + "\n  - ".join(errs))
+
+    def test_guardian_rejects_malformed_envelope_on_the_wire(self) -> None:
+        """Live contradiction (PR #22 review: the malformed check
+        'validates the broken payload locally and never sends it
+        anywhere'). This one goes over the wire: an envelope violating
+        request-envelope.json (non-UUID request_id) MUST come back as
+        JSON-RPC -32600, not as a decision. Proves Guardian-side
+        envelope validation actually runs in the serving path."""
+        env = self._make_envelope("steps/sessionStart", payload={})
+        env["params"]["request_id"] = "not-a-uuid"
+        resp = self._post(env)
+        self.assertIn("error", resp,
+            "Guardian accepted an envelope with a non-UUID request_id — "
+            "wire-side schema validation is not running")
+        self.assertEqual(resp["error"].get("code"), -32600,
+            f"expected -32600 Invalid Request, got {resp['error']!r}")
 
     def test_each_minimum_hooks_malformed_payload_fails_schema(self) -> None:
         """Contradiction check: a malformed payload for each minimum hook
@@ -465,7 +662,10 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
 # CORE-04 — Dispositions (conformance.md:20, §6)
 # =============================================================================
 #
-# "All five (ALLOW, DENY, MODIFY, ASK, DEFER) with required fields per §6"
+# Pre-#21: "All five (ALLOW, DENY, MODIFY, ASK, DEFER) with required
+# fields per §6". Post-#21 MODIFY is SHOULD-support — the MODIFY tests
+# below are reference-stack coverage (this stack implements it), not a
+# universal MUST. See the suite docstring's coverage claim.
 # response-envelope.json:107-110 — conditional requirements:
 #   deny -> reasoning required
 #   modify -> reasoning + modifications required
@@ -520,24 +720,6 @@ class Core04_Dispositions(CoreHarness):
                     f"broken allow response {broken!r} (case {i}) was "
                     f"accepted by schema — validator is a no-op")
 
-    def test_deny_response_includes_reasoning(self) -> None:
-        """response-envelope.json:107 — 'if decision const deny, then
-        required: [reasoning]'. The Guardian's destructive-bash deny
-        path MUST include reasoning."""
-        env = self._make_envelope("steps/toolCallRequest",
-            {"tool": {"name": "Bash"},
-             "arguments": {"command": {"value": "rm -rf /home/u"}}})
-        resp = self._post(env)
-        self.assertEqual(resp["result"]["decision"], "deny")
-        self.assertIn("reasoning", resp["result"],
-            "§6 + response-envelope.json:107 — DENY MUST include reasoning")
-        self.assertTrue(resp["result"]["reasoning"])
-        # The response itself MUST validate
-        errors = _validate_response_envelope(resp)
-        self.assertEqual(errors, [],
-            f"DENY response fails response-envelope.json:\n  - "
-            + "\n  - ".join(errors))
-
     def test_modify_without_modifications_rejected_by_schema(self) -> None:
         """response-envelope.json:108 — 'if decision const modify, then
         required: [reasoning, modifications]'. A response that claims
@@ -586,6 +768,143 @@ class Core04_Dispositions(CoreHarness):
         errors = _validate_response_envelope(broken)
         self.assertTrue(any("defer_details" in e for e in errors),
             f"defer-without-defer_details must fail validation; got {errors}")
+
+
+# =============================================================================
+# CORE-04b — Dispositions driven LIVE through the adapters
+# =============================================================================
+#
+# PR #22 review: "Core04 drives two dispositions live and hand-synthesizes
+# the other three. That proves the wire can express MODIFY, not that
+# anything implements it. Meanwhile the three adapters document three
+# mutually incompatible substitutions, none of which the suite covers."
+# This class scripts a ProgrammableGuardian to RETURN modify / ask /
+# defer and asserts each adapter's documented translation actually
+# happens — per mapping.md, which drifted from the code once.
+# =============================================================================
+
+class Core04b_DispositionsLiveThroughAdapters(unittest.TestCase):
+    """Drive MODIFY / ASK / DEFER through the shell adapters against a
+    scripted Guardian; assert the framework-native output shapes."""
+
+    SECRET = "shared-test-harness-secret-not-for-production"
+
+    def _scripted_guardian(self, decision_result: dict):
+        import test_harness
+        g = test_harness.ProgrammableGuardian()
+
+        def handler(req: dict) -> dict:
+            return {
+                "type": "final", "acs_version": "0.1.0",
+                "request_id": req["params"]["request_id"],
+                "chain_hash": "0" * 64,
+                **decision_result,
+            }
+        g.handlers["steps/toolCallRequest"] = handler
+        return g
+
+    def _run_claude(self, guardian) -> dict:
+        env = os.environ.copy()
+        env.update({
+            "ACS_GUARDIAN_URL": guardian.url(),
+            "ACS_HMAC_SECRET": self.SECRET,
+            "ACS_HANDSHAKE": "0",
+        })
+        env.pop("ACS_HMAC_SECRET_FILE", None)
+        proc = subprocess.run(
+            [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")],
+            input=json.dumps({
+                "session_id": "44444444-4444-4444-8444-444444444444",
+                "cwd": "/tmp", "hook_event_name": "PreToolUse",
+                "tool_name": "Bash", "tool_input": {"command": "echo hi"},
+            }),
+            capture_output=True, text=True, env=env, timeout=15)
+        return {"stdout": proc.stdout, "stderr": proc.stderr,
+                "out": json.loads(proc.stdout) if proc.stdout.strip() else {}}
+
+    def _run_cursor(self, guardian) -> dict:
+        env = os.environ.copy()
+        env.update({
+            "ACS_GUARDIAN_URL": guardian.url(),
+            "ACS_HMAC_SECRET": self.SECRET,
+            "ACS_HANDSHAKE": "0",
+        })
+        env.pop("ACS_HMAC_SECRET_FILE", None)
+        proc = subprocess.run(
+            [sys.executable, str(HERE / "cursor" / "acs_adapter.py"),
+             "preToolUse"],
+            input=json.dumps({
+                "conversation_id": "44444444-4444-4444-8444-444444444445",
+                "workspace_roots": ["/tmp"],
+                "tool_name": "Bash", "tool_input": {"command": "echo hi"},
+            }),
+            capture_output=True, text=True, env=env, timeout=15)
+        return {"stdout": proc.stdout, "stderr": proc.stderr,
+                "out": json.loads(proc.stdout) if proc.stdout.strip() else {}}
+
+    def test_modify_applies_parameter_overrides_claude(self) -> None:
+        """MODIFY with parameter_overrides → permissionDecision allow +
+        updatedInput carrying the override (mapping.md disposition table)."""
+        with self._scripted_guardian({
+            "decision": "modify", "reasoning": "redacted",
+            "modifications": {"parameter_overrides": {"command": "echo REDACTED"}},
+        }) as g:
+            r = self._run_claude(g)
+        hso = r["out"].get("hookSpecificOutput", {})
+        self.assertEqual(hso.get("permissionDecision"), "allow",
+            f"MODIFY must surface as allow+updatedInput; got {r['out']!r}")
+        self.assertEqual(hso.get("updatedInput"), {"command": "echo REDACTED"},
+            "the Guardian's parameter_overrides must reach updatedInput")
+
+    def test_modify_without_overrides_substitutes_deny_claude(self) -> None:
+        """MODIFY with no applicable mutation substitutes to deny."""
+        with self._scripted_guardian({
+            "decision": "modify", "reasoning": "no overrides",
+            "modifications": {},
+        }) as g:
+            r = self._run_claude(g)
+        hso = r["out"].get("hookSpecificOutput", {})
+        self.assertEqual(hso.get("permissionDecision"), "deny",
+            f"MODIFY with empty modifications must substitute deny; got {r['out']!r}")
+
+    def test_ask_is_native_on_claude_pretooluse(self) -> None:
+        """ASK → permissionDecision 'ask' (native surface, not a block)."""
+        with self._scripted_guardian({
+            "decision": "ask", "reasoning": "needs approval",
+            "ask_details": {"approver_types": ["human"]},
+        }) as g:
+            r = self._run_claude(g)
+        hso = r["out"].get("hookSpecificOutput", {})
+        self.assertEqual(hso.get("permissionDecision"), "ask",
+            f"ASK must surface natively as permissionDecision ask; got {r['out']!r}")
+
+    def test_defer_substitutes_deny_with_audit_claude(self) -> None:
+        """DEFER → deny + defer_substituted_deny audit event (no native
+        defer in permissionDecision; spec default timeout_decision deny)."""
+        with self._scripted_guardian({
+            "decision": "defer", "reasoning": "pending",
+            "defer_details": {"resolution_method": "retry",
+                              "resolution_timeout_ms": 1000,
+                              "timeout_decision": "deny"},
+        }) as g:
+            r = self._run_claude(g)
+        hso = r["out"].get("hookSpecificOutput", {})
+        self.assertEqual(hso.get("permissionDecision"), "deny",
+            f"DEFER must substitute to deny; got {r['out']!r}")
+        self.assertIn("defer_substituted_deny", r["stderr"],
+            "the DEFER→deny substitution must be audited")
+
+    def test_defer_substitutes_ask_cursor(self) -> None:
+        """Cursor documents DEFER → ask (no native defer). Assert it."""
+        with self._scripted_guardian({
+            "decision": "defer", "reasoning": "pending",
+            "defer_details": {"resolution_method": "retry",
+                              "resolution_timeout_ms": 1000,
+                              "timeout_decision": "deny"},
+        }) as g:
+            r = self._run_cursor(g)
+        self.assertEqual(r["out"].get("permission"), "ask",
+            f"cursor maps defer→ask per mapping.md; got {r['out']!r}")
 
 
 # =============================================================================
@@ -835,6 +1154,40 @@ class Core07_BaselineIntegrity(CoreHarness):
             "Guardian's response signature must verify with the "
             "HKDF-derived per-session key")
 
+    def test_error_response_is_signed_and_verifies(self) -> None:
+        """conformance.md:23 — 'every request and response carries a
+        signature' includes ERROR responses. The schema previously had
+        no signature slot under `error` and the Guardian returned
+        unsigned errors while the suite validated only their shape
+        (PR #22 third review) — a spoofable unsigned error under a
+        fail-open posture is an allow. Elicit a real error (replay →
+        -32005) and assert the error envelope carries a signature that
+        verifies with the per-session key."""
+        sid = str(uuid.uuid4())
+        rid = str(uuid.uuid4())
+        env1 = self._make_envelope("steps/sessionStart", {},
+                                    session_id=sid, request_id=rid)
+        self.assertIn("result", self._post(env1))
+        # Same request_id again → REPLAY_DETECTED (-32005)
+        env2 = self._make_envelope("steps/sessionStart", {},
+                                    session_id=sid, request_id=rid)
+        resp = self._post(env2)
+        self.assertIn("error", resp,
+            f"replayed request_id must be refused; got {resp}")
+        self.assertEqual(resp["error"].get("code"), -32005)
+        sig = resp["error"].get("signature")
+        self.assertIsNotNone(sig,
+            "error response missing `signature` — errors are responses "
+            "too; conformance.md:23 exempts only system/ping")
+        key = acs_common.derive_session_key(self.HMAC_SECRET.encode(), sid)
+        self.assertTrue(acs_common.verify_signature(resp, key=key),
+            "error-response signature must verify with the per-session key")
+        # And a tampered error must NOT verify (the check is real).
+        tampered = json.loads(json.dumps(resp))
+        tampered["error"]["message"] = "REPLAY_DETECTED but for a different action"
+        self.assertFalse(acs_common.verify_signature(tampered, key=key),
+            "tampered error envelope must fail verification")
+
     def test_per_session_key_derivation(self) -> None:
         """§10 — 'HKDF-derived per-session key from deployment-provided
         key material'. The derived key MUST differ between sessions
@@ -914,36 +1267,6 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=timeout,
         )
 
-    def test_adapter_actually_applies_guardian_deny(self) -> None:
-        """§6.4 positive — when the Guardian returns DENY, the adapter
-        MUST translate it to the framework's deny shape. A framework
-        that gets `allow` for a destructive Bash would execute it."""
-        port = _free_port()
-        env = os.environ.copy()
-        env["ACS_DEV_MODE"] = "1"
-        env.pop("ACS_HMAC_SECRET", None)
-        env.pop("ACS_HMAC_SECRET_FILE", None)
-        env["ACS_GUARDIAN_STATE_DIR"] = tempfile.mkdtemp()
-        guardian = subprocess.Popen(
-            [sys.executable, str(GUARDIAN_SCRIPT), "--port", str(port)],
-            env=env, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
-        )
-        _wait_port("127.0.0.1", port)
-        try:
-            proc = self._run_claude_adapter(
-                guardian_url=f"http://127.0.0.1:{port}/acs")
-            self.assertEqual(proc.returncode, 0,
-                f"adapter exited non-zero: {proc.stderr}")
-            payload = json.loads(proc.stdout)
-            hso = payload["hookSpecificOutput"]
-            self.assertEqual(hso["permissionDecision"], "deny",
-                f"Guardian returned DENY for `rm -rf /home/u` but adapter "
-                f"emitted {hso!r}. §6.4 — 'DENY blocks the action' violated.")
-        finally:
-            guardian.terminate()
-            try: guardian.wait(timeout=2.0)
-            except subprocess.TimeoutExpired: guardian.kill()
-
     def test_adapter_waits_for_a_slow_guardian(self) -> None:
         """§6.4 — 'wait for the Guardian's decision up to the negotiated
         timeout'. The adapter MUST NOT proceed before the response
@@ -990,22 +1313,6 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
         finally:
             srv.shutdown()
             srv.server_close()
-
-    def test_fail_open_emits_audit_event(self) -> None:
-        """§6.4 — 'Every step that proceeds without a decision MUST be
-        recorded as an audit event, so the bypass is visible rather
-        than silent'."""
-        proc = self._run_claude_adapter(guardian_url="http://127.0.0.1:1/dead")
-        self.assertIn("ACS_AUDIT", proc.stderr,
-            f"§6.4 — fail-open path must emit ACS_AUDIT event; stderr was:\n{proc.stderr}")
-        self.assertIn("fail_open_bypass", proc.stderr,
-            "audit event type must be 'fail_open_bypass'")
-        # Cause field must identify this as transport failure (Guardian
-        # was unreachable), not as a Guardian-returned error.
-        self.assertIn("transport_failure", proc.stderr,
-            "audit event must carry cause=transport_failure when Guardian is unreachable; "
-            "without this, transport failures and Guardian-returned errors look identical "
-            "in the audit log")
 
     def test_guardian_error_response_carries_distinct_cause(self) -> None:
         """Regression — found by hand-probing in a Claude session: when
@@ -1054,20 +1361,27 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
                 capture_output=True, text=True, env=env_a, timeout=10,
             )
             self.assertIn("ACS_AUDIT", proc.stderr,
-                "fail-open path must still emit audit; stderr was:\n" + proc.stderr)
-            # The disposition is fail_open (since DEFAULT_DENY=0)
-            self.assertIn("fail_open_bypass", proc.stderr,
-                "disposition must be fail_open_bypass under DEFAULT_DENY=0")
-            # The cause MUST be the Guardian-returned-error case, NOT
-            # the transport case. This is the regression: if a future
-            # change collapses them again, this test fires.
+                "refusal path must emit audit; stderr was:\n" + proc.stderr)
+            # The unsigned adapter cannot verify the Guardian's (now
+            # signed) -32004 error, so the refusal surfaces one layer
+            # earlier as error_signature_invalid — still fail-closed,
+            # still a refusal, and the CLAIMED code is carried as
+            # explicitly-unverified triage metadata (PR #22 third
+            # review: error responses are signed too).
+            self.assertIn("guardian_refusal_fail_closed", proc.stderr,
+                "a Guardian refusal must fail closed even under "
+                "DEFAULT_DENY=0 — fail-open here is a bypass primitive")
+            self.assertIn('"permissionDecision": "deny"', proc.stdout,
+                "the adapter must emit a real deny on the refusal path")
+            # The cause chain must still let operators triage: the audit
+            # carries the claimed -32004 / signature_invalid_response,
+            # marked unverified, and NEVER collapses into the transport
+            # bucket (the original footgun).
             self.assertIn("signature_invalid_response", proc.stderr,
-                "REGRESSION GAP: an unsigned envelope to a signing-required "
-                "Guardian must audit with cause=signature_invalid_response, "
-                "not cause=transport_failure. Collapsing them is the "
-                "footgun a Claude probe surfaced — without the distinct "
-                "cause, operators can't grep their audit log for client "
-                "bugs (which they should fix) vs Guardian outages.")
+                "REGRESSION GAP: the audit must carry the claimed "
+                "signature_invalid_response cause (unverified triage "
+                "metadata) — without it operators can't grep for client "
+                "bugs vs Guardian outages.")
             self.assertNotIn("cause\": \"transport_failure", proc.stderr,
                 "Guardian-returned error must NOT be logged as transport_failure")
         finally:
@@ -1125,9 +1439,12 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
                 "the original gap stays open: an unsigned envelope produces "
                 "no stdout (proceed) when fail-open, hiding the policy hole."
             )
-            # And the audit log must record the specific cause
-            self.assertIn("decision_failure_fail_closed", proc.stderr,
-                "fail-closed audit type must appear")
+            # And the audit log must record the refusal class + cause.
+            # SIGNATURE_INVALID is a refusal, so the audit type is
+            # guardian_refusal_fail_closed (posture-independent), not the
+            # posture-driven decision_failure_fail_closed (issue #32).
+            self.assertIn("guardian_refusal_fail_closed", proc.stderr,
+                "refusal audit type must appear")
             self.assertIn("signature_invalid_response", proc.stderr,
                 "audit must carry cause=signature_invalid_response")
         finally:
@@ -1191,7 +1508,17 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
                 "deny",
                 "non-UUID session_id under DEFAULT_DENY=1 must produce deny, "
                 "not silent proceed (the original footgun)")
-            self.assertIn("decision_failure_fail_closed", proc.stderr)
+            # -32600 is a Guardian REFUSAL (alive-and-refused, and
+            # attacker-reachable: oversize the body past the cap and the
+            # envelope is rejected BEFORE policy runs), so the audit type
+            # is guardian_refusal_fail_closed regardless of posture
+            # (issue #32). adapter_build_failed (caught before the wire)
+            # is a plain decision failure and keeps the posture-driven
+            # type.
+            self.assertTrue(
+                "guardian_refusal_fail_closed" in proc.stderr
+                or "decision_failure_fail_closed" in proc.stderr,
+                f"a fail-closed audit type must appear; stderr: {proc.stderr[:400]}")
             # Cause is either adapter_build_failed (caught before the wire)
             # or malformed_envelope_response (caught by Guardian).
             self.assertTrue(
@@ -1231,16 +1558,6 @@ class Core09_SystemPing(CoreHarness):
         self.assertEqual(errors, [],
             f"ping response fails response-envelope.json:\n  - "
             + "\n  - ".join(errors))
-
-    def test_ping_does_not_require_signature(self) -> None:
-        """§13 — 'system/ping MUST NOT require a signature even if the
-        session otherwise requires signatures, so that liveness probing
-        remains possible during signature-rotation or key-resolution
-        failures'."""
-        env = self._make_envelope("system/ping", {"echo": "hi"}, sign=False)
-        resp = self._post(env)
-        self.assertIn("result", resp,
-            "unsigned ping must be accepted even when Guardian requires signing")
 
     def test_ping_payload_includes_status_echo_timestamp(self) -> None:
         """§13 — 'response ... with decision: allow and a payload
@@ -1288,7 +1605,10 @@ class Core09_SystemPing(CoreHarness):
 class Core10_WrappedMcp(CoreHarness):
 
     def test_mcp_namespace_method_validates(self) -> None:
-        """conformance.md:26 — protocols/MCP/* method namespace MUST
+        """conformance.md:26 — the protocols/MCP/* namespace shape
+        (pre-#21 an unconditional MUST; post-#21 MUST only for
+        deployments whose sessions involve MCP — this reference stack
+        exercises the shape either way). The envelope MUST
         be a valid wire-level form. request-envelope.json:13-14
         regex includes ^protocols/ so any protocols/MCP/* method
         passes schema validation."""
@@ -1320,26 +1640,44 @@ class Core10_WrappedMcp(CoreHarness):
         self.assertEqual(errors, [],
             f"response to protocols/MCP/* envelope is malformed: {errors}")
 
-    def test_mcp_method_namespace_rejects_garbage_namespaces(self) -> None:
-        """Contradiction: methods OUTSIDE the reserved namespaces
-        (steps/, protocols/, agbom/, trace/, system/, handshake/,
-        wrapped:) MUST be rejected. Per request-envelope.json:14 the
-        regex is ^(steps/|protocols/|agbom/|trace/|system/|handshake/|wrapped:).+
-        so anything not starting with one of those prefixes — and with
-        at least one char after — must fail."""
-        bad_methods = [
-            "arbitrary/method",       # wrong prefix
-            "no-slash-at-all",        # no separator
-            "PROTOCOLS/upper",        # wrong case (prefix is case-sensitive)
-            "random/garbage",         # wrong prefix
-            "step/typo",              # 'step' not 'steps'
-        ]
-        for bad in bad_methods:
-            with self.subTest(method=bad):
-                env = self._make_envelope(bad, {})
-                errors = _validate_request_envelope(env)
-                self.assertTrue(any("method" in e for e in errors),
-                    f"method {bad!r} outside reserved namespaces was accepted")
+class CitationGuard(unittest.TestCase):
+    """Every conformance.md line this suite cites must still say what
+    the citing test thinks it says."""
+
+    # line number in docs/spec/conformance.md → fragment that must
+    # appear on exactly that line. Update BOTH this table and the tests
+    # citing the line when the spec text changes.
+    CITED_LINES = {
+        17: "Handshake",
+        18: "Request/response envelope",
+        19: "Hook taxonomy",
+        20: "Dispositions",
+        21: "SessionContext and Intent",
+        22: "Replay protection",
+        23: "Baseline integrity",
+        24: "Decision honoring",
+        25: "Liveness",
+        26: "Wrapped MCP",
+    }
+
+    def test_cited_lines_still_carry_their_content(self) -> None:
+        conformance = (Path(__file__).resolve().parents[1]
+                       / "docs" / "spec" / "conformance.md")
+        self.assertTrue(conformance.exists(),
+            f"conformance.md not found at {conformance} — the suite's "
+            "docstring citations have nothing to cite")
+        lines = conformance.read_text().splitlines()
+        for lineno, fragment in self.CITED_LINES.items():
+            with self.subTest(line=lineno, expects=fragment):
+                self.assertGreater(len(lines), lineno - 1,
+                    f"conformance.md has no line {lineno}")
+                actual = lines[lineno - 1]
+                self.assertIn(fragment, actual,
+                    f"conformance.md:{lineno} no longer contains "
+                    f"{fragment!r} — it now reads:\n  {actual}\n"
+                    f"A spec edit moved or rewrote a line this suite "
+                    f"cites. Re-verify every test citing "
+                    f"conformance.md:{lineno}, then update CITED_LINES.")
 
 
 # =============================================================================

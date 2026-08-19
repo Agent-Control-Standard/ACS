@@ -60,15 +60,41 @@ from typing import Any, Optional
 
 # Bootstrap shared helpers from sibling adapters/_common/
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
+# Version stamp: distribution is copy-paste, so a defect is only scopeable
+# if adopters can answer "what version do you run?" (PR #22 review).
+# Bump on EVERY behavior change to this file. Carried in request metadata.
+ADAPTER_VERSION = "0.1.1"
+
 from acs_common import (  # noqa: E402
+    MAX_REQUEST_BODY_BYTES,
     audit_event,
     ensure_session_handshake,
     guardian_error_cause,
+    is_guardian_refusal,
     iso8601_now as _common_iso8601_now,
+    response_matches_request,
     sign_envelope,
     validate_guardian_url,
     verify_signature,
 )
+
+
+class RequestTooLargeError(Exception):
+    """Serialized envelope exceeds the Guardian's body cap. Checked
+    adapter-side BEFORE the POST — an oversized envelope is attacker-
+    constructable and its HTTP 413 / mid-read reset previously fell to
+    the fail-open posture as transport_failure (PR #22 second review)."""
+
+
+class GuardianHTTPRefusalError(Exception):
+    """Guardian answered non-2xx: alive and refusing at the HTTP layer.
+    urllib raises HTTPError before the JSON-RPC error body is parsed,
+    so this was bucketed as transport_failure → fail-open."""
+
+    def __init__(self, status: int, jsonrpc_error: dict | None):
+        self.status = status
+        self.jsonrpc_error = jsonrpc_error or {}
+        super().__init__(f"HTTP {status}")
 
 try:
     from nat.middleware.function_middleware import FunctionMiddleware
@@ -421,14 +447,24 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         # flag as the primary guard (above). The disk cache in
         # ensure_session_handshake is the fallback that also makes
         # things idempotent across process restarts.
-        ensure_session_handshake(
+        server_hello = ensure_session_handshake(
             guardian_url=self._config.guardian_url,
             session_id=self._session_id,
             agent_id=self._agent_id,
             platform="nat",
             methods_implemented=methods,
         )
+        # §6.4: the fail posture is declared in the ServerHello. Honor it
+        # most-restrictive-wins with the workflow.yml default_deny (the
+        # ServerHello was previously fetched and never read — PR #22
+        # review).
+        if server_hello and server_hello.get("on_decision_failure") == "deny":
+            self._server_deny = True
         self._handshake_done = True
+
+    def _effective_default_deny(self) -> bool:
+        return bool(self._config.default_deny or
+                    getattr(self, "_server_deny", False))
 
     def _ensure_lifecycle_subscribed(self) -> None:
         """Subscribe to NAT's IntermediateStepManager so workflow-boundary
@@ -580,6 +616,10 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
 
     async def pre_invoke(self, context):
         """Gate the function call. Block via raising or InvocationAction.SKIP; modify args in place."""
+        if os.environ.get("ACS_DISABLED") == "1":
+            # Incident kill switch: pass through with no Guardian traffic.
+            sys.stderr.write("acs-adapter: ACS_DISABLED=1 — pre_invoke bypassed\n")
+            return None
         self._ensure_handshake()
         self._ensure_lifecycle_subscribed()
         correlation_id = self._correlation_request_id(context)
@@ -591,7 +631,25 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 request_id=correlation_id,
             )
             response = self._call_guardian(request)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        except RequestTooLargeError as e:
+            audit_event("guardian_refusal_fail_closed",
+                        cause="request_exceeds_max_payload",
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest",
+                        body_bytes=e.args[0])
+            return self._block(context, "envelope exceeds Guardian body cap")
+        except GuardianHTTPRefusalError as e:
+            code = e.jsonrpc_error.get("code")
+            cause = (guardian_error_cause(code) if code is not None
+                     else f"http_{e.status}_refusal")
+            audit_event("guardian_refusal_fail_closed",
+                        cause=cause, http_status=e.status,
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest",
+                        error=e.jsonrpc_error.get("message", ""))
+            return self._block(
+                context, f"Guardian refused at HTTP layer ({e.status})")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
             return self._handle_decision_failure(
                 context, "steps/toolCallRequest",
                 cause="transport_failure", error=str(e),
@@ -602,31 +660,65 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 cause="adapter_exception", error=str(e),
                 deny_msg=f"adapter error: {e}")
 
+        # Bind the response to THIS request before anything else — the
+        # per-session HMAC proves origin, not correspondence; a captured
+        # signed ALLOW for a benign call verifies fine when replayed
+        # against a destructive one (PR #22 review). Always fail closed.
+        if not response_matches_request(request, response or {}):
+            audit_event("guardian_refusal_fail_closed",
+                        cause="response_binding_mismatch",
+                        session_id=self._session_id,
+                        method="steps/toolCallRequest")
+            return self._block(context, "response not bound to request")
+
         # Guardian returned a JSON-RPC error response (replay detected,
         # signature invalid, timestamp skew, malformed envelope, …).
-        # Distinct from transport failure: operator triage needs the
-        # specific cause (clock skew vs adapter bug vs duplicate id).
+        # Refusal codes mean the Guardian is ALIVE and REFUSED — every
+        # one is attacker-reachable (oversize the body, replay the
+        # deterministic request_id, strip the signature), so they fail
+        # closed regardless of posture instead of becoming a policy
+        # bypass primitive (PR #22 review). Non-refusal errors follow
+        # the §6.4 posture via _handle_decision_failure.
         err = (response or {}).get("error")
         if err is not None:
+            # Error responses are signed too — a spoofable unsigned
+            # error under a fail-open posture is an allow (PR #22
+            # third review). Unverifiable error → fail closed.
+            if not verify_signature(response, session_id=self._session_id):
+                audit_event("guardian_refusal_fail_closed",
+                            cause="error_signature_invalid",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest",
+                            # UNVERIFIED — for triage only.
+                            claimed_error_code=err.get("code"),
+                            claimed_cause=guardian_error_cause(err.get("code")))
+                return self._block(context, "error response signature invalid")
+            code = err.get("code")
+            if is_guardian_refusal(code):
+                audit_event("guardian_refusal_fail_closed",
+                            cause=guardian_error_cause(code),
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest",
+                            jsonrpc_code=code,
+                            error=err.get("message", ""))
+                return self._block(
+                    context,
+                    f"Guardian refused envelope: {err.get('message','')}")
             return self._handle_decision_failure(
                 context, "steps/toolCallRequest",
-                cause=guardian_error_cause(err.get("code")),
+                cause=guardian_error_cause(code),
                 error=err.get("message", ""),
-                jsonrpc_code=err.get("code"),
+                jsonrpc_code=code,
                 deny_msg=f"Guardian rejected envelope: {err.get('message','')}")
 
+        # An invalid signature on a well-formed response is spoofing or
+        # key mismatch — fail closed, never posture (PR #22 review).
         if not verify_signature(response, session_id=self._session_id):
-            if self._config.default_deny:
-                audit_event("decision_failure_fail_closed",
-                            cause="response_signature_invalid",
-                            session_id=self._session_id,
-                            method="steps/toolCallRequest")
-                return self._block(context, "response signature invalid")
-            audit_event("fail_open_bypass",
+            audit_event("guardian_refusal_fail_closed",
                         cause="response_signature_invalid",
                         session_id=self._session_id,
                         method="steps/toolCallRequest")
-            return None
+            return self._block(context, "response signature invalid")
 
         result = (response or {}).get("result", {})
         decision = (result.get("decision") or "").lower()
@@ -649,8 +741,14 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             # should compose with NAT's HITL middleware.
             return self._block(context, f"{decision}: {reasoning}")
 
-        # Unknown disposition: fail posture
-        if self._config.default_deny:
+        # Unknown disposition: ALWAYS audited (§6.4 — every step that
+        # proceeds without a decision MUST be recorded), then posture.
+        audit_event("unknown_disposition",
+                    disposition=decision or "(missing)",
+                    session_id=self._session_id,
+                    method="steps/toolCallRequest",
+                    posture="deny" if self._effective_default_deny() else "proceed")
+        if self._effective_default_deny():
             return self._block(context, f"unknown disposition: {decision}")
         return None
 
@@ -665,6 +763,9 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
           output. This matches Specification §6.4's output-redaction gate.
         - unknown: respect default_deny — drop output if true.
         """
+        if os.environ.get("ACS_DISABLED") == "1":
+            sys.stderr.write("acs-adapter: ACS_DISABLED=1 — post_invoke bypassed\n")
+            return None
         # request_id_ref points at the originating toolCallRequest so the
         # Guardian can correlate result with request (tool-call-result.json:19-23).
         correlation_id = self._correlation_request_id(context)
@@ -677,38 +778,53 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 request_id_ref=correlation_id,
             )
             response = self._call_guardian(request)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
-            audit_event("post_invoke_unreachable",
-                        cause="transport_failure",
-                        session_id=self._session_id,
-                        method="steps/toolCallResult",
-                        error=str(e))
-            return None
+        except RequestTooLargeError as e:
+            return self._post_invoke_refusal(
+                context, cause="request_exceeds_max_payload",
+                body_bytes=e.args[0])
+        except GuardianHTTPRefusalError as e:
+            code = e.jsonrpc_error.get("code")
+            cause = (guardian_error_cause(code) if code is not None
+                     else f"http_{e.status}_refusal")
+            return self._post_invoke_refusal(
+                context, cause=cause, http_status=e.status,
+                error=e.jsonrpc_error.get("message", ""))
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return self._post_invoke_failure(
+                context, cause="transport_failure", error=str(e))
         except Exception as e:  # noqa: BLE001
-            audit_event("post_invoke_unreachable",
-                        cause="adapter_exception",
-                        session_id=self._session_id,
-                        method="steps/toolCallResult",
-                        error=str(e))
-            return None
+            return self._post_invoke_failure(
+                context, cause="adapter_exception", error=str(e))
 
-        # Same JSON-RPC error response distinction as pre_invoke.
+        # Response binding — same rationale as pre_invoke; a mis-bound
+        # response is attacker-shaped, so the output is redacted
+        # regardless of posture.
+        if not response_matches_request(request, response or {}):
+            return self._post_invoke_refusal(
+                context, cause="response_binding_mismatch")
+
+        # Same JSON-RPC error distinction as pre_invoke: refusal codes
+        # (alive-and-refused, attacker-reachable) redact regardless of
+        # posture; other errors follow the posture.
         err = (response or {}).get("error")
         if err is not None:
-            audit_event("post_invoke_unreachable",
-                        cause=guardian_error_cause(err.get("code")),
-                        session_id=self._session_id,
-                        method="steps/toolCallResult",
-                        jsonrpc_code=err.get("code"),
-                        error=err.get("message", ""))
-            return None
+            if not verify_signature(response, session_id=self._session_id):
+                return self._post_invoke_refusal(
+                    context, cause="error_signature_invalid",
+                    claimed_error_code=err.get("code"),
+                    claimed_cause=guardian_error_cause(err.get("code")))
+            code = err.get("code")
+            if is_guardian_refusal(code):
+                return self._post_invoke_refusal(
+                    context, cause=guardian_error_cause(code),
+                    jsonrpc_code=code, error=err.get("message", ""))
+            return self._post_invoke_failure(
+                context, cause=guardian_error_cause(code),
+                jsonrpc_code=code, error=err.get("message", ""))
 
         if not verify_signature(response, session_id=self._session_id):
-            audit_event("post_invoke_signature_invalid",
-                        cause="response_signature_invalid",
-                        session_id=self._session_id,
-                        method="steps/toolCallResult")
-            return None
+            return self._post_invoke_refusal(
+                context, cause="response_signature_invalid")
 
         result = (response or {}).get("result", {})
         decision = (result.get("decision") or "").lower()
@@ -736,17 +852,54 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             if modified_content is not None:
                 context.output = modified_content
                 return context
-        if decision not in KNOWN_DECISIONS and self._config.default_deny:
-            _redact_output(context)
-            audit_event("post_invoke_redacted",
-                        cause="unknown_disposition_default_deny",
+        if decision not in KNOWN_DECISIONS:
+            # ALWAYS audited (§6.4), posture decides redaction.
+            audit_event("unknown_disposition",
+                        disposition=decision or "(missing)",
                         session_id=self._session_id,
                         method="steps/toolCallResult",
-                        decision=decision)
-            return context
+                        posture=("deny" if self._effective_default_deny()
+                                 else "proceed"))
+            if self._effective_default_deny():
+                _redact_output(context)
+                audit_event("post_invoke_redacted",
+                            cause="unknown_disposition_default_deny",
+                            session_id=self._session_id,
+                            method="steps/toolCallResult",
+                            decision=decision)
+                return context
         return None
 
     # ----- helpers -----
+
+    def _post_invoke_failure(self, context, *, cause: str, **fields: Any):
+        """Posture-aware decision failure on the post_invoke (output) gate.
+
+        Previously every post_invoke failure path returned None with no
+        posture check and an `post_invoke_unreachable` audit label, so
+        the output-redaction gate was unconditionally fail-open even in
+        the shipped default_deny: true example config, and rules written
+        against the documented `fail_open_bypass` label missed it
+        (PR #22 review). Fail-closed for the output gate = redact the
+        output the Guardian never vetted.
+        """
+        base = dict(cause=cause, session_id=self._session_id,
+                    method="steps/toolCallResult", **fields)
+        if self._effective_default_deny():
+            _redact_output(context)
+            audit_event("decision_failure_fail_closed", **base)
+            return context
+        audit_event("fail_open_bypass", **base)
+        return None
+
+    def _post_invoke_refusal(self, context, *, cause: str, **fields: Any):
+        """Refusal / binding / signature failure on the output gate —
+        redact REGARDLESS of posture (attacker-shaped condition)."""
+        _redact_output(context)
+        audit_event("guardian_refusal_fail_closed",
+                    cause=cause, session_id=self._session_id,
+                    method="steps/toolCallResult", **fields)
+        return context
 
     def _handle_decision_failure(self, context, method: str, *, cause: str,
                                    error: str, deny_msg: str,
@@ -766,7 +919,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         }
         if jsonrpc_code is not None:
             fields["jsonrpc_code"] = jsonrpc_code
-        if self._config.default_deny:
+        if self._effective_default_deny():
             audit_event("decision_failure_fail_closed", **fields)
             return self._block(context, deny_msg)
         audit_event("fail_open_bypass", **fields)
@@ -795,6 +948,7 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             "agent_id": self._agent_id,
             "session_id": self._session_id,
             "platform": "nat",
+            "adapter_version": ADAPTER_VERSION,
         }
         if method == "steps/toolCallRequest":
             payload: dict[str, Any] = {
@@ -834,14 +988,24 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
     def _call_guardian(self, request: dict) -> dict:
         validate_guardian_url(self._config.guardian_url)  # SSRF: refuse file://, ftp://, etc.
         body = json.dumps(request).encode("utf-8")
+        if len(body) > MAX_REQUEST_BODY_BYTES:
+            raise RequestTooLargeError(len(body))
         req = urllib.request.Request(
             self._config.guardian_url,
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self._config.timeout_s) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self._config.timeout_s) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            parsed = None
+            try:
+                parsed = json.loads(e.read().decode("utf-8")).get("error")
+            except Exception:  # noqa: BLE001
+                pass
+            raise GuardianHTTPRefusalError(e.code, parsed) from e
 
 
 # ----- NAT registration -----

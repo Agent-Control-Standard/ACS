@@ -20,8 +20,7 @@ confirm their installation works in production-like conditions.
 Prerequisites:
   - `claude` CLI on PATH (Claude Code installed and authenticated)
   - Python 3.10+
-  - The canonical ACS schemas at $ACS_SPEC_DIR (default
-    /tmp/acs-spec-source/specification/v0.1.0/)
+  - The canonical ACS schemas at $ACS_SPEC_DIR (default: the in-repo specification/v0.1.0/)
 
 Usage (from this directory):
 
@@ -50,7 +49,9 @@ HERE = Path(__file__).resolve().parent
 ADAPTER = HERE / "acs_adapter.py"
 COMMON_DIR = HERE.parent / "_common"
 SPEC_DIR_DEFAULT = Path(os.environ.get(
-    "ACS_SPEC_DIR", "/tmp/acs-spec-source/specification/v0.1.0"))
+    # In-repo schemas by default (repo root is two levels up); override
+    # with ACS_SPEC_DIR to validate against an alternate spec checkout.
+    "ACS_SPEC_DIR", str(HERE.parents[1] / "specification" / "v0.1.0")))
 
 sys.path.insert(0, str(COMMON_DIR))
 import acs_common  # noqa: E402
@@ -486,7 +487,7 @@ def main() -> int:
         guardian.stop()
         shutil.rmtree(workdir, ignore_errors=True)
 
-    return 0 if report.summary("YOUR CLAUDE CODE INSTALL IS ACS-CONFORMANT", width=68) else 1
+    return 0 if report.summary("ACS-CORE SMOKE PASS (claude-code)", width=68) else 1
 
 
 if __name__ == "__main__":

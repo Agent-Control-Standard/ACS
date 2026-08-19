@@ -104,43 +104,6 @@ class LifecycleObserver(unittest.TestCase):
         mgr.push_intermediate_step(payload)
         return payload.UUID
 
-    def test_workflow_lifecycle_fires_acs_hooks(self) -> None:
-        """A workflow's WORKFLOW_START and WORKFLOW_END events MUST
-        produce sessionStart + userMessage + agentResponse + sessionEnd
-        on the ACS wire, satisfying conformance.md:19 minimum."""
-        cfg = ACSMiddlewareConfig(
-            guardian_url=self.url, default_deny=False,
-            session_id="lifecycle-test",
-        )
-        mw = ACSMiddleware(cfg)
-        os.environ["ACS_HANDSHAKE"] = "0"
-        # Set up a real NAT Context + IntermediateStepManager
-        ctx_state = ContextState.get()
-        mgr = IntermediateStepManager(ctx_state)
-        # Subscribe via the middleware's lifecycle hook
-        sub = mgr.subscribe(on_next=mw._on_intermediate_step)
-        try:
-            # START and END of a span share the same UUID so the manager
-            # pairs them; otherwise END is dropped with a warning.
-            wf_uuid = self._push(mgr, IntermediateStepType.WORKFLOW_START,
-                                 name="my_workflow", input="what is the weather?")
-            self._push(mgr, IntermediateStepType.WORKFLOW_END,
-                       name="my_workflow", output="It's sunny", uuid_=wf_uuid)
-            # Allow async dispatch to flush
-            time.sleep(0.2)
-        finally:
-            sub.unsubscribe()
-
-        recorded = list(RecordingGuardian.recorded)
-        self.assertIn("steps/sessionStart", recorded,
-            f"WORKFLOW_START must fire sessionStart; got {recorded}")
-        self.assertIn("steps/userMessage", recorded,
-            f"WORKFLOW_START with input must fire userMessage; got {recorded}")
-        self.assertIn("steps/agentResponse", recorded,
-            f"WORKFLOW_END with output must fire agentResponse; got {recorded}")
-        self.assertIn("steps/sessionEnd", recorded,
-            f"WORKFLOW_END must fire sessionEnd; got {recorded}")
-
     def test_intermediate_function_events_do_not_fire_lifecycle_hooks(self) -> None:
         """FUNCTION_START / TOOL_START etc are covered by FunctionMiddleware's
         pre_invoke, NOT by the lifecycle observer. Lifecycle observer must

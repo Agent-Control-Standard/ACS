@@ -25,7 +25,7 @@ The full mapping lives in [`trace/otel-mapping.json`](https://github.com/afogel/
 | `steps/turnStart`, `steps/turnEnd` | `acs.turn`, `acs.turn.end` | `acs.turn.id`, `acs.turn.triggered_by` / `acs.turn.outcome` |
 | `steps/preCompact` | `acs.compact` | `acs.compact.entry_count`, `acs.compact.triggered_by` |
 | `steps/postCompact` | `acs.compact.complete` | `acs.compact.entry_count`; `acs.compact.lineage_depth_after` (optional) |
-| `steps/subagentStart`, `steps/subagentStop` | `acs.subagent`, `acs.subagent.end` | `acs.subagent.session_id`, `acs.subagent.parent_session_id`, `acs.subagent.intent_derivation` / `acs.subagent.outcome`, `acs.subagent.final_chain_hash` |
+| `steps/subagentStart`, `steps/subagentStop` | `acs.subagent`, `acs.subagent.end` | `acs.subagent.session_id`, `acs.subagent.parent_session_id`, `acs.subagent.intent_derivation` / `acs.subagent.outcome`; `acs.subagent.final_chain_hash` (optional — omitted by frameworks that maintain no session-chain) |
 | Decision (allow/deny/modify/ask/defer) | `acs.decision` (span event) | `acs.decision`, `acs.evaluator`, `acs.reasoning` (when present), `acs.confidence` (when present) |
 | `agbom/snapshot` | `acs.agbom` | `acs.agbom.format` (`canonical`/`cyclonedx`/`spdx`/`swid`), `acs.agbom.component_count` |
 | `agbom/changed` | `acs.agbom` | `acs.agbom.format` (`canonical`/`cyclonedx`/`spdx`/`swid`), `acs.agbom.change_reason` |

@@ -33,7 +33,7 @@ python3 wire.py \\
   --settings=./.claude/settings.json \\
   --write
 
-# 4. Subset of hooks (default is all 6 ACS-Core mandatory)
+# 4. Subset of hooks (default is the full mapped set (ACS_CORE_HOOKS))
 python3 wire.py \\
   --guardian-url=http://127.0.0.1:8787/acs \\
   --secret-file=~/.acs/hmac.key \\
@@ -77,8 +77,11 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 DEFAULT_ADAPTER_PATH = HERE / "acs_adapter.py"
 
-# ACS-Core minimum hook set per conformance.md:19. The wire CLI accepts
-# a subset via --hooks; warns when fewer than these 6 are wired.
+# ACS-Core minimum hook set per conformance.md:19, plus Stop and
+# SubagentStop which the adapter maps (Stop → steps/sessionEnd,
+# SubagentStop → steps/subagentStop; PR #21 promotes the subagent hooks
+# into the Core floor). The wire CLI accepts a subset via --hooks; warns
+# when fewer than these are wired.
 ACS_CORE_HOOKS = [
     "SessionStart",
     "UserPromptSubmit",
@@ -86,6 +89,8 @@ ACS_CORE_HOOKS = [
     "PostToolUse",
     "Notification",
     "SessionEnd",
+    "Stop",
+    "SubagentStop",
 ]
 
 # Hooks whose ACS verdict ACTUALLY GATES the action: the framework
@@ -114,7 +119,8 @@ def build_command(*, adapter_path: Path, guardian_url: str,
                    secret_env: str | None,
                    default_deny: bool,
                    host_allowlist: str | None,
-                   python_bin: str) -> str:
+                   python_bin: str,
+                   audit_file: str | None = None) -> str:
     """Compose the hook command string used inside settings.json.
 
     All filesystem paths are written as absolute paths so the hook
@@ -133,6 +139,10 @@ def build_command(*, adapter_path: Path, guardian_url: str,
         env_pairs.append("ACS_DEFAULT_DENY=1")
     if host_allowlist:
         env_pairs.append(f"ACS_GUARDIAN_HOST_ALLOWLIST={host_allowlist}")
+    if audit_file:
+        # Durable audit sink — §6.4's audit half of the fail-open trade
+        # only exists if the events land somewhere collected.
+        env_pairs.append(f"ACS_AUDIT_FILE={_expand(audit_file)}")
     env_prefix = " ".join(env_pairs)
     return f"{env_prefix} {python_bin} {adapter_path} {WIRE_MARKER}"
 
@@ -319,9 +329,9 @@ def validate_inputs(args: argparse.Namespace) -> list[str]:
         missing = set(ACS_CORE_HOOKS) - set(args.hooks)
         if missing:
             warnings.append(
-                f"NOTE: wiring a SUBSET of ACS-Core's 6 mandatory hooks. "
+                f"NOTE: wiring a SUBSET of the mapped ACS-Core hook set. "
                 f"Missing: {sorted(missing)}. ACS-Core conformance requires "
-                f"all 6 ({', '.join(ACS_CORE_HOOKS)}).")
+                f"the full set ({', '.join(ACS_CORE_HOOKS)}).")
 
     return warnings
 
@@ -343,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--secret-env-inline", metavar="HEX",
                     help="HMAC secret inlined into settings.json env (visible in `ps aux`; "
                          "dev only). Use --secret-file for production.")
+    p.add_argument("--audit-file",
+                    help="Durable ACS_AUDIT sink appended by every hook process "
+                         "(created 0600). RECOMMENDED: without it, §6.4 audit "
+                         "events land on hook stderr, which nothing collects.")
     p.add_argument("--settings",
                     default="~/.claude/settings.json",
                     help="Path to the Claude Code settings file (default: ~/.claude/settings.json).")
@@ -353,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                     default="python3",
                     help="Python interpreter the hook command uses (default: python3 from PATH).")
     p.add_argument("--hooks", default=",".join(ACS_CORE_HOOKS),
-                    help=f"Comma-separated hook names to wire (default: all 6 ACS-Core hooks: "
+                    help=f"Comma-separated hook names to wire (default: the full mapped set: "
                          f"{','.join(ACS_CORE_HOOKS)}).")
     posture_group = p.add_mutually_exclusive_group()
     posture_group.add_argument("--default-deny", action="store_true",
@@ -422,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
                 default_deny=hook_deny,
                 host_allowlist=args.host_allowlist,
                 python_bin=args.python_bin,
+                audit_file=args.audit_file,
             )
         new = merge_wire(existing, hook_names, commands_by_hook)
 

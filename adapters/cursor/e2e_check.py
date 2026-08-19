@@ -30,8 +30,7 @@ Prerequisites:
   - Cursor installed (https://cursor.com)
   - A test workspace (a throwaway directory you can open in Cursor)
   - Python 3.10+ with `jsonschema` and `rfc8785`
-  - The canonical ACS schemas at $ACS_SPEC_DIR (default
-    /tmp/acs-spec-source/specification/v0.1.0/)
+  - The canonical ACS schemas at $ACS_SPEC_DIR (default: the in-repo specification/v0.1.0/)
 
 Usage (from this directory):
 
@@ -65,7 +64,9 @@ ADAPTER = HERE / "acs_adapter.py"
 COMMON_DIR = HERE.parent / "_common"
 EXAMPLE_GUARDIAN_DIR = HERE.parent / "example-guardian"
 SPEC_DIR_DEFAULT = Path(os.environ.get(
-    "ACS_SPEC_DIR", "/tmp/acs-spec-source/specification/v0.1.0"))
+    # In-repo schemas by default (repo root is two levels up); override
+    # with ACS_SPEC_DIR to validate against an alternate spec checkout.
+    "ACS_SPEC_DIR", str(HERE.parents[1] / "specification" / "v0.1.0")))
 
 sys.path.insert(0, str(COMMON_DIR))
 sys.path.insert(0, str(EXAMPLE_GUARDIAN_DIR))
@@ -533,7 +534,7 @@ def main() -> int:
         # which is harmless.
         shutil.rmtree(workdir, ignore_errors=True)
 
-    return 0 if report.summary("YOUR CURSOR INSTALL IS ACS-CONFORMANT") else 1
+    return 0 if report.summary("ACS-CORE SMOKE PASS (cursor)") else 1
 
 
 if __name__ == "__main__":

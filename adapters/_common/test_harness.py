@@ -146,9 +146,15 @@ def claude_code_event(hook_event_name: str, *, session_id: str | None = None,
 # ────────────────────────────────────────────────────────────────────
 
 def _default_spec_dir() -> Path:
-    """Resolve the canonical schema directory. Override with ACS_SPEC_DIR."""
+    """Resolve the canonical schema directory. Override with ACS_SPEC_DIR.
+
+    Defaults to the in-repo schemas (this file lives at adapters/_common/,
+    schemas at specification/v0.1.0/ two directories up) so tests run from
+    a fresh clone and validate against the schemas in the PR under review.
+    """
     return Path(os.environ.get(
-        "ACS_SPEC_DIR", "/tmp/acs-spec-source/specification/v0.1.0"))
+        "ACS_SPEC_DIR",
+        str(Path(__file__).resolve().parents[2] / "specification" / "v0.1.0")))
 
 
 def build_local_resolver(schema_name: str, *, spec_dir: Path | None = None):
@@ -327,7 +333,6 @@ class ProgrammableGuardian:
         import http.server
         self.hmac_secret = hmac_secret or self.DEFAULT_TEST_HMAC_SECRET
         self.sign_responses = sign_responses
-        self.port: int = free_port()
         self.received: list[dict] = []
         self.sent: list[dict] = []
         self.lock = threading.Lock()
@@ -336,9 +341,21 @@ class ProgrammableGuardian:
             "__default__":     self._default_allow,
         }
         self.delay_s: float = 0.0
+        # Optional callback(raw_bytes, parsed_dict) run on every received
+        # request before the response is built. CaptureGuardian uses it
+        # as the schema-validation oracle. None = no-op. Any exception it
+        # raises is recorded here (not swallowed) so a validator bug is
+        # loud, not silent.
+        self.on_request = None
+        self.on_request_errors: list[str] = []
         self._http = http.server
+        # Bind port 0 and read the OS-assigned port — no bind-then-release
+        # race (free_port() closes the socket before the server rebinds,
+        # which flakes under runner contention; PR #22 review). free_port()
+        # remains for SUBPROCESS guardians that need a port as an argv.
         self._server = self._http.HTTPServer(
-            ("127.0.0.1", self.port), self._make_handler_cls())
+            ("127.0.0.1", 0), self._make_handler_cls())
+        self.port: int = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     def url(self) -> str:
@@ -409,16 +426,35 @@ class ProgrammableGuardian:
         class Handler(self._http.BaseHTTPRequestHandler):
             def do_POST(self_h):  # noqa: N802
                 length = int(self_h.headers.get("Content-Length", "0"))
-                req = json.loads(self_h.rfile.read(length).decode())
+                raw = self_h.rfile.read(length)
+                req = json.loads(raw.decode())
                 with guardian.lock:
                     guardian.received.append(req)
+                # Optional raw-capture hook: subclasses (CaptureGuardian)
+                # set this to validate the UNMODIFIED bytes against the
+                # canonical schemas, so the schema files — not this
+                # server's leniency — are the oracle (PR #22 emission
+                # review). No-op for plain ProgrammableGuardian users.
+                # An exception here is NOT swallowed silently — a
+                # schema-load or validator bug that made a capture look
+                # valid would defeat the whole point (PR #22 emission
+                # re-review). It is recorded so assert_all_valid() fails,
+                # while the wire stays alive so the adapter completes.
+                if guardian.on_request is not None:
+                    try:
+                        guardian.on_request(raw, req)
+                    except Exception as e:  # noqa: BLE001
+                        with guardian.lock:
+                            guardian.on_request_errors.append(repr(e))
                 if guardian.delay_s > 0:
                     time.sleep(guardian.delay_s)
 
                 method = req.get("method", "")
-                # handshake/hello and system/ping are signature-exempt
-                # per §4.1 and §13. Everything else MUST verify.
-                if method not in ("handshake/hello", "system/ping"):
+                # system/ping is the ONLY signature-exempt method (§13).
+                # The handshake is signed like everything else — the HMAC
+                # key derives from pre-shared secret + session_id, both
+                # known pre-handshake (PR #22 second review).
+                if method != "system/ping":
                     sid = req.get("params", {}).get("metadata", {}).get("session_id", "")
                     key = acs_common.derive_session_key(
                         guardian.hmac_secret.encode(), sid)

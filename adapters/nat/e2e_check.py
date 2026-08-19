@@ -31,7 +31,7 @@ there is no operator-in-the-loop: just run and watch.
 Prerequisites:
   - nvidia-nat-core installed (>= 1.7.0)
   - The canonical ACS schemas at $ACS_SPEC_DIR
-    (default /tmp/acs-spec-source/specification/v0.1.0/)
+    (default: the in-repo specification/v0.1.0/)
 """
 from __future__ import annotations
 
@@ -48,7 +48,9 @@ ADAPTER_DIR = HERE
 COMMON_DIR = HERE.parent / "_common"
 EXAMPLE_GUARDIAN_DIR = HERE.parent / "example-guardian"
 SPEC_DIR_DEFAULT = Path(os.environ.get(
-    "ACS_SPEC_DIR", "/tmp/acs-spec-source/specification/v0.1.0"))
+    # In-repo schemas by default (repo root is two levels up); override
+    # with ACS_SPEC_DIR to validate against an alternate spec checkout.
+    "ACS_SPEC_DIR", str(HERE.parents[1] / "specification" / "v0.1.0")))
 
 sys.path.insert(0, str(COMMON_DIR))
 sys.path.insert(0, str(EXAMPLE_GUARDIAN_DIR))
@@ -513,7 +515,7 @@ def main() -> int:
     finally:
         guardian.stop()
 
-    return 0 if report.summary("YOUR NAT INSTALL IS ACS-CONFORMANT") else 1
+    return 0 if report.summary("ACS-CORE SMOKE PASS (nat)") else 1
 
 
 if __name__ == "__main__":

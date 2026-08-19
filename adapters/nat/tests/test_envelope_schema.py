@@ -18,7 +18,9 @@ from jsonschema import Draft202012Validator
 from jsonschema.validators import RefResolver
 
 
-SPEC_DIR_DEFAULT = Path("/tmp/acs-spec-source/specification/v0.1.0")
+# In-repo schemas by default (repo root is three levels up from tests/);
+# override with ACS_SPEC_DIR to validate against an alternate checkout.
+SPEC_DIR_DEFAULT = Path(__file__).resolve().parents[3] / "specification" / "v0.1.0"
 SPEC_DIR = Path(os.environ.get("ACS_SPEC_DIR", str(SPEC_DIR_DEFAULT)))
 
 HERE = Path(__file__).resolve().parent

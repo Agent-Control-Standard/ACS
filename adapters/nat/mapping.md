@@ -8,19 +8,19 @@ The ACS adapter is implemented as a `FunctionMiddleware` that, for each wrapped 
 
 ## NAT lifecycle → ACS step method
 
-| NAT concept | ACS step method |
-|---|---|
-| Tool function `pre_invoke` | `steps/toolCallRequest` |
-| Tool function `post_invoke` | `steps/toolCallResult` |
-| LLM `pre_invoke` | `steps/toolCallRequest` (tool name = "LLM:`provider`:`model`") |
-| LLM `post_invoke` | `steps/toolCallResult` |
-| Retriever `pre_invoke` | `steps/knowledgeRetrieval` (the adapter treats `retrievers` as knowledge-retrieval calls when target_function points to a retriever group) |
-| Memory read | `steps/memoryContextRetrieval` |
-| Memory write | `steps/memoryStore` |
-| Sub-workflow invocation | `steps/subagentStart` / `steps/subagentStop` (NAT models sub-workflows as nested functions) |
-| Workflow entry | `steps/sessionStart` (when attaching at workflow level with a `sessionStart` semantic — typically configured via `target_function_or_group: <workflow>` plus dispatch logic in the Guardian based on tool name) |
+**What the adapter emits** (`grep` the code, not this table — PR #22 review caught this table claiming methods the code never sends):
 
-The minimal adapter in `acs_adapter.py` emits `steps/toolCallRequest` and `steps/toolCallResult` for every wrapped function call. The Guardian can dispatch on the tool name to apply different policy. Splitting into separate ACS step methods (e.g. `steps/knowledgeRetrieval` for retriever calls) is a configuration choice handled in the adapter's `pre_invoke` based on `function_context.name`; the example adapter uses a single method to keep the round-trip simple.
+| NAT concept | ACS step method | Emitted by the adapter today? |
+|---|---|---|
+| Any wrapped function `pre_invoke` (tools, LLMs, retrievers, memory — all of them) | `steps/toolCallRequest` | **Yes** — every wrapped call, with the function name as the tool name |
+| Any wrapped function `post_invoke` | `steps/toolCallResult` | **Yes** |
+| Workflow start (via `IntermediateStepManager` subscription) | `steps/sessionStart` + `steps/userMessage` | **Yes** — observation-only, see below |
+| Workflow end (same subscription) | `steps/agentResponse` + `steps/sessionEnd` | **Yes** — observation-only, see below |
+| Retriever calls as `steps/knowledgeRetrieval` | — | **No.** Retrievers surface as `toolCallRequest` with the retriever's function name; the Guardian dispatches on name. A dedicated `knowledgeRetrieval` emission is possible future work. |
+| Memory read / write as `steps/memoryContextRetrieval` / `steps/memoryStore` | — | **No.** Same status: memory functions surface as generic tool calls. Documented gap — a Guardian keying policy on the memory-specific hooks will not see them from this adapter. |
+| Sub-workflow invocation as `steps/subagentStart` / `steps/subagentStop` | — | **No.** Nested workflow functions surface as generic tool calls; NAT exposes no distinct spawn boundary to the middleware. Documented gap, relevant to PR #21's subagent promotion: a NAT deployment satisfies the subagent floor vacuously only if sub-workflows are genuinely not distinguishable at the middleware seam. |
+
+The Guardian can dispatch on the tool name to apply retriever-, memory-, or subagent-specific policy to the generic `toolCallRequest` stream; what it cannot get from this adapter is the dedicated ACS step methods for those events.
 
 ### Lifecycle hooks are observation-only
 
@@ -80,5 +80,5 @@ The NAT adapter implements ACS-Core's mandatory floor:
 - Dispositions: ALLOW / DENY / MODIFY supported normatively; ASK / DEFER substituted to DENY with audit (HITL composition is the recommended path).
 - SessionContext: `session_id` sent on every request.
 - Replay protection: `request_id` UUID + timestamp.
-- Decision honoring: NAT's middleware contract guarantees the function does not execute if `pre_invoke` raises or sets SKIP.
-- Baseline integrity: deferred to transport layer in this minimal adapter.
+- Decision honoring: NAT's middleware contract guarantees the function does not execute if `pre_invoke` raises or sets SKIP. The fail posture is `workflow.yml`'s `default_deny` OR the ServerHello's `on_decision_failure` (most-restrictive-wins); Guardian refusals (signature invalid, replay, malformed/oversized envelope) fail closed regardless of posture, on both the input gate (block) and the output gate (redact) — spec issue #32.
+- Baseline integrity: HMAC-SHA256 per §10 over the RFC 8785 (JCS) canonical envelope with an HKDF-derived per-session key (`ACS_HMAC_SECRET_FILE` / `ACS_HMAC_SECRET`); `rfc8785` is a hard runtime dependency. Responses are signature-verified and bound to their request. Unsigned mode (no secret) is announced with a loud `unsigned_mode` audit event.

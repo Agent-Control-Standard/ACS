@@ -76,15 +76,6 @@ class CursorAdapter(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual(payload["permission"], "allow")
 
-    def test_pre_tool_safe_bash_allows(self) -> None:
-        rc, out, _ = self._run("preToolUse", {
-            "session_id": "cur-2", "tool_name": "Bash",
-            "tool_input": {"command": "ls -la"},
-        })
-        self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out)["permission"], "allow")
-
-    # ----- preToolUse: deny path -----
     def test_pre_tool_destructive_bash_denies(self) -> None:
         rc, out, _ = self._run("preToolUse", {
             "session_id": "cur-3", "tool_name": "Bash",
@@ -119,14 +110,20 @@ class CursorAdapter(unittest.TestCase):
         self.assertEqual(json.loads(out)["permission"], "deny")
 
     # ----- subagentStart -----
-    def test_subagent_start_allow(self) -> None:
+    def test_subagent_start_gated_by_default(self) -> None:
+        """Subagent spawns are the confused-deputy gate and the example
+        Guardian denies them by default (ACS_ALLOW_SUBAGENT unset) —
+        same posture as its Task-tool branch, so routing spawns through
+        the proper hook never gets a WEAKER gate than a generic tool
+        call (PR #22 fourth review). Previously this test asserted
+        allow, encoding the weaker gate as expected behavior."""
         rc, out, _ = self._run("subagentStart", {
             "session_id": "cur-7", "subagent_type": "explore",
         })
         self.assertEqual(rc, 0)
-        # session start variant on the Guardian -> allow; subagentStart maps to subagentStart
         payload = json.loads(out) if out else {}
-        self.assertEqual(payload.get("permission"), "allow")
+        self.assertEqual(payload.get("permission"), "deny",
+            "spawns must be gated by default; got: " + out)
 
     # ----- Lifecycle events: empty output -----
     def test_session_start_silent(self) -> None:
