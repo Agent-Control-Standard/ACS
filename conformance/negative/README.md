@@ -45,6 +45,9 @@ Contributions from implementations that exercise revocation are the way to close
 
 ## Vector schema
 
+All eighteen vectors live as a single array in `vectors/negative_vectors.json`; the schema
+below describes one entry.
+
 ```json
 {
   "id": "neg-cat1-001",
@@ -74,9 +77,15 @@ wrong class of attack.
 python conformance/negative/runner.py --adapter your_adapter.py
 ```
 
-The adapter exposes `evaluate(vector) -> {"verdict": ..., "code": ..., "reason": ...}`.
-The runner exits non-zero on: any verdict mismatch, any code mismatch, any missing
-`reason_must_mention` substring, or any category lacking a positive control.
+The adapter exposes `evaluate(vector) -> {"verdict": ..., "code": ..., "reason": ...,
+"entry_point": ...}`, where `entry_point` names the production entry point the adapter
+dispatched through for that vector. The runner exits non-zero on: any verdict mismatch,
+any code mismatch (positive controls included), any missing `reason_must_mention`
+substring, any category lacking a positive control (a control counts only if it expects
+`PASS`), any answer naming no entry point, or any category whose positive controls
+resolved through a different entry point than its negative vectors. The last two rules
+exist because a suite whose positive controls certify a test double certifies nothing:
+an adapter that reads the answer key passes every content check and fails only there.
 
 ## Provenance
 
