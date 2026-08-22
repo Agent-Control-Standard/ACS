@@ -3,15 +3,20 @@
 
 Loads the vector suite, calls one implementation adapter per vector, and fails on:
   - any verdict mismatch,
-  - any failure-code mismatch,
+  - any failure-code mismatch (positive controls included),
   - any missing reason substring (a right verdict for a wrong reason is a latent bug),
-  - any category lacking its POSITIVE CONTROL.
+  - any category lacking its POSITIVE CONTROL (a control counts only if it expects PASS),
+  - any adapter answer that names no entry_point, and any category whose positive
+    controls dispatched through a different entry point than its negative vectors
+    (a suite that certifies a test double certifies nothing - review 4996153628).
 
 The last rule is structural, not cosmetic: a suite made only of must-reject inputs cannot
 distinguish an enforcement layer that works from one that rejects everything.
 
 Adapter contract: a Python file exposing
-    evaluate(vector: dict) -> {"verdict": "PASS|REJECT|UNMEASURABLE", "code": str|None, "reason": str}
+    evaluate(vector: dict) -> {"verdict": "PASS|REJECT|UNMEASURABLE", "code": str|None,
+                               "reason": str, "entry_point": str}
+where entry_point names the production entry point the adapter dispatched through.
 
 Usage:
     python runner.py --adapter path/to/adapter.py [--vectors vectors/negative_vectors.json]
@@ -27,6 +32,8 @@ HERE = Path(__file__).parent
 
 
 def load_adapter(path: Path):
+    # An adapter spanning several files must be able to import its siblings (review 4996153628).
+    sys.path.insert(0, str(path.resolve().parent))
     spec = importlib.util.spec_from_file_location("acs_adapter", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -48,7 +55,10 @@ def main() -> int:
     # Structural gate first: every category present must carry a positive control.
     cats = defaultdict(lambda: {"neg": 0, "pos": 0})
     for v in vectors:
-        cats[v["category"]]["pos" if v.get("positive_control") else "neg"] += 1
+        # A declared flag is not a positive control; only an expected PASS is (review 4996153628:
+        # a must-reject vector flagged positive_control satisfied the gate with zero must-pass inputs).
+        is_pos = v.get("positive_control") and v["expected"]["verdict"] == "PASS"
+        cats[v["category"]]["pos" if is_pos else "neg"] += 1
     missing = [c for c, k in sorted(cats.items()) if k["pos"] == 0]
     if missing:
         print(f"SUITE INVALID: categories without a positive control: {missing}")
@@ -56,6 +66,7 @@ def main() -> int:
         return 2
 
     failures = []
+    entry_points = defaultdict(lambda: {"pos": set(), "neg": set()})
     for v in vectors:
         try:
             out = adapter.evaluate(v) or {}
@@ -63,10 +74,19 @@ def main() -> int:
             failures.append((v["id"], f"adapter raised {type(e).__name__}: {e}"))
             continue
         exp = v["expected"]
+        # The suite certifies an enforcement layer, not a test double (review 4996153628):
+        # every adapter answer must name the production entry point it dispatched through.
+        ep = out.get("entry_point")
+        if not ep:
+            failures.append((v["id"], "adapter reported no entry_point - cannot tell the enforcement layer from a test double"))
+            continue
+        entry_points[v["category"]]["pos" if v.get("positive_control") else "neg"].add(ep)
         if out.get("verdict") != exp["verdict"]:
             failures.append((v["id"], f"verdict {out.get('verdict')!r} != expected {exp['verdict']!r}"))
             continue
-        if exp["verdict"] != "PASS":
+        # code and reason are compared on PASS vectors too (review 4996153628: a positive
+        # control's code field previously went uncompared).
+        if True:
             if out.get("code") != exp.get("code"):
                 failures.append((v["id"], f"code {out.get('code')!r} != expected {exp.get('code')!r}"))
                 continue
@@ -75,6 +95,10 @@ def main() -> int:
                 if needle.lower() not in reason:
                     failures.append((v["id"], f"reason does not mention {needle!r}: {reason[:120]!r}"))
                     break
+
+    for c, k in sorted(entry_points.items()):
+        if k["pos"] and k["neg"] and k["pos"] != k["neg"]:
+            failures.append((f"cat{c}", f"positive controls resolved through {sorted(k['pos'])} but negatives through {sorted(k['neg'])} - the gate certified a different code path than the one negatively tested"))
 
     print(f"{len(vectors) - len(failures)}/{len(vectors)} vectors conform "
           f"({sum(k['pos'] for k in cats.values())} positive controls across {len(cats)} categories)")
