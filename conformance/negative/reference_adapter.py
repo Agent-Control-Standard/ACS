@@ -11,10 +11,10 @@ def evaluate(vector):
     action, auth, state = inp.get("action", {}), inp.get("authorization", {}), inp.get("state", {})
 
     def reject(code, reason):
-        return {"verdict": "REJECT", "code": code, "reason": reason}
+        return {"verdict": "REJECT", "code": code, "entry_point": "reference_adapter.decide", "reason": reason}
 
     def unmeasurable(code, reason):
-        return {"verdict": "UNMEASURABLE", "code": code, "reason": reason}
+        return {"verdict": "UNMEASURABLE", "code": code, "entry_point": "reference_adapter.decide", "reason": reason}
 
     # Evidence shape first: fail closed on what cannot be decoded, with its own code.
     oracle = state.get("oracle_response", "ABSENT_KEY")
@@ -64,4 +64,4 @@ def evaluate(vector):
     if "ceiling" in target and int(action.get("amount", 0)) > int(target["ceiling"]):
         return reject("CONTEXT_NOT_SUPPORTED", f"amount exceeds the ceiling the state carries ({target['ceiling']})")
 
-    return {"verdict": "PASS", "code": None, "reason": "context supports the action"}
+    return {"verdict": "PASS", "code": None, "entry_point": "reference_adapter.decide", "reason": "context supports the action"}
