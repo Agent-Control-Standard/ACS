@@ -1,0 +1,407 @@
+{
+  "$schema": "../vector.schema.json",
+  "suite": "enforcement-negative-revocation-v0",
+  "vectors": [
+    {
+      "id": "neg-cat3-002",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Withdrawn inside the freshness window: the mandate was genuine when written, is well inside its freshness bound, and was revoked by its issuing authority before the act. Nothing about its age disqualifies it, so a freshness check alone passes this and the layer fails open.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-60",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-31",
+          "decision_written_at": "2026-08-19T09:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T09:03:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T09:02:00Z",
+            "revoked": [
+              "mandate-31"
+            ]
+          },
+          "auction-60": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "MANDATE_REVOKED",
+        "reason_must_mention": [
+          "revoked",
+          "mandate-31"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat3-002",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "POSITIVE CONTROL. Identical to neg-cat3-002 except the registry is reachable and does not list this mandate. MUST pass: a layer that refuses whenever it consults a revocation registry at all is indistinguishable from one that refuses everything, and the negative vectors beside this one cannot tell the two apart without it.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-60",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-31",
+          "decision_written_at": "2026-08-19T09:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T09:03:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T09:02:00Z",
+            "revoked": []
+          },
+          "auction-60": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "neg-cat3-003",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Revocation registry unreachable: the mandate is fresh and correctly signed, and the state that would say whether it still stands cannot be read at all. Absence of measurement is never a pass, and the code must differ from a measured revocation so operators are not sent hunting for a withdrawal that may not exist.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-61",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-32",
+          "decision_written_at": "2026-08-19T10:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T10:01:00Z",
+          "revocation_registry": {
+            "reachable": false
+          },
+          "auction-61": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "REVOCATION_UNCHECKABLE",
+        "reason_must_mention": [
+          "revocation",
+          "could not"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat3-004",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Revocation registry stale beyond its own declared publication interval: reachable, and last signed by the authority longer ago than the interval the authority itself commits to. A registry that has stopped being published cannot answer whether a withdrawal issued since has been recorded, so reading it as clean converts an outage into an allow.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-62",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-33",
+          "decision_written_at": "2026-08-19T11:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T11:01:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T07:00:00Z",
+            "publication_interval_seconds": 3600,
+            "revoked": []
+          },
+          "auction-62": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "REVOCATION_UNCHECKABLE",
+        "reason_must_mention": [
+          "revocation",
+          "interval"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat3-005",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Back-dated revocation window: the authority revoked the signer's key, and the only instant the enforcement point can compare against is one the presenting party controls. Evaluating the window against a party-asserted timestamp rehabilitates, by back-dating alone, every act the revoked key ever authorized. The comparison must be made against an authority-signed instant, and here the authority-signed instant places the act after the revocation.",
+      "input": {
+        "action": {
+          "type": "sign_transaction",
+          "target": "auction-63",
+          "actor": "agent-A",
+          "required_signer": "0xAAAA"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-34",
+          "issued_at_claimed": "2026-08-19T08:00:00Z",
+          "authority_signed_at": "2026-08-19T12:30:00Z",
+          "decision_written_at": "2026-08-19T12:30:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T12:31:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T12:31:00Z",
+            "revoked": [
+              "mandate-34"
+            ],
+            "revoked_at": "2026-08-19T09:00:00Z"
+          },
+          "auction-63": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "REJECT",
+        "code": "MANDATE_REVOKED",
+        "reason_must_mention": [
+          "revoked",
+          "authority"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "neg-cat3-006",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Re-issued mandate that names no predecessor: a superseding mandate presented at sequence 2 carrying no reference to the mandate it replaces. Without the link the enforcement point cannot tell a legitimate replacement from the revoked original re-presented under a new identifier, so the revocation state of what is in front of it is not measurable, not merely unsatisfied.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-64",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-35b",
+          "mandate_seq": 2,
+          "decision_written_at": "2026-08-19T13:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T13:01:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T13:01:00Z",
+            "revoked": [
+              "mandate-35a"
+            ]
+          },
+          "auction-64": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "REVOCATION_UNCHECKABLE",
+        "reason_must_mention": [
+          "predecessor"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat3-003",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "POSITIVE CONTROL. The same re-issued mandate, naming exactly the revoked predecessor it replaces. MUST pass: the check is on an unresolvable supersession link, not on the act of replacing a revoked mandate, and a layer that refuses this refuses recovery from every revocation it ever enforces.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-64",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-35b",
+          "mandate_seq": 2,
+          "supersedes": "mandate-35a",
+          "decision_written_at": "2026-08-19T13:00:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T13:01:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T13:01:00Z",
+            "revoked": [
+              "mandate-35a"
+            ]
+          },
+          "auction-64": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    },
+    {
+      "id": "neg-cat3-007",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "Revoked mandate presented with no authority-signed instant: the registry records when the withdrawal took effect, and the only time the action carries is one the presenting party wrote. The window cannot be measured, because the party being checked supplies the side of the comparison that decides the answer. Rejecting it would be a guess and passing it would accept a back-dated claim, so neither verdict is available and the honest answer is that the measurement could not be made.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-65",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-36",
+          "issued_at_claimed": "2026-08-19T14:00:00Z",
+          "decision_written_at": "2026-08-19T14:30:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T14:30:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T14:31:00Z",
+            "revoked": [
+              "mandate-36"
+            ],
+            "revoked_at": "2026-08-19T14:15:00Z"
+          },
+          "auction-65": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "REVOCATION_UNCHECKABLE",
+        "reason_must_mention": [
+          "window",
+          "authority"
+        ]
+      },
+      "positive_control": false
+    },
+    {
+      "id": "pos-cat3-004",
+      "category": 3,
+      "requires": [
+        "revocation"
+      ],
+      "description": "POSITIVE CONTROL. The mandate is listed as revoked, and the authority-signed instant for the action precedes the withdrawal. MUST pass: a withdrawal ends an authorization going forward and does not unwind what it already authorized, so a layer that refuses this refuses every act any later-revoked mandate ever covered. Without this control the suite cannot tell an implementation that measures the window from one that rejects on the presence of the identifier in the list.",
+      "input": {
+        "action": {
+          "type": "commit_funds",
+          "target": "auction-66",
+          "amount": "1000",
+          "actor": "agent-A"
+        },
+        "authorization": {
+          "signature": "VALID",
+          "signer": "agent-A",
+          "mandate_id": "mandate-37",
+          "authority_signed_at": "2026-08-19T15:00:00Z",
+          "decision_written_at": "2026-08-19T15:30:00Z",
+          "freshness_bound_seconds": 900
+        },
+        "state": {
+          "now": "2026-08-19T15:30:00Z",
+          "revocation_registry": {
+            "reachable": true,
+            "signed_at": "2026-08-19T15:31:00Z",
+            "revoked": [
+              "mandate-37"
+            ],
+            "revoked_at": "2026-08-19T15:20:00Z"
+          },
+          "auction-66": {
+            "open": true,
+            "settled": false
+          }
+        }
+      },
+      "expected": {
+        "verdict": "PASS"
+      },
+      "positive_control": true
+    }
+  ]
+}

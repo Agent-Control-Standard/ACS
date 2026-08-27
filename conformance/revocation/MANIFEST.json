@@ -1,0 +1,10 @@
+{
+  "suite": "enforcement-negative-revocation-v0",
+  "description": "Digest pin for the revocation conformance suite. The runner refuses a vector file that does not match its entry here: a suite editable between publication and use proves nothing about the implementation that ran it.",
+  "files": {
+    "revocation_vectors.json": "sha256:14b9cd8333bca837164dcad90afc53b9dc358199c9edf9f5086e946c7f19d735",
+    "vector.schema.json": "sha256:94033577dd8a2e7aa7641798d64921d514d063b576d8c8b206677bec70cbb015",
+    "revocation_adapter.py": "sha256:20d94226efeb533e3701dce06147ae0796ccf44c4e9e2c1fef7131d0ff18b70b",
+    "runner.py": "sha256:021034013171d27ff1cfff0f6e8d2a9d2e6aebd32f416693ef692a082509954a"
+  }
+}
