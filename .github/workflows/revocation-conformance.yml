@@ -1,0 +1,74 @@
+name: Revocation conformance
+
+on:
+  push:
+    paths:
+      - "conformance/revocation/**"
+      - ".github/workflows/revocation-conformance.yml"
+  pull_request:
+    paths:
+      - "conformance/revocation/**"
+      - ".github/workflows/revocation-conformance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Vectors validate against the schema
+        run: |
+          pip install --quiet jsonschema
+          python - <<'PY'
+          import json, pathlib, sys
+          import jsonschema
+          d = pathlib.Path("conformance/revocation")
+          schema = json.loads((d / "vector.schema.json").read_text())
+          vectors = json.loads((d / "vectors" / "revocation_vectors.json").read_text())["vectors"]
+          bad = []
+          for v in vectors:
+              try:
+                  jsonschema.validate(v, schema)
+              except jsonschema.ValidationError as e:
+                  bad.append(f"{v['id']}: {e.message}")
+          for line in bad:
+              print(line)
+          print(f"{len(vectors) - len(bad)}/{len(vectors)} vectors validate")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Reference adapter conforms
+        run: |
+          python conformance/revocation/runner.py \
+            --adapter conformance/revocation/revocation_adapter.py
+
+      - name: Negative controls hold
+        run: python conformance/revocation/selftest.py
+
+      - name: Manifest matches what is on disk
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, sys
+          d = pathlib.Path("conformance/revocation")
+          pinned = json.loads((d / "MANIFEST.json").read_text())["files"]
+          drift = []
+          for name, digest in pinned.items():
+              hits = [p for p in d.rglob(name) if p.is_file()]
+              if len(hits) != 1:
+                  drift.append(f"{name}: {len(hits)} files match this manifest entry")
+                  continue
+              actual = "sha256:" + hashlib.sha256(hits[0].read_bytes()).hexdigest()
+              if actual != digest:
+                  drift.append(f"{name}: {actual} != pinned {digest}")
+          for line in drift:
+              print(line)
+          print(f"{len(pinned) - len(drift)}/{len(pinned)} files match their pinned digest")
+          sys.exit(1 if drift else 0)
+          PY
