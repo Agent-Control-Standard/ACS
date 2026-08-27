@@ -63,20 +63,52 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_common"))
 # Version stamp: distribution is copy-paste, so a defect is only scopeable
 # if adopters can answer "what version do you run?" (PR #22 review).
 # Bump on EVERY behavior change to this file. Carried in request metadata.
-ADAPTER_VERSION = "0.1.1"
+ADAPTER_VERSION = "0.1.2"
 
-from acs_common import (  # noqa: E402
-    MAX_REQUEST_BODY_BYTES,
-    audit_event,
-    ensure_session_handshake,
-    guardian_error_cause,
-    is_guardian_refusal,
-    iso8601_now as _common_iso8601_now,
-    response_matches_request,
-    sign_envelope,
-    validate_guardian_url,
-    verify_signature,
-)
+try:
+    from acs_common import (  # noqa: E402
+        MAX_REQUEST_BODY_BYTES,
+        audit_event,
+        ensure_session_handshake,
+        guardian_error_cause,
+        is_guardian_refusal,
+        iso8601_now as _common_iso8601_now,
+        modify_composition_violation,
+        normalize_decision,
+        response_matches_request,
+        sign_envelope,
+        validate_guardian_url,
+        verify_signature,
+    )
+except ImportError as _acs_import_error:
+    # acs_common hard-requires rfc8785 (§10 permits no alternative
+    # canonicalization). Unlike the subprocess adapters — which get a
+    # per-hook degraded-bootstrap path — NAT is IN-PROCESS middleware:
+    # if this import fails, the whole middleware module fails to load and
+    # NAT would otherwise run the agent UNGOVERNED with only a generic
+    # plugin-load traceback and NO ACS audit trail. Make that unmissable
+    # (loud banner on stderr + a CRITICAL log line) and re-raise so NAT
+    # records a failed middleware registration rather than silently
+    # continuing as if governance were present (PR #22 spec audit).
+    _banner = (
+        "\n" + "=" * 72 + "\n"
+        "ACS MIDDLEWARE FAILED TO LOAD — NAT WILL RUN UNGOVERNED.\n"
+        f"  reason: {_acs_import_error}\n"
+        "  The ACS adapter requires the `rfc8785` package; without it it\n"
+        "  cannot sign, verify, or evaluate any step, so there is NO policy\n"
+        "  enforcement and NO audit trail on this run.\n"
+        "  Fix: pip install -r adapters/nat/requirements.txt (pins rfc8785).\n"
+        + "=" * 72 + "\n"
+    )
+    sys.stderr.write(_banner)
+    try:
+        import logging as _logging
+        _logging.getLogger("acs").critical(
+            "ACS middleware failed to load (%s) — NAT running UNGOVERNED; "
+            "install rfc8785", _acs_import_error)
+    except Exception:  # noqa: BLE001
+        pass
+    raise
 
 
 class RequestTooLargeError(Exception):
@@ -460,6 +492,13 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         # review).
         if server_hello and server_hello.get("on_decision_failure") == "deny":
             self._server_deny = True
+        # §6.4:154 — wait up to the NEGOTIATED timeout, not the local
+        # workflow.yml default. Fall back to the local config when no
+        # timeout_config was negotiated (PR #22 spec audit).
+        if server_hello:
+            default_ms = (server_hello.get("timeout_config") or {}).get("default_ms")
+            if isinstance(default_ms, (int, float)) and default_ms > 0:
+                self._negotiated_timeout_s = default_ms / 1000.0
         self._handshake_done = True
 
     def _effective_default_deny(self) -> bool:
@@ -618,7 +657,11 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         """Gate the function call. Block via raising or InvocationAction.SKIP; modify args in place."""
         if os.environ.get("ACS_DISABLED") == "1":
             # Incident kill switch: pass through with no Guardian traffic.
-            sys.stderr.write("acs-adapter: ACS_DISABLED=1 — pre_invoke bypassed\n")
+            # Structured audit (stderr + sink) so the bypass is visible per
+            # §6.4:158 (PR #22 spec audit B11).
+            audit_event("acs_disabled_bypass", session_id=self._session_id,
+                        method="steps/toolCallRequest",
+                        detail="ACS_DISABLED=1 — pre_invoke bypassed ungoverned")
             return None
         self._ensure_handshake()
         self._ensure_lifecycle_subscribed()
@@ -650,10 +693,19 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             return self._block(
                 context, f"Guardian refused at HTTP layer ({e.status})")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # Distinguish a decision TIMEOUT from an unreachable Guardian —
+            # both are §6.4:156 decision failures, but a distinct cause
+            # lets an operator tell "Guardian too slow past the negotiated
+            # timeout" from "connection refused" (parity with the shell
+            # adapters; PR #22 spec audit).
+            is_timeout = isinstance(e, TimeoutError) or isinstance(
+                getattr(e, "reason", None), TimeoutError)
             return self._handle_decision_failure(
                 context, "steps/toolCallRequest",
-                cause="transport_failure", error=str(e),
-                deny_msg=f"Guardian unreachable: {e}")
+                cause="decision_timeout" if is_timeout else "transport_failure",
+                error=str(e),
+                deny_msg=(f"Guardian decision timed out: {e}" if is_timeout
+                          else f"Guardian unreachable: {e}"))
         except Exception as e:  # noqa: BLE001
             return self._handle_decision_failure(
                 context, "steps/toolCallRequest",
@@ -720,16 +772,36 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                         method="steps/toolCallRequest")
             return self._block(context, "response signature invalid")
 
-        result = (response or {}).get("result", {})
-        decision = (result.get("decision") or "").lower()
-        reasoning = result.get("reasoning", "")
+        # Total, never-raising coercion of the verdict fields — a
+        # non-string decision / non-dict modifications must not throw
+        # inside the middleware (PR #22 adversarial probing).
+        decision, reasoning, mods = normalize_decision(
+            (response or {}).get("result"))
 
         if decision == "allow":
             return None
         if decision == "deny":
             return self._block(context, reasoning or "denied by Guardian")
         if decision == "modify":
-            mods = result.get("modifications", {})
+            violation = modify_composition_violation(mods)
+            if violation:
+                audit_event("modify_composition_invalid",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest", detail=violation)
+                return self._block(
+                    context,
+                    f"MODIFY refused ({violation}); failing closed per §6.3:146")
+            if mods.get("redactions"):
+                # NAT's middleware can replace invocation arguments but has
+                # no generic JSON-Pointer redaction primitive. Applying only
+                # parameter_overrides would silently discard part of the
+                # Guardian's valid compound decision.
+                audit_event("modify_unapplied_redactions",
+                            session_id=self._session_id,
+                            method="steps/toolCallRequest")
+                return self._block(
+                    context, "MODIFY refused: NAT cannot apply the requested "
+                    "redactions without dropping part of the decision")
             overrides = mods.get("parameter_overrides")
             if isinstance(overrides, dict):
                 _apply_overrides_to_context(context, overrides)
@@ -741,16 +813,19 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             # should compose with NAT's HITL middleware.
             return self._block(context, f"{decision}: {reasoning}")
 
-        # Unknown disposition: ALWAYS audited (§6.4 — every step that
-        # proceeds without a decision MUST be recorded), then posture.
-        audit_event("unknown_disposition",
+        # The decision ARRIVED but its `decision` field cannot be
+        # interpreted. Fail closed rather than proceed. The exact spec
+        # basis is unsettled (§6.4:156 "malformed response" → posture vs.
+        # an arrived-and-unusable fail-closed reading); tracked in issue
+        # #32. Safe reading, labeled as deliberate hardening (PR #22 audit).
+        audit_event("unusable_disposition",
                     disposition=decision or "(missing)",
                     session_id=self._session_id,
-                    method="steps/toolCallRequest",
-                    posture="deny" if self._effective_default_deny() else "proceed")
-        if self._effective_default_deny():
-            return self._block(context, f"unknown disposition: {decision}")
-        return None
+                    method="steps/toolCallRequest")
+        return self._block(
+            context,
+            f"unusable Guardian disposition '{decision}' — cannot be "
+            f"interpreted; failing closed (see issue #32)")
 
     async def post_invoke(self, context):
         """Record the result. Apply Guardian's verdict to the output.
@@ -764,7 +839,9 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
         - unknown: respect default_deny — drop output if true.
         """
         if os.environ.get("ACS_DISABLED") == "1":
-            sys.stderr.write("acs-adapter: ACS_DISABLED=1 — post_invoke bypassed\n")
+            audit_event("acs_disabled_bypass", session_id=self._session_id,
+                        method="steps/toolCallResult",
+                        detail="ACS_DISABLED=1 — post_invoke bypassed ungoverned")
             return None
         # request_id_ref points at the originating toolCallRequest so the
         # Guardian can correlate result with request (tool-call-result.json:19-23).
@@ -790,8 +867,12 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                 context, cause=cause, http_status=e.status,
                 error=e.jsonrpc_error.get("message", ""))
         except (urllib.error.URLError, TimeoutError, OSError) as e:
+            is_timeout = isinstance(e, TimeoutError) or isinstance(
+                getattr(e, "reason", None), TimeoutError)
             return self._post_invoke_failure(
-                context, cause="transport_failure", error=str(e))
+                context,
+                cause="decision_timeout" if is_timeout else "transport_failure",
+                error=str(e))
         except Exception as e:  # noqa: BLE001
             return self._post_invoke_failure(
                 context, cause="adapter_exception", error=str(e))
@@ -826,9 +907,8 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             return self._post_invoke_refusal(
                 context, cause="response_signature_invalid")
 
-        result = (response or {}).get("result", {})
-        decision = (result.get("decision") or "").lower()
-        reasoning = result.get("reasoning", "")
+        decision, reasoning, mods = normalize_decision(
+            (response or {}).get("result"))
 
         if decision == "deny":
             # Post-hoc redaction: the tool already executed, but we
@@ -847,27 +927,49 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
                         reasoning=reasoning or "output redacted by Guardian")
             return context
         if decision == "modify":
-            mods = result.get("modifications", {})
+            violation = modify_composition_violation(mods)
+            if violation:
+                audit_event("modify_composition_invalid",
+                            session_id=self._session_id,
+                            method="steps/toolCallResult", detail=violation)
+                _redact_output(context)
+                audit_event("post_invoke_redacted",
+                            cause="modify_composition_invalid",
+                            session_id=self._session_id,
+                            method="steps/toolCallResult")
+                return context
             modified_content = mods.get("modified_content")
             if modified_content is not None:
                 context.output = modified_content
                 return context
+            # A structured MODIFY on a result cannot be realized generically
+            # by NAT's middleware. Passing the original output would silently
+            # ignore the Guardian, so redact the whole result as the safe
+            # substitution and make the loss of fidelity explicit.
+            _redact_output(context)
+            audit_event("post_invoke_redacted",
+                        cause="modify_unapplied_structured_edits",
+                        session_id=self._session_id,
+                        method="steps/toolCallResult")
+            return context
         if decision not in KNOWN_DECISIONS:
-            # ALWAYS audited (§6.4), posture decides redaction.
-            audit_event("unknown_disposition",
+            # The decision ARRIVED but cannot be interpreted. Fail closed
+            # (redact the output the Guardian never usably vetted) rather
+            # than proceed. Exact spec basis unsettled — §6.4:156
+            # "malformed response" → posture vs. an arrived-and-unusable
+            # fail-closed reading; tracked in issue #32. Safe reading,
+            # labeled as deliberate hardening (PR #22 audit).
+            audit_event("unusable_disposition",
                         disposition=decision or "(missing)",
                         session_id=self._session_id,
+                        method="steps/toolCallResult")
+            _redact_output(context)
+            audit_event("post_invoke_redacted",
+                        cause="unusable_disposition",
+                        session_id=self._session_id,
                         method="steps/toolCallResult",
-                        posture=("deny" if self._effective_default_deny()
-                                 else "proceed"))
-            if self._effective_default_deny():
-                _redact_output(context)
-                audit_event("post_invoke_redacted",
-                            cause="unknown_disposition_default_deny",
-                            session_id=self._session_id,
-                            method="steps/toolCallResult",
-                            decision=decision)
-                return context
+                        decision=decision)
+            return context
         return None
 
     # ----- helpers -----
@@ -996,8 +1098,9 @@ class ACSMiddleware(FunctionMiddleware):  # type: ignore[misc, valid-type]
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        timeout_s = getattr(self, "_negotiated_timeout_s", None) or self._config.timeout_s
         try:
-            with urllib.request.urlopen(req, timeout=self._config.timeout_s) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             parsed = None

@@ -168,6 +168,34 @@ class DispositionsLive(unittest.TestCase):
             "uses modified_args[0]. The agent would run the ORIGINAL "
             "(unsafe) command, defeating the purpose of MODIFY.")
 
+    def test_modify_with_unapplied_redaction_blocks_instead_of_half_applying(self) -> None:
+        """NAT must not apply overrides while dropping a sibling redaction."""
+        class ShellInput(BaseModel):
+            command: str
+            secret: str
+
+        ctx = _make_ctx_with_pydantic_input(
+            "Bash", ShellInput,
+            ShellInput(command="unsafe", secret="do-not-forward"))
+        self._set_response("steps/toolCallRequest", {
+            "decision": "modify", "reasoning": "apply both edits",
+            "modifications": {
+                "redactions": [
+                    {"path": "/secret", "replacement": "[REDACTED]"}
+                ],
+                "parameter_overrides": {"command": "echo SAFE"},
+            },
+        })
+
+        mw = self._mw(default_deny=False)
+        try:
+            asyncio.run(mw.pre_invoke(ctx))
+            self.assertIsNotNone(getattr(ctx, "action", None),
+                "combined MODIFY was neither raised nor converted to SKIP; "
+                "the redaction was silently discarded")
+        except ACSGuardianDenied:
+            pass
+
     # ────────────────────────────────────────────────────────────────
     # ASK / DEFER substitution — per docs both substitute to DENY at
     # the middleware boundary. Verify the function does NOT execute.
@@ -248,6 +276,29 @@ class DispositionsLive(unittest.TestCase):
             "REGRESSION: post_invoke DENY did not clear context.output — "
             "the secret/sensitive value flows through despite Guardian "
             "demanding redaction")
+
+    def test_post_invoke_structured_modify_never_leaks_unmodified_output(self) -> None:
+        """A structured result redaction NAT cannot realize fails closed."""
+        class ShellInput(BaseModel):
+            command: str
+
+        ctx = _make_ctx_with_pydantic_input(
+            "Bash", ShellInput, ShellInput(command="show-secret"))
+        ctx.output = {"secret": "do-not-forward", "status": "ok"}
+        self._set_response("steps/toolCallResult", {
+            "decision": "modify", "reasoning": "remove credential",
+            "modifications": {
+                "redactions": [
+                    {"path": "/secret", "replacement": "[REDACTED]"}
+                ]
+            },
+        })
+
+        mw = self._mw(default_deny=False)
+        asyncio.run(mw.post_invoke(ctx))
+        self.assertIsNone(ctx.output,
+            "NAT cannot apply JSON-Pointer result redactions; passing the "
+            "original output silently ignores the Guardian's MODIFY")
 
 
 if __name__ == "__main__":

@@ -2,9 +2,9 @@
 wire.py installer tests for the Cursor adapter.
 
 Guards the DEFAULT install path — the one a user actually follows —
-against silently dropping a Core-floor hook. subagentStart is the
-confused-deputy spawn gate (Core floor post-#21); it was in the adapter
-and in hooks.json.example but NOT in wire.py's default ACS_CORE_HOOKS,
+against silently dropping a documented gate. subagentStart is the
+confused-deputy spawn gate proposed by PR #21 (open; not in this branch);
+it was in the adapter and in hooks.json.example but not in wire.py's default,
 so `wire.py --write` with no --hooks produced a config missing the gate
 while the README claimed full coverage (PR #22 sixth review). These
 tests run the real CLI and assert the generated hooks.json.
@@ -43,7 +43,7 @@ def _run_default_wire() -> dict:
         return json.loads(settings.read_text())
 
 
-class DefaultWiringCoversCoreFloor(unittest.TestCase):
+class DefaultWiringMatchesDocumentedSet(unittest.TestCase):
     def setUp(self) -> None:
         self.hooks = _run_default_wire().get("hooks", {})
 
@@ -59,37 +59,38 @@ class DefaultWiringCoversCoreFloor(unittest.TestCase):
             f"subagentStart command must set ACS_DEFAULT_DENY=1; got "
             f"{entry.get('command')!r}")
 
-    def test_default_covers_full_core_minimum_set(self) -> None:
-        """Regression: the whole Core minimum set is wired, not a
-        subset. Mirror wire.py's own ACS_CORE_HOOKS so the two can't
-        drift silently."""
+    def test_default_covers_current_core_and_proposed_gate(self) -> None:
+        """The default covers current Core plus the proposed spawn gate."""
         sys.path.insert(0, str(WIRE.parent))
         import wire  # noqa: E402
-        for hook in wire.ACS_CORE_HOOKS:
+        self.assertEqual(
+            wire.DEFAULT_HOOKS,
+            wire.CURRENT_CORE_HOOKS + wire.PR21_PROPOSED_HOOKS)
+        for hook in wire.DEFAULT_HOOKS:
             self.assertIn(hook, self.hooks,
-                f"default wiring missing Core hook {hook!r}; "
+                f"default wiring missing documented hook {hook!r}; "
                 f"wired: {sorted(self.hooks)}")
 
 
-class ExampleConfigCoversCoreFloor(unittest.TestCase):
+class ExampleConfigMatchesDefaultWiring(unittest.TestCase):
     """The drop-in `hooks.json.example` — the file people actually copy
-    — must itself cover the Core-minimum hook set. Emission proves the
+    — must itself cover the documented default hook set. Emission proves the
     adapter CAN emit each hook when invoked, and test_wire proves
     `wire.py --write`; neither reads the checked-in example. The example
     shipped missing afterAgentResponse + sessionEnd (same bug class as
     the original Claude 5-of-6; PR #22 emission re-review), so put the
     example itself under test."""
 
-    def test_example_wires_full_core_minimum(self) -> None:
+    def test_example_wires_documented_default(self) -> None:
         import json
         example = json.loads((HERE.parent / "hooks.json.example").read_text())
         wired = set(example.get("hooks", {}))
         sys.path.insert(0, str(WIRE.parent))
         import wire  # noqa: E402
-        missing = set(wire.ACS_CORE_HOOKS) - wired
+        missing = set(wire.DEFAULT_HOOKS) - wired
         self.assertEqual(missing, set(),
             f"hooks.json.example (the copy-paste config) is missing "
-            f"Core-minimum hooks {sorted(missing)}; wired: {sorted(wired)}")
+            f"default hooks {sorted(missing)}; wired: {sorted(wired)}")
 
     def test_example_gate_hooks_fail_closed_on_BOTH_mechanisms(self) -> None:
         """A gate hook in the drop-in example must carry BOTH:
@@ -106,8 +107,8 @@ class ExampleConfigCoversCoreFloor(unittest.TestCase):
         sys.path.insert(0, str(WIRE.parent))
         import wire  # noqa: E402
         # Every hook the example marks failClosed is a gate; each MUST
-        # also set ACS_DEFAULT_DENY=1. (Covers the Core-min gates AND the
-        # shell/MCP gates.)
+        # also set ACS_DEFAULT_DENY=1. This covers default, shell, and MCP
+        # gates without assigning a normative status to the default extras.
         checked = 0
         for hook, entries in example["hooks"].items():
             entry = entries[0]
@@ -116,14 +117,43 @@ class ExampleConfigCoversCoreFloor(unittest.TestCase):
                 self.assertIn("ACS_DEFAULT_DENY=1", entry.get("command", ""),
                     f"gate hook {hook} sets failClosed:true but NOT "
                     f"ACS_DEFAULT_DENY=1 — fail-open on adapter build failure")
-        # And every Core-min gate hook must actually be a fail-closed gate.
-        for hook in wire.GATE_HOOKS & set(wire.ACS_CORE_HOOKS):
+        # Every default gate hook must actually be a fail-closed gate.
+        for hook in wire.GATE_HOOKS & set(wire.DEFAULT_HOOKS):
             entry = example["hooks"].get(hook, [{}])[0]
             self.assertTrue(entry.get("failClosed") is True
                             and "ACS_DEFAULT_DENY=1" in entry.get("command", ""),
-                f"Core-min gate hook {hook} must set BOTH failClosed:true "
+                f"default gate hook {hook} must set BOTH failClosed:true "
                 f"and ACS_DEFAULT_DENY=1")
         self.assertGreater(checked, 0, "no failClosed gate hooks found?")
+
+    def test_unsupported_hooks_cannot_drift_into_shipped_wiring(self) -> None:
+        """Tie the adapter taxonomy to both installation surfaces.
+
+        A hook documented as unsupported must not appear in the generated
+        default set or the copy-paste example, and a hook cannot be both
+        mapped and unsupported.  This catches silent wiring drift without
+        pretending that an unsupported native event has an ACS mapping.
+        """
+        sys.path.insert(0, str(WIRE.parent))
+        import wire
+        import acs_adapter
+
+        example = json.loads((HERE.parent / "hooks.json.example").read_text())
+        example_hooks = set(example.get("hooks", {}))
+        generated_defaults = set(wire.DEFAULT_HOOKS)
+        mapped = set(acs_adapter.HOOK_MAP)
+        unsupported = set(acs_adapter.KNOWN_UNMAPPED)
+
+        self.assertEqual(mapped & unsupported, set(),
+            "a Cursor hook cannot be both forwarded and documented unsupported")
+        self.assertEqual(example_hooks & unsupported, set(),
+            "hooks.json.example wires a hook the adapter cannot translate")
+        self.assertEqual(generated_defaults & unsupported, set(),
+            "wire.py defaults include an unsupported hook")
+        self.assertLessEqual(generated_defaults, mapped,
+            "wire.py defaults must all have a production HOOK_MAP entry")
+        self.assertLessEqual(example_hooks, mapped,
+            "the copy-paste example must not invoke an unmapped hook")
 
 
 if __name__ == "__main__":

@@ -188,23 +188,62 @@ class Item05_HandshakeCacheTtl(unittest.TestCase):
     changes (skew window, profiles) MUST not be served from stale cache."""
 
     def test_fresh_cache_is_honored(self) -> None:
+        # The cache holds the WHOLE response envelope (not the bare
+        # payload) so the read path can re-verify its signature —
+        # PR #22 review: a bare-payload cache let the observed agent
+        # flip its own fail posture by editing one word. This entry is
+        # unsigned + no secret configured = local-dev mode, which
+        # verify_signature accepts.
+        saved = {k: os.environ.pop(k, None)
+                 for k in ("ACS_HMAC_SECRET", "ACS_HMAC_SECRET_FILE")}
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["ACS_HANDSHAKE_CACHE"] = tmp
+                import importlib
+                importlib.reload(acs_common)
+                url = "http://127.0.0.1:1/dead"
+                fake_payload = {"negotiated_version": "0.1.0", "_synthetic": True}
+                envelope = {"jsonrpc": "2.0", "id": "cache-test",
+                            "result": {"type": "final", "acs_version": "0.1.0",
+                                       "payload": fake_payload}}
+                cache_path = acs_common._handshake_cache_path("sess1", url)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(envelope))
+                # Recently-mtimed cache must be honored
+                result = acs_common.do_handshake(
+                    guardian_url=url, session_id="sess1",
+                    agent_id="x", platform="t", methods_implemented=[],
+                )
+                self.assertEqual(result, fake_payload,
+                    "fresh handshake cache must be honored to avoid the "
+                    "per-process re-handshake overhead")
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_legacy_bare_payload_cache_is_a_miss(self) -> None:
+        """The pre-0.1.2 cache format held result.payload alone — with no
+        envelope there is no signature to verify (§10 binds the signature
+        to the envelope), so the read path must treat it as a miss and
+        re-handshake, never trust it (PR #22 review)."""
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["ACS_HANDSHAKE_CACHE"] = tmp
             import importlib
             importlib.reload(acs_common)
             url = "http://127.0.0.1:1/dead"
-            fake_hello = {"negotiated_version": "0.1.0", "_synthetic": True}
-            cache_path = acs_common._handshake_cache_path("sess1", url)
+            cache_path = acs_common._handshake_cache_path("sess-legacy", url)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(fake_hello))
-            # Recently-mtimed cache must be honored
+            cache_path.write_text(json.dumps(
+                {"negotiated_version": "0.1.0", "on_decision_failure": "proceed"}))
             result = acs_common.do_handshake(
-                guardian_url=url, session_id="sess1",
+                guardian_url=url, session_id="sess-legacy",
                 agent_id="x", platform="t", methods_implemented=[],
             )
-            self.assertEqual(result, fake_hello,
-                "fresh handshake cache must be honored to avoid the "
-                "per-process re-handshake overhead")
+            # Legacy entry → miss → re-handshake → dead URL → None
+            self.assertIsNone(result,
+                "a bare-payload cache entry has no signature to check and "
+                "must not govern the fail posture")
 
     def test_stale_cache_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -110,7 +110,7 @@ You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests)
 ## Prerequisites
 
 - **`claude` CLI** installed and authenticated — install guide: <https://docs.claude.com/claude-code>
-- **Python 3.10+** with `jsonschema` and `rfc8785` — `pip install -r ../requirements-test.txt`
+- **Python 3.10+** with `rfc8785` (the adapter's one runtime dependency) — `pip install -r requirements.txt`. For running the test suites you also need `jsonschema`: `pip install -r ../requirements-test.txt`
 - **Canonical ACS schemas** — the in-repo copy at `specification/v0.1.0/` is the default, so no setup is needed when running from a clone of this repo. Set `ACS_SPEC_DIR` only to validate against a different spec checkout.
 
 ## Smoke tests
@@ -276,14 +276,14 @@ The adapter is configured by environment variables, typically set per-hook by `w
 
 ## Conformance status
 
-Honest, item-by-item against `docs/spec/conformance.md` (post-#21 some items are SHOULD/conditional rather than MUST — the row notes say which):
+Honest, item-by-item against `docs/spec/conformance.md`. (PR #21 — open, not in this branch — proposes relaxing some items to SHOULD/conditional; the row notes say which. Against this branch's spec text those items remain as written.)
 
 | ACS-Core item | Status |
 |---|---|
 | Handshake (`handshake/hello`) | ✓ adapter sends ClientHello on first session call; cached in `~/.cache/acs-adapter-handshake/`. |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (`tests/test_envelope_schema.py`); format checking enforces `uuid` and `date-time`. |
-| Hook taxonomy (Core minimum set) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`; plus `subagentStart` via the PreToolUse(Task) remap (Core floor post-#21, see mapping.md) and `subagentStop` (best-effort payload, see mapping.md). `preCompact` deliberately unmapped — the platform exposes no entry list (mapping.md). |
-| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on **pre-execution** hooks (`PreToolUse`, `UserPromptSubmit`); MODIFY partial (`PreToolUse` with `parameter_overrides` only). **Post-execution and lifecycle hooks (`PostToolUse`, `Notification → agentResponse`, `Stop`, `SessionEnd`) are observation-only** — Claude Code fires them after the side effect / message has occurred; a Guardian `deny` on those cannot undo it. See `mapping.md`. |
+| Hook taxonomy (Core minimum set) | ✓ `sessionStart`, `userMessage`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`; plus `subagentStart` via the PreToolUse(Agent — legacy Task) remap (proposed Core floor in PR #21, which is not part of this branch; see mapping.md), `subagentStop` (best-effort payload, pending the normative schema decision described in mapping.md), and the turn boundary: `turnStart` (emitted on UserPromptSubmit) / `turnEnd` (Stop). `preCompact` deliberately unmapped — the platform exposes no entry list (mapping.md). |
+| Dispositions (ALLOW/DENY/ASK/DEFER) | ✓ on **pre-execution** hooks (`PreToolUse`, `UserPromptSubmit`, `turnStart`); MODIFY partial (`PreToolUse` with `parameter_overrides`, merged onto the original input). **Post-execution and lifecycle hooks (`PostToolUse`, `Notification → agentResponse`, `Stop → turnEnd`, `SessionEnd`) are observation-only** — Claude Code fires them after the side effect / message / turn has occurred; a Guardian `deny` on those cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ default-deny honored on unknown verdicts when `ACS_DEFAULT_DENY=1`; spec-default fail-open path emits audit event. |
 | SessionContext + published `chain_hash` | ✓ session_id propagated; Guardian computes rolling SHA-256 chain per §8.2 (`adapters/test_acs_core_conformance.py::Core05_SessionContext`). |
 | Replay protection (`request_id` + `timestamp`) | ✓ adapter sends both; Guardian rejects duplicate `request_id` (REPLAY_DETECTED -32005) and timestamps outside skew window (TIMESTAMP_OUT_OF_WINDOW -32006) per §10.3. |

@@ -10,11 +10,16 @@ transforms whose correctness is not captured by "the envelope is
 schema-valid" (PR #22 emission re-review — de-duplicated the double
 schema validation).
 
-Here: the PreToolUse(Task) → steps/subagentStart remap and its subagent
+Here: the PreToolUse(Agent) → steps/subagentStart remap and its subagent
 lineage derivation (method binding, parent_step_id, collision-free
-subagent id). UUID coercion / argument extraction / timestamp / metadata
-/ argument-wrapping are all now asserted as emission invariants on every
-captured envelope.
+subagent id). The spawn tool is `Agent` on current Claude Code (legacy
+`Task` still matched); the tests exercise BOTH names so the gate can't
+silently go dead on a rename again (PR #22 spec/host audit — the old
+tests used only "Task", the same wrong name the code matched, so the
+gate was dead code on current Claude Code while the test stayed green).
+UUID coercion / argument extraction / timestamp / metadata /
+argument-wrapping are asserted as emission invariants on every captured
+envelope.
 """
 from __future__ import annotations
 
@@ -37,23 +42,28 @@ def _event(name: str, **extra) -> dict:
     return base
 
 
-class TaskSpawnMethodBinding(unittest.TestCase):
+class SubagentSpawnMethodBinding(unittest.TestCase):
     """Envelope validation does not bind method to payload schema, so a
-    method/payload mismatch on the Task remap would pass schema checks.
-    These pin the binding + lineage explicitly."""
+    method/payload mismatch on the spawn remap would pass schema checks.
+    These pin the binding + lineage explicitly, for BOTH the current
+    `Agent` tool name and the legacy `Task` name."""
 
-    def test_task_remaps_to_subagent_start_method(self) -> None:
-        env = acs_adapter.build_request(_event(
-            "PreToolUse", tool_name="Task",
-            tool_input={"subagent_type": "researcher", "prompt": "x"},
-            tool_use_id="task-bind-1", permission_mode="default"))
-        self.assertEqual(env["method"], "steps/subagentStart",
-            "PreToolUse(Task) must emit the subagentStart method, not a "
-            "generic toolCallRequest")
-        # With tool_use_id: parent_step_id IS the envelope's request_id
-        # (the delegation step and spawn event are the same wire step).
-        self.assertEqual(env["params"]["payload"]["parent_step_id"],
-                         env["params"]["request_id"])
+    def test_agent_and_task_remap_to_subagent_start_method(self) -> None:
+        # Agent = current Claude Code (docs 2026-08-22); Task = legacy.
+        for tool in ("Agent", "Task"):
+            with self.subTest(tool=tool):
+                env = acs_adapter.build_request(_event(
+                    "PreToolUse", tool_name=tool,
+                    tool_input={"subagent_type": "researcher", "prompt": "x"},
+                    tool_use_id=f"spawn-bind-{tool}", permission_mode="default"))
+                self.assertEqual(env["method"], "steps/subagentStart",
+                    f"PreToolUse({tool}) must emit the subagentStart method, "
+                    f"not a generic toolCallRequest")
+                # With tool_use_id: parent_step_id IS the envelope's
+                # request_id (delegation step and spawn event are the same
+                # wire step).
+                self.assertEqual(env["params"]["payload"]["parent_step_id"],
+                                 env["params"]["request_id"])
 
     def test_plain_tool_keeps_tool_call_request_method(self) -> None:
         env = acs_adapter.build_request(_event(
@@ -62,12 +72,12 @@ class TaskSpawnMethodBinding(unittest.TestCase):
             tool_use_id="t-bind-2", permission_mode="default"))
         self.assertEqual(env["method"], "steps/toolCallRequest")
 
-    def test_task_without_tool_use_id_derives_from_request_id(self) -> None:
+    def test_agent_without_tool_use_id_derives_from_request_id(self) -> None:
         """No tool_use_id: both ids derive from the envelope's own
         request_id — never a random uuid4 (invented lineage) nor a
         stable uuid5 of the empty string (every id-less spawn colliding
         on one id; PR #22 fifth review)."""
-        ev = _event("PreToolUse", tool_name="Task",
+        ev = _event("PreToolUse", tool_name="Agent",
                     tool_input={"prompt": "x"}, permission_mode="default")
         ev.pop("tool_use_id", None)
         env = acs_adapter.build_request(ev)

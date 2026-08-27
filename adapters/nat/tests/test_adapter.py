@@ -17,9 +17,12 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 # Skip cleanly if NAT isn't installed in the environment running tests
 try:
@@ -44,7 +47,12 @@ GUARDIAN = HERE.parent.parent / "example-guardian" / "example_guardian.py"
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_common"))
-from test_harness import free_port as _find_free_port, wait_port as _wait  # noqa: E402
+import acs_common  # noqa: E402
+from test_harness import (  # noqa: E402
+    ProgrammableGuardian,
+    free_port as _find_free_port,
+    wait_port as _wait,
+)
 
 
 def _make_context(tool_name: str, args: dict) -> "InvocationContext":
@@ -103,6 +111,99 @@ class NATMiddlewareIntegration(unittest.TestCase):
         ctx.output = "file contents"
         result = asyncio.run(mw.post_invoke(ctx))
         self.assertIsNone(result)  # allow + no modification
+
+    def test_negotiated_timeout_replaces_local_timeout(self) -> None:
+        """A decision arriving after the ServerHello deadline is a timeout.
+
+        The local config allows one second, while the signed ServerHello
+        negotiates 100 ms.  A Guardian DENY at 300 ms therefore must not be
+        applied; under the shipped fail-open posture the call proceeds with a
+        `decision_timeout` audit.  This exercises the actual HTTP boundary and
+        distinguishes negotiation from the old hard-coded/local timeout.
+        """
+        g = ProgrammableGuardian()
+
+        def hello(req: dict) -> dict:
+            result = g._default_handshake(req)
+            result["payload"]["timeout_config"] = {"default_ms": 100}
+            return result
+
+        def delayed_deny(req: dict) -> dict:
+            time.sleep(0.3)
+            return {
+                "type": "final", "acs_version": "0.1.0",
+                "request_id": req["params"]["request_id"],
+                "chain_hash": "0" * 64, "decision": "deny",
+                "reasoning": "arrived after negotiated deadline",
+            }
+
+        g.handlers["handshake/hello"] = hello
+        g.handlers["__default__"] = delayed_deny
+        saved_secret = os.environ.get("ACS_HMAC_SECRET")
+        saved_secret_file = os.environ.get("ACS_HMAC_SECRET_FILE")
+        try:
+            os.environ["ACS_HMAC_SECRET"] = g.hmac_secret
+            os.environ.pop("ACS_HMAC_SECRET_FILE", None)
+            with tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(acs_common, "_HANDSHAKE_CACHE_DIR",
+                                      Path(d)), g:
+                mw = ACSMiddleware(ACSMiddlewareConfig(
+                    guardian_url=g.url(), default_deny=False,
+                    session_id=str(uuid.uuid4()), timeout_s=1.0,
+                ))
+                ctx = _make_context("Bash", {"command": "echo hi"})
+                result = asyncio.run(mw.pre_invoke(ctx))
+            self.assertIsNone(result,
+                "the late DENY arrived after the negotiated deadline; the "
+                "configured fail-open posture should control the timeout")
+            self.assertAlmostEqual(mw._negotiated_timeout_s, 0.1)
+        finally:
+            if saved_secret is None:
+                os.environ.pop("ACS_HMAC_SECRET", None)
+            else:
+                os.environ["ACS_HMAC_SECRET"] = saved_secret
+            if saved_secret_file is None:
+                os.environ.pop("ACS_HMAC_SECRET_FILE", None)
+            else:
+                os.environ["ACS_HMAC_SECRET_FILE"] = saved_secret_file
+
+    def test_acs_disabled_bypass_is_written_to_the_durable_sink(self) -> None:
+        """Both NAT bypass boundaries must leave structured durable records."""
+        saved_disabled = os.environ.get("ACS_DISABLED")
+        saved_audit = os.environ.get("ACS_AUDIT_FILE")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                audit_path = Path(d) / "nat-audit.log"
+                os.environ["ACS_DISABLED"] = "1"
+                os.environ["ACS_AUDIT_FILE"] = str(audit_path)
+                mw = self._make_middleware(default_deny=False)
+                ctx = _make_context("Read", {"file_path": "/tmp/x"})
+                self.assertIsNone(asyncio.run(mw.pre_invoke(ctx)))
+                ctx.output = "file contents"
+                self.assertIsNone(asyncio.run(mw.post_invoke(ctx)))
+
+                self.assertTrue(audit_path.exists(),
+                    "ACS_DISABLED bypasses must not exist only on stderr")
+                records = [
+                    json.loads(line.removeprefix("ACS_AUDIT "))
+                    for line in audit_path.read_text().splitlines()
+                ]
+            bypasses = [r for r in records
+                        if r.get("acs_audit_event") == "acs_disabled_bypass"]
+            self.assertEqual(len(bypasses), 2)
+            self.assertEqual({r.get("method") for r in bypasses},
+                             {"steps/toolCallRequest", "steps/toolCallResult"})
+            self.assertEqual({r.get("session_id") for r in bypasses},
+                             {mw._session_id})
+        finally:
+            if saved_disabled is None:
+                os.environ.pop("ACS_DISABLED", None)
+            else:
+                os.environ["ACS_DISABLED"] = saved_disabled
+            if saved_audit is None:
+                os.environ.pop("ACS_AUDIT_FILE", None)
+            else:
+                os.environ["ACS_AUDIT_FILE"] = saved_audit
 
     # ----- fail posture -----
 

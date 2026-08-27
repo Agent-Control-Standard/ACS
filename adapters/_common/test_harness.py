@@ -488,7 +488,14 @@ class ProgrammableGuardian:
                 self_h.send_header("Content-Type", "application/json")
                 self_h.send_header("Content-Length", str(len(body)))
                 self_h.end_headers()
-                self_h.wfile.write(body)
+                try:
+                    self_h.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A negotiated-timeout test intentionally closes the
+                    # client socket before the delayed Guardian response.
+                    # That is the behavior under test, not a server failure;
+                    # keep the harness from printing a misleading traceback.
+                    pass
 
             def log_message(self_h, *a, **kw):
                 return

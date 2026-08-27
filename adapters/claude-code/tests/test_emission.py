@@ -53,6 +53,10 @@ class ClaudeEmission(unittest.TestCase):
                 "ACS_HMAC_SECRET": g.hmac_secret,
                 "ACS_HANDSHAKE": "1",           # capture the handshake too
                 "ACS_HANDSHAKE_CACHE": cache,   # fresh → handshake fires
+                # Fresh, isolated turn/session state per one-shot emit so a
+                # turn opened by one test can't leak into another (all
+                # cases reuse one SESSION id).
+                "ACS_SESSION_STATE_DIR": cache,
             })
             env.pop("ACS_HMAC_SECRET_FILE", None)
             proc = subprocess.run(
@@ -103,19 +107,32 @@ class ClaudeEmission(unittest.TestCase):
         self._assert_emits(_event("SessionEnd", reason="clear"),
                            "steps/sessionEnd")
 
-    def test_stop_maps_to_session_end(self):
-        # Stop is a distinct native event that also maps to sessionEnd;
-        # covered here so emission owns every mapped native event's
-        # schema validation (was a separate row in test_envelope_schema).
-        self._assert_emits(_event("Stop", permission_mode="default"),
-                           "steps/sessionEnd")
+    def test_bare_stop_with_no_open_turn_emits_nothing(self):
+        # Stop now maps to steps/turnEnd, which needs an OPEN turn (a prior
+        # UserPromptSubmit). With no open turn there's nothing to close
+        # honestly, so the adapter emits no turnEnd and audits it rather
+        # than fabricate a turn_id (PR #22 turn-tracking). The full
+        # turnStart→…→turnEnd lifecycle is exercised in
+        # ClaudeSequentialSession.
+        g = self._emit(_event("Stop", permission_mode="default"))
+        content = [m for m in g.methods() if m.startswith("steps/")]
+        self.assertEqual(content, [],
+            f"a Stop with no open turn must emit no step; got {content}")
 
-    def test_subagent_start_via_task(self):
-        self._assert_emits(_event("PreToolUse", tool_name="Task",
-                                  tool_input={"subagent_type": "researcher",
-                                              "prompt": "look it up"},
-                                  tool_use_id="task-1", permission_mode="default"),
-                           "steps/subagentStart")
+    def test_subagent_start_via_agent_tool(self):
+        # Current Claude Code spawns subagents via the `Agent` tool
+        # (docs 2026-08-22); legacy builds used `Task`. Both must emit
+        # steps/subagentStart — the old test used only "Task", the same
+        # wrong name the code matched, so the gate was dead code on
+        # current Claude Code while the test stayed green (PR #22 audit).
+        for tool in ("Agent", "Task"):
+            with self.subTest(tool=tool):
+                self._assert_emits(_event("PreToolUse", tool_name=tool,
+                                          tool_input={"subagent_type": "researcher",
+                                                      "prompt": "look it up"},
+                                          tool_use_id=f"spawn-{tool}",
+                                          permission_mode="default"),
+                                   "steps/subagentStart")
 
     def test_subagent_stop(self):
         self._assert_emits(_event("SubagentStop",
@@ -153,10 +170,13 @@ class ClaudeSequentialSession(unittest.TestCase):
                tool_response={"stdout": "hi", "interrupted": False},
                tool_use_id="tc-1", duration_ms=5),
         _event("Notification", message="fyi"),
-        _event("PreToolUse", tool_name="Task",
+        _event("PreToolUse", tool_name="Agent",
                tool_input={"subagent_type": "researcher", "prompt": "x"},
-               tool_use_id="task-1", permission_mode="default"),
+               tool_use_id="spawn-1", permission_mode="default"),
         _event("SubagentStop", transcript_path="/tmp/sub.jsonl"),
+        # Stop closes the turn opened by the UserPromptSubmit above →
+        # steps/turnEnd (turn-tracking); SessionEnd then closes the session.
+        _event("Stop", permission_mode="default"),
         _event("SessionEnd", reason="clear"),
     ]
 
@@ -165,6 +185,7 @@ class ClaudeSequentialSession(unittest.TestCase):
         cls.g = CaptureGuardian()
         cls.g.start()
         cls._cache = tempfile.mkdtemp()
+        cls._state = tempfile.mkdtemp()
         for event in cls.SEQUENCE:
             env = os.environ.copy()
             env.update({
@@ -172,6 +193,7 @@ class ClaudeSequentialSession(unittest.TestCase):
                 "ACS_HMAC_SECRET": cls.g.hmac_secret,
                 "ACS_HANDSHAKE": "1",
                 "ACS_HANDSHAKE_CACHE": cls._cache,  # SHARED → handshake once
+                "ACS_SESSION_STATE_DIR": cls._state,  # SHARED → turn_id persists
             })
             env.pop("ACS_HMAC_SECRET_FILE", None)
             subprocess.run([sys.executable, str(ADAPTER)],
@@ -214,10 +236,30 @@ class ClaudeSequentialSession(unittest.TestCase):
         self.assertEqual(advertised, emitted,
             f"advertised != emitted; over-advertised={sorted(advertised - emitted)}, "
             f"under-advertised={sorted(emitted - advertised)}")
-        unproven = advertised - emitted
-        self.assertEqual(unproven, set(),
-            f"handshake advertises methods this adapter never emitted in "
-            f"the full matrix — advertised-but-unproven: {sorted(unproven)}")
+
+    def test_turn_lifecycle_is_consistent(self):
+        """A turn opens with steps/turnStart (on the prompt) and closes with
+        steps/turnEnd (on Stop), and every in-turn step carries the same
+        metadata.turn_id (turn-start/turn-end.json, request-envelope.json:69;
+        PR #22 turn-tracking)."""
+        starts = self.g.records_for("steps/turnStart")
+        ends = self.g.records_for("steps/turnEnd")
+        self.assertEqual(len(starts), 1, f"one turnStart expected; {self.g.methods()}")
+        self.assertEqual(len(ends), 1, f"one turnEnd expected; {self.g.methods()}")
+        tid = self.g.payload_of("steps/turnStart").get("turn_id")
+        self.assertTrue(tid, "turnStart must carry a turn_id")
+        self.assertEqual(self.g.payload_of("steps/turnEnd").get("turn_id"), tid,
+            "turnEnd.turn_id must equal the turnStart's")
+        # userMessage and toolCallRequest (in-turn) must stamp metadata.turn_id.
+        for method in ("steps/userMessage", "steps/toolCallRequest"):
+            meta = (self.g.records_for(method)[0].parsed.get("params") or {}).get("metadata") or {}
+            self.assertEqual(meta.get("turn_id"), tid,
+                f"{method} must carry metadata.turn_id={tid!r}; got {meta.get('turn_id')!r}")
+        # sessionStart / sessionEnd are session-level — NOT under the turn.
+        for method in ("steps/sessionStart", "steps/sessionEnd"):
+            meta = (self.g.records_for(method)[0].parsed.get("params") or {}).get("metadata") or {}
+            self.assertIsNone(meta.get("turn_id"),
+                f"{method} is session-level and must not carry a turn_id")
 
 
 if __name__ == "__main__":

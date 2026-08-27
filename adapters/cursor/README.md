@@ -86,7 +86,7 @@ python3 wire.py \
   --write
 ```
 
-What it wires by default (the ACS-Core minimum set, mapped to Cursor's vocabulary):
+What it wires by default: this branch's six-hook ACS-Core minimum set, plus the `subagentStart` gate proposed by PR #21 (open; not in this branch).
 
 | Cursor event | ACS step method | Posture |
 |---|---|---|
@@ -96,7 +96,7 @@ What it wires by default (the ACS-Core minimum set, mapped to Cursor's vocabular
 | `postToolUse` | toolCallResult | fail-open |
 | `afterAgentResponse` | agentResponse | fail-open |
 | `sessionEnd` | sessionEnd | fail-open |
-| `subagentStart` | subagentStart | **fail-CLOSED** (gate — confused-deputy spawn gate, Core floor post-#21) |
+| `subagentStart` | subagentStart | **fail-CLOSED** (gate — confused-deputy spawn gate; PR #21 proposes it for the Core floor) |
 
 Gate hooks get **both** `ACS_DEFAULT_DENY=1` (our env var) AND `failClosed: true` (Cursor's native flag) — defense in depth: two independent mechanisms that both must fail open for a gate to leak.
 
@@ -124,7 +124,7 @@ You can also do an in-session manual smoke test (see [Smoke tests](#smoke-tests)
 ## Prerequisites
 
 - **Cursor** installed — <https://cursor.com>
-- **Python 3.10+** with `jsonschema` and `rfc8785` — `pip install -r ../requirements-test.txt`
+- **Python 3.10+** with `rfc8785` (the adapter's one runtime dependency) — `pip install -r requirements.txt`. For running the test suites you also need `jsonschema`: `pip install -r ../requirements-test.txt`
 - **Canonical ACS schemas** — the in-repo copy at `specification/v0.1.0/` is the default, so no setup is needed when running from a clone of this repo. Set `ACS_SPEC_DIR` only to validate against a different spec checkout.
 
 ## Smoke tests
@@ -304,13 +304,13 @@ The adapter is invoked as `python3 acs_adapter.py <event_name>`, where `<event_n
 
 ## Conformance status
 
-Honest, item-by-item against `docs/spec/conformance.md` (post-#21 some items are SHOULD/conditional rather than MUST — the row notes say which):
+Honest, item-by-item against `docs/spec/conformance.md`. (PR #21 — open, not in this branch — proposes relaxing some items to SHOULD/conditional; the row notes say which. Against this branch's spec text those items remain as written.)
 
 | ACS-Core item | Status |
 |---|---|
 | Handshake (`handshake/hello`) | ✓ on first session call; cached per-session |
 | JSON-RPC envelope shape (`request-envelope.json`) | ✓ validates against canonical schema for every mapped hook (emission suite), with format checking |
-| Hook taxonomy (Core minimum set) | ✓ full minimum set covered incl. `subagentStart` (Core floor post-#21); 17 Cursor events mapped total (`subagentStop` intentionally omitted — see honesty table below) |
+| Hook taxonomy (Core minimum set) | ✓ this branch's six-hook minimum set is covered. `subagentStart` is also covered as the gate proposed by PR #21 (open; not in this branch). Seventeen Cursor events are mapped in total; `subagentStop` is intentionally omitted — see the honesty table below. |
 | Dispositions | ALLOW / DENY / ASK supported on **permission (pre-execution) events** (`preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeSubmitPrompt`, `subagentStart`). DEFER substituted to ASK (Cursor has no defer). MODIFY supported on `preToolUse` via `updated_input`. **Lifecycle / post-execution hooks (`afterAgentResponse → steps/agentResponse`, `sessionStart`, `sessionEnd`, `afterShellExecution`, etc.) are observation-only** — Cursor fires them after the message / side effect has occurred; a Guardian `deny` cannot undo it. See `mapping.md`. |
 | Unknown-disposition fail posture | ✓ |
 | SessionContext + published `chain_hash` | ✓ session_id coerced to UUID; Guardian computes rolling SHA-256 chain |
@@ -329,7 +329,7 @@ Cursor does not expose every field the ACS v0.1.0 hook schemas require. Where th
 |---|---|---|---|
 | `subagentStart` → `steps/subagentStart` | `subagent_session_id` (deterministic uuid5 of `parent_session + subagent_id`); `parent_session_id` (the envelope's actual `session_id`); `parent_step_id` (last step_id the adapter has seen in this session, tracked in `~/.cache/acs-adapter-session/`); `subagent_descriptor.{agent_id,agent_name}` (from Cursor's `subagent_id` / `subagent_type`) | `intent_derivation = "derived_from_parent"` (defensible default for IDE-spawned subagents) | — |
 | `preCompact` → `steps/preCompact` | `entries_to_compact` (list of step_ids the adapter has observed in this session, snapshotted from session state); `triggered_by` (Cursor's `trigger` field) | `triggered_by = "framework_initiated"` only when Cursor omits `trigger` | — |
-| `subagentStop` → `steps/subagentStop` | — | — | **Not forwarded** (`KNOWN_UNMAPPED` in the adapter). `final_chain_hash` is genuinely unknowable (Cursor maintains no chain) — better to omit than fabricate. The field is now **optional** for chain-less frameworks (PR #21), so honest wiring becomes possible; tracked for the rebase. |
+| `subagentStop` → `steps/subagentStop` | — | — | **Not forwarded** (`KNOWN_UNMAPPED` in the adapter). `final_chain_hash` is genuinely unknowable (Cursor maintains no chain) — better to omit than fabricate. A normative schema change carried in this PR would make the field optional for chain-less frameworks, but honest wiring remains blocked on explicit spec-owner approval and host evidence. |
 
 These hooks are emitted only when Cursor's `hooks.json` wires them to the adapter. Per-session state for `parent_step_id` / `entries_to_compact` requires the adapter to be wired to at least one earlier hook in the same session (typically `preToolUse`); the adapter records each step's `request_id` to the session-state file on every invocation.
 

@@ -25,6 +25,7 @@ GUARDIAN = ADAPTER_DIR.parent / "example-guardian" / "example_guardian.py"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "_common"))
 from test_harness import (  # noqa: E402
+    ProgrammableGuardian,
     free_port as _find_free_port,
     wait_port as _wait_for_port,
 )
@@ -221,6 +222,44 @@ class AdapterRoundTrip(unittest.TestCase):
         # §6.4: 'Every step that proceeds without a decision MUST be recorded as an audit event'
         self.assertIn("ACS_AUDIT", err, "fail-open MUST emit an audit event per §6.4")
         self.assertIn("fail_open_bypass", err)
+
+    def test_audit_only_hooks_never_emit_a_block(self) -> None:
+        """Stop and SubagentStop are not decision-eligible
+        (subagent-stop.json:5, hooks.md:290). Claude Code reads
+        {"decision":"block"} on them as "do not stop, continue", so a block
+        inverts fail-closed into unbounded activity. Neither a Guardian DENY
+        nor a decision failure may produce one."""
+        for hook in ("Stop", "SubagentStop"):
+            with self.subTest(hook=hook, case="guardian denies"):
+                g = ProgrammableGuardian()
+                g.handlers["__default__"] = lambda req: {
+                    "type": "final", "acs_version": "0.1.0",
+                    "request_id": req["params"]["request_id"],
+                    "chain_hash": "0" * 64, "decision": "deny",
+                    "reasoning": "policy hit",
+                }
+                with g:
+                    rc, out, err = self._run_adapter(
+                        _claude_code_event(hook),
+                        env_overrides={"ACS_GUARDIAN_URL": g.url(),
+                                       "ACS_HMAC_SECRET": g.hmac_secret,
+                                       "ACS_HANDSHAKE": "0"})
+                self.assertNotIn('"decision": "block"', out,
+                    f"{hook} carries no decision; a block tells Claude Code to "
+                    f"keep going. Got {out!r}")
+                self.assertIn("unenforceable_decision", err,
+                    "the verdict must still be recorded")
+
+            with self.subTest(hook=hook, case="guardian unreachable"):
+                rc, out, err = self._run_adapter(
+                    _claude_code_event(hook),
+                    env_overrides={"ACS_GUARDIAN_URL": "http://127.0.0.1:1/acs",
+                                   "ACS_DEFAULT_DENY": "1",
+                                   "ACS_HANDSHAKE": "0"})
+                self.assertNotIn('"decision": "block"', out,
+                    f"fail-closed on {hook} must not emit a block, which reads "
+                    f"as 'do not stop'. Got {out!r}")
+                self.assertIn("ACS_AUDIT", err)
 
 
 if __name__ == "__main__":

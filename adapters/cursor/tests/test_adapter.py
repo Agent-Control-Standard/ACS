@@ -132,8 +132,9 @@ class CursorAdapter(unittest.TestCase):
         self.assertEqual(out, "")
 
     def test_after_agent_response_silent(self) -> None:
+        # `text` is the real Cursor field (docs 2026-08-22).
         rc, out, _ = self._run("afterAgentResponse", {
-            "session_id": "cur-9", "response": "ok"})
+            "session_id": "cur-9", "text": "ok"})
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
 

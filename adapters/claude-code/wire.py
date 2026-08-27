@@ -78,10 +78,10 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_ADAPTER_PATH = HERE / "acs_adapter.py"
 
 # ACS-Core minimum hook set per conformance.md:19, plus Stop and
-# SubagentStop which the adapter maps (Stop → steps/sessionEnd,
-# SubagentStop → steps/subagentStop; PR #21 promotes the subagent hooks
-# into the Core floor). The wire CLI accepts a subset via --hooks; warns
-# when fewer than these are wired.
+# SubagentStop which the adapter maps (Stop → steps/turnEnd,
+# SubagentStop → steps/subagentStop). PR #21 proposes promoting the
+# subagent hooks into the Core floor; it is not part of this branch. The
+# wire CLI accepts a subset via --hooks and warns when fewer are wired.
 ACS_CORE_HOOKS = [
     "SessionStart",
     "UserPromptSubmit",

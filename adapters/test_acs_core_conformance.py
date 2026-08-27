@@ -521,8 +521,9 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
         ("steps/sessionEnd", {"reason": "completed"},
          {"reason": "nonsense"},  # not in enum
          "hooks/session-end.json"),
-        # Post-#21 the Core floor includes steps/subagentStart for
-        # subagent-capable clients (the confused-deputy gate). Without
+        # PR #21 (open; not in this branch) proposes adding
+        # steps/subagentStart to the Core floor for subagent-capable
+        # clients (the confused-deputy gate). Without
         # this row, the suite stayed green while never proving the new
         # taxonomy claim (PR #22 fifth review). The valid case must be
         # ACCEPTED with a known disposition (the example policy denies
@@ -558,8 +559,9 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
     def test_each_minimum_hook_returns_known_disposition(self) -> None:
         """conformance.md:19 — each hook in the Core minimum set must
         produce a *known* disposition. (The set's exact membership is
-        #21-sensitive — six hooks pre-#21, subagentStart joins the floor
-        post-#21 — so this docstring names the concept, not the count;
+        #21-sensitive — six hooks on this branch's spec text; PR #21
+        proposes subagentStart joining the floor — so this docstring
+        names the concept, not the count;
         CitationGuard pins the cited line.) Positive case + sanity: result.decision
         is one of allow/deny/modify/ask/defer, not garbage.
 
@@ -662,10 +664,11 @@ class Core03_HookTaxonomyMinimum(CoreHarness):
 # CORE-04 — Dispositions (conformance.md:20, §6)
 # =============================================================================
 #
-# Pre-#21: "All five (ALLOW, DENY, MODIFY, ASK, DEFER) with required
-# fields per §6". Post-#21 MODIFY is SHOULD-support — the MODIFY tests
-# below are reference-stack coverage (this stack implements it), not a
-# universal MUST. See the suite docstring's coverage claim.
+# This branch's spec text: "All five (ALLOW, DENY, MODIFY, ASK, DEFER)
+# with required fields per §6". PR #21 (open; not in this branch)
+# proposes relaxing MODIFY to SHOULD-support — the MODIFY tests below
+# are reference-stack coverage (this stack implements it) either way.
+# See the suite docstring's coverage claim.
 # response-envelope.json:107-110 — conditional requirements:
 #   deny -> reasoning required
 #   modify -> reasoning + modifications required
@@ -905,6 +908,284 @@ class Core04b_DispositionsLiveThroughAdapters(unittest.TestCase):
             r = self._run_cursor(g)
         self.assertEqual(r["out"].get("permission"), "ask",
             f"cursor maps defer→ask per mapping.md; got {r['out']!r}")
+
+    def test_unusable_disposition_denies_regardless_of_posture(self) -> None:
+        """§6.4:158 requires an arrived decision to be honored regardless of
+        the posture. §6.3:146 makes one whose intent cannot be determined a
+        DENY plus an audit event. Posture stays at the shipped fail-open default on
+        purpose: it must have no effect on a decision that arrived."""
+        for bad, unreadable in (("deny ", False), (" deny", False),
+                                ("DENY\n", False), ("quarantine", True),
+                                ("", True)):
+            with self.subTest(disposition=bad):
+                with self._scripted_guardian(
+                        {"decision": bad, "reasoning": "policy hit"}) as g:
+                    r = self._run_claude(g)
+                hso = r["out"].get("hookSpecificOutput", {})
+                self.assertEqual(hso.get("permissionDecision"), "deny",
+                    f"{bad!r} must deny: normalization handles a padded verdict, "
+                    f"§6.3:146 handles one that cannot be read. Got {r['out']!r}, "
+                    f"and empty output runs the tool.")
+                if unreadable:
+                    self.assertIn("unusable_disposition", r["stderr"],
+                        f"{bad!r} cannot be read at all, so §6.3:146's audit "
+                        f"event is required")
+
+    def test_non_string_and_non_object_verdicts_fail_closed(self) -> None:
+        """A hostile/buggy Guardian can send a NON-STRING decision or a
+        NON-OBJECT modifications. Reading them with .strip()/.get() raises,
+        and an uncaught raise is exit 1 = the host PROCEEDS (fail-open).
+        §6.3:146 requires fail-closed DENY when intent can't be determined.
+        Every one of these must DENY, never crash, never proceed (PR #22
+        adversarial probing — this is the class the reviewer's finding-1
+        belongs to, at the type level). Posture stays fail-open default."""
+        cases = [
+            {"decision": 5},
+            {"decision": {"v": "deny"}},
+            {"decision": ["deny"]},
+            {"decision": True},
+            {"decision": "modify", "modifications": [1, 2]},
+            {"decision": "modify", "modifications": "not-an-object"},
+            {"decision": "modify",
+             "modifications": {"parameter_overrides": "rm -rf /"}},
+        ]
+        for result in cases:
+            with self.subTest(result=result):
+                with self._scripted_guardian(result) as g:
+                    r = self._run_claude(g)
+                self.assertEqual(r["stderr"].count("Traceback"), 0,
+                    f"adapter crashed on {result!r}; a crash is exit 1 and "
+                    f"Claude Code proceeds. stderr={r['stderr'][:300]}")
+                hso = r["out"].get("hookSpecificOutput", {})
+                self.assertEqual(hso.get("permissionDecision"), "deny",
+                    f"{result!r} must fail closed to deny (§6.3:146); "
+                    f"got {r['out']!r} — empty/allow output runs the tool")
+                with self._scripted_guardian(result) as g:
+                    rc = self._run_cursor(g)
+                self.assertEqual(rc["out"].get("permission"), "deny",
+                    f"cursor: {result!r} must fail closed to deny; "
+                    f"got {rc['out']!r}")
+
+
+class Core04c_PromptGateAndMergeFailClosed(unittest.TestCase):
+    """The prompt gate and the MODIFY-merge, driven live through the shell
+    adapters (PR #22 spec audit A2/A3/A6):
+      - a prompt hook can only allow or block, so any non-allow decision
+        the host can't apply (modify on Claude; ask/defer/modify on
+        Cursor) must BLOCK, never silently proceed;
+      - parameter_overrides are per-argument edits, but updatedInput /
+        updated_input REPLACE the whole input, so the adapter must MERGE
+        overrides onto the original (dropping a non-overridden argument is
+        a different effective payload than the Guardian intended)."""
+
+    SECRET = "shared-test-harness-secret-not-for-production"
+
+    def _guardian(self, method: str, result: dict):
+        import test_harness
+        g = test_harness.ProgrammableGuardian()
+        g.handlers[method] = lambda req: {
+            "type": "final", "acs_version": "0.1.0",
+            "request_id": req["params"]["request_id"],
+            "chain_hash": "0" * 64, **result}
+        return g
+
+    def _env(self, g):
+        env = os.environ.copy()
+        env.update({"ACS_GUARDIAN_URL": g.url(), "ACS_HMAC_SECRET": self.SECRET,
+                    "ACS_HANDSHAKE": "0"})
+        env.pop("ACS_HMAC_SECRET_FILE", None)
+        env.pop("ACS_DEFAULT_DENY", None)   # shipped fail-open default on purpose
+        return env
+
+    def test_claude_modify_on_prompt_blocks(self) -> None:
+        for disp in ("modify", "ask", "defer"):
+            with self.subTest(disposition=disp):
+                with self._guardian("steps/userMessage",
+                                    {"decision": disp, "reasoning": "x"}) as g:
+                    proc = subprocess.run(
+                        [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")],
+                        input=json.dumps({"session_id": "p-1", "cwd": "/tmp",
+                                          "hook_event_name": "UserPromptSubmit",
+                                          "prompt": "do a thing"}),
+                        capture_output=True, text=True, env=self._env(g), timeout=15)
+                out = json.loads(proc.stdout) if proc.stdout.strip() else {}
+                self.assertEqual(out.get("decision"), "block",
+                    f"{disp} on a Claude prompt must block (host can't apply it "
+                    f"there), not silently proceed; got {out!r}")
+
+    def test_cursor_non_allow_on_prompt_blocks_exit2(self) -> None:
+        for disp in ("ask", "defer", "modify", "deny"):
+            with self.subTest(disposition=disp):
+                with self._guardian("steps/userMessage",
+                                    {"decision": disp, "reasoning": "x"}) as g:
+                    proc = subprocess.run(
+                        [sys.executable, str(HERE / "cursor" / "acs_adapter.py"),
+                         "beforeSubmitPrompt"],
+                        input=json.dumps({"conversation_id": "conv-p-1",
+                                          "workspace_roots": ["/tmp"],
+                                          "prompt": "do a thing"}),
+                        capture_output=True, text=True, env=self._env(g), timeout=15)
+                self.assertEqual(proc.returncode, 2,
+                    f"{disp} on a Cursor prompt must block via exit 2, not "
+                    f"proceed (exit 0); got rc={proc.returncode}")
+
+    def test_contradictory_modify_fails_closed(self) -> None:
+        """§6.3:146 / modifications.json: a modify carrying BOTH wholesale
+        `modified_content` AND structured edits, or overlapping structured
+        targets, is un-interpretable and MUST fail closed to DENY — not be
+        half-applied (PR #22 spec audit A4)."""
+        from jsonschema import Draft202012Validator
+        schema = json.loads((SPEC_DIR / "modifications.json").read_text())
+        validator = Draft202012Validator(schema)
+        # `schema_valid` distinguishes contradictions expressible in JSON
+        # Schema from the path-disjointness rule stated in prose.  The latter
+        # cases MUST remain valid against the canonical schema and still be
+        # refused by the adapter's semantic check.
+        bad_mods = [
+            ({"modified_content": "x",
+              "parameter_overrides": {"command": "y"}}, False),
+            ({"modified_content": "x",
+              "redactions": [{"path": "/command"}]}, False),
+            ({"redactions": [{"path": "/command"}],
+              "parameter_overrides": {"command": "y"}}, True),
+            # An override of the top-level `options` argument replaces the
+            # whole subtree, so redacting one of its descendants conflicts.
+            ({"redactions": [{"path": "/options/token"}],
+              "parameter_overrides": {"options": {"token": "safe"}}}, True),
+            # JSON Pointer escaping matters: `a/b` is encoded as `a~1b`.
+            ({"redactions": [{"path": "/a~1b/secret"}],
+              "parameter_overrides": {"a/b": {"secret": "safe"}}}, True),
+            # The empty JSON Pointer targets the whole document and therefore
+            # overlaps every parameter override.
+            ({"redactions": [{"path": ""}],
+              "parameter_overrides": {"command": "echo safe"}}, True),
+            # The schema's description requires RFC 6901, but JSON Schema
+            # cannot express that grammar here.  Bare paths and invalid
+            # escapes are schema-valid yet semantically unusable.
+            ({"redactions": [{"path": "options"}],
+              "parameter_overrides": {"command": "echo safe"}}, True),
+            ({"redactions": [{"path": "/options/~2token"}],
+              "parameter_overrides": {"command": "echo safe"}}, True),
+            # Runtime code cannot assume the Guardian validated its own
+            # response first.  Invalid structured members must not be ignored
+            # while a valid-looking override is applied.
+            ({"redactions": [42],
+              "parameter_overrides": {"command": "echo safe"}}, False),
+            ({"redactions": "not-an-array",
+              "parameter_overrides": {"command": "echo safe"}}, False),
+        ]
+        for mods, schema_valid in bad_mods:
+            with self.subTest(mods=mods):
+                errors = list(validator.iter_errors(mods))
+                self.assertEqual(not errors, schema_valid,
+                    f"test fixture has the wrong canonical-schema status: "
+                    f"errors={[e.message for e in errors]}")
+                result = {"decision": "modify", "reasoning": "x",
+                          "modifications": mods}
+                with self._guardian("steps/toolCallRequest", result) as g:
+                    proc = subprocess.run(
+                        [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")],
+                        input=json.dumps({"session_id": "cx-1", "cwd": "/tmp",
+                                          "hook_event_name": "PreToolUse",
+                                          "tool_name": "Bash",
+                                          "tool_input": {"command": "echo hi"},
+                                          "tool_use_id": "cx1"}),
+                        capture_output=True, text=True, env=self._env(g), timeout=15)
+                out = json.loads(proc.stdout) if proc.stdout.strip() else {}
+                self.assertEqual(
+                    out.get("hookSpecificOutput", {}).get("permissionDecision"),
+                    "deny",
+                    f"contradictory modify {mods!r} must fail closed to deny, "
+                    f"not be half-applied; got {out!r}")
+
+    def test_modify_overrides_merge_preserves_other_args(self) -> None:
+        """Override one argument; the others (a timeout) must survive."""
+        result = {"decision": "modify", "reasoning": "redact",
+                  "modifications": {"parameter_overrides": {"command": "echo safe"}}}
+        tool_input = {"command": "rm -rf /", "timeout": 5}
+        # Claude
+        with self._guardian("steps/toolCallRequest", result) as g:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")],
+                input=json.dumps({"session_id": "m-1", "cwd": "/tmp",
+                                  "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                  "tool_input": tool_input, "tool_use_id": "m1"}),
+                capture_output=True, text=True, env=self._env(g), timeout=15)
+        ui = (json.loads(proc.stdout).get("hookSpecificOutput", {}).get("updatedInput", {})
+              if proc.stdout.strip() else {})
+        self.assertEqual(ui, {"command": "echo safe", "timeout": 5},
+            f"claude MODIFY must MERGE overrides onto the original input "
+            f"(timeout must survive); got updatedInput={ui!r}")
+        # Cursor
+        with self._guardian("steps/toolCallRequest", result) as g:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "cursor" / "acs_adapter.py"), "preToolUse"],
+                input=json.dumps({"conversation_id": "conv-m-1",
+                                  "workspace_roots": ["/tmp"], "tool_name": "Bash",
+                                  "tool_input": tool_input}),
+                capture_output=True, text=True, env=self._env(g), timeout=15)
+        ui = (json.loads(proc.stdout).get("updated_input", {})
+              if proc.stdout.strip() else {})
+        self.assertEqual(ui, {"command": "echo safe", "timeout": 5},
+            f"cursor MODIFY must MERGE overrides onto the original input; "
+            f"got updated_input={ui!r}")
+
+    def test_disjoint_structured_targets_are_not_reported_as_overlap(self) -> None:
+        """Prefix matching must not confuse sibling JSON Pointer paths."""
+        mods = {
+            "redactions": [{"path": "/options/token"}],
+            "parameter_overrides": {"command": "echo safe"},
+        }
+        from jsonschema import Draft202012Validator
+        schema = json.loads((SPEC_DIR / "modifications.json").read_text())
+        Draft202012Validator(schema).validate(mods)
+        self.assertIsNone(acs_common.modify_composition_violation(mods),
+            "disjoint structured edits are valid; the overlap guard must not "
+            "turn every combined MODIFY into DENY")
+
+    def test_unapplied_redactions_cannot_be_half_applied_as_overrides(self) -> None:
+        """A valid combined MODIFY is still all-or-nothing at the host edge.
+
+        Claude and Cursor can replace tool input but do not expose a native
+        JSON-Pointer redaction operation.  Applying only the override while
+        silently ignoring the redaction changes the Guardian's decision.  The
+        safe, honest translation is DENY until the complete edit can be
+        realized.
+        """
+        mods = {
+            "redactions": [{"path": "/secret", "replacement": "[REDACTED]"}],
+            "parameter_overrides": {"command": "echo safe"},
+        }
+        from jsonschema import Draft202012Validator
+        schema = json.loads((SPEC_DIR / "modifications.json").read_text())
+        Draft202012Validator(schema).validate(mods)
+        result = {"decision": "modify", "reasoning": "apply both edits",
+                  "modifications": mods}
+        tool_input = {"command": "unsafe", "secret": "do-not-forward"}
+
+        with self._guardian("steps/toolCallRequest", result) as g:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")],
+                input=json.dumps({"session_id": "mr-1", "cwd": "/tmp",
+                                  "hook_event_name": "PreToolUse",
+                                  "tool_name": "Bash", "tool_input": tool_input}),
+                capture_output=True, text=True, env=self._env(g), timeout=15)
+        claude = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        self.assertEqual(
+            claude.get("hookSpecificOutput", {}).get("permissionDecision"),
+            "deny", f"Claude half-applied a combined MODIFY: {claude!r}")
+
+        with self._guardian("steps/toolCallRequest", result) as g:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "cursor" / "acs_adapter.py"),
+                 "preToolUse"],
+                input=json.dumps({"conversation_id": "mr-2",
+                                  "workspace_roots": ["/tmp"],
+                                  "tool_name": "Bash", "tool_input": tool_input}),
+                capture_output=True, text=True, env=self._env(g), timeout=15)
+        cursor = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        self.assertEqual(cursor.get("permission"), "deny",
+            f"Cursor half-applied a combined MODIFY: {cursor!r}")
 
 
 # =============================================================================
@@ -1532,6 +1813,80 @@ class Core08_DecisionHonoringAdapter(unittest.TestCase):
             except subprocess.TimeoutExpired: guardian.kill()
 
 
+class Core08b_NegotiatedDecisionTimeout(unittest.TestCase):
+    """The signed ServerHello deadline, not a local constant, governs waits."""
+
+    def _run_shell_adapter(self, platform: str, guardian,
+                           cache_dir: str) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env.update({
+            "ACS_GUARDIAN_URL": guardian.url(),
+            "ACS_HMAC_SECRET": guardian.hmac_secret,
+            "ACS_HANDSHAKE_CACHE": cache_dir,
+        })
+        env.pop("ACS_HMAC_SECRET_FILE", None)
+        env.pop("ACS_HANDSHAKE", None)
+        env.pop("ACS_DEFAULT_DENY", None)
+        if platform == "claude":
+            command = [sys.executable, str(HERE / "claude-code" / "acs_adapter.py")]
+            event = {
+                "session_id": str(uuid.uuid4()), "cwd": "/tmp",
+                "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "tool_input": {"command": "echo hi"},
+            }
+        else:
+            command = [sys.executable, str(HERE / "cursor" / "acs_adapter.py"),
+                       "preToolUse"]
+            event = {
+                "conversation_id": str(uuid.uuid4()),
+                "workspace_roots": ["/tmp"], "tool_name": "Bash",
+                "tool_input": {"command": "echo hi"},
+            }
+        return subprocess.run(command, input=json.dumps(event),
+                              capture_output=True, text=True, env=env,
+                              timeout=5)
+
+    def test_shell_adapters_apply_the_negotiated_deadline(self) -> None:
+        """A DENY arriving after 100 ms is late even if the old local
+        timeout would have waited for it.  Under the default fail-open
+        posture the adapters must time out and audit, not apply that DENY.
+        This is the inverse of the existing slow-Guardian test, which
+        disables the handshake and therefore cannot test negotiation.
+        """
+        from test_harness import ProgrammableGuardian
+
+        for platform in ("claude", "cursor"):
+            with self.subTest(platform=platform):
+                guardian = ProgrammableGuardian()
+
+                def hello(req: dict) -> dict:
+                    result = guardian._default_handshake(req)
+                    result["payload"]["timeout_config"] = {"default_ms": 100}
+                    return result
+
+                def delayed_deny(req: dict) -> dict:
+                    time.sleep(0.3)
+                    return {
+                        "type": "final", "acs_version": "0.1.0",
+                        "request_id": req["params"]["request_id"],
+                        "chain_hash": "0" * 64, "decision": "deny",
+                        "reasoning": "arrived after negotiated deadline",
+                    }
+
+                guardian.handlers["handshake/hello"] = hello
+                guardian.handlers["__default__"] = delayed_deny
+                with tempfile.TemporaryDirectory() as cache_dir, guardian:
+                    proc = self._run_shell_adapter(
+                        platform, guardian, cache_dir)
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn('"cause": "decision_timeout"', proc.stderr,
+                    "the signed ServerHello timeout must control the real "
+                    "Guardian round trip")
+                self.assertNotIn('"permissionDecision": "deny"', proc.stdout)
+                self.assertNotIn('"permission": "deny"', proc.stdout)
+
+
 # =============================================================================
 # CORE-09 — Liveness system/ping (conformance.md:25, §13)
 # =============================================================================
@@ -1606,9 +1961,10 @@ class Core10_WrappedMcp(CoreHarness):
 
     def test_mcp_namespace_method_validates(self) -> None:
         """conformance.md:26 — the protocols/MCP/* namespace shape
-        (pre-#21 an unconditional MUST; post-#21 MUST only for
-        deployments whose sessions involve MCP — this reference stack
-        exercises the shape either way). The envelope MUST
+        (an unconditional MUST on this branch's spec text; PR #21 —
+        open, not in this branch — proposes MUST only for deployments
+        whose sessions involve MCP. This reference stack exercises the
+        shape either way). The envelope MUST
         be a valid wire-level form. request-envelope.json:13-14
         regex includes ^protocols/ so any protocols/MCP/* method
         passes schema validation."""

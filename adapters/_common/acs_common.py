@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -365,6 +366,121 @@ def verify_signature(envelope: dict, *, key: bytes | None = None,
     return hmac.compare_digest(expected_bytes, provided_bytes)
 
 
+# ----- Safe decision normalization -----
+
+# The five ACS dispositions (§6.3). Shared so every adapter classifies an
+# arrived verdict against the same set.
+KNOWN_DECISIONS = frozenset({"allow", "deny", "modify", "ask", "defer"})
+
+
+def normalize_decision(result: Any) -> tuple[str, str, dict]:
+    """Coerce a Guardian result's decision fields to safe types, never
+    raising.
+
+    A Guardian response is attacker- or bug-shaped: `decision` may be a
+    non-string, `modifications` a non-object, `reasoning` a non-string,
+    or `result` itself may not be an object. §6.3:146 requires the
+    Observed Agent to fail closed (treat as DENY) when it cannot
+    determine the Guardian's intent — and it can only do that reliably if
+    reading these fields cannot throw. A raw `.strip()`/`.get()` on a
+    non-string/non-dict raises AttributeError; uncaught in the shell
+    adapters that is exit 1, which Claude Code and Cursor treat as a
+    non-blocking proceed — i.e. the malformed verdict fails OPEN
+    (PR #22 review, found by adversarial probing).
+
+    Returns (decision, reasoning, modifications):
+      - decision: stripped, lower-cased str; "" when the field is not a
+        usable string, which routes the caller to its unusable→DENY branch.
+      - reasoning: always a str (JSON repr if the Guardian sent a
+        non-string, so it can go into a `reason` field unchanged).
+      - modifications: always a dict ({} when the Guardian sent a
+        non-object, which makes a MODIFY with no usable mutation
+        substitute to DENY per §6.3:146).
+    """
+    if not isinstance(result, dict):
+        return "", "", {}
+    raw_decision = result.get("decision")
+    decision = raw_decision.strip().lower() if isinstance(raw_decision, str) else ""
+    raw_reason = result.get("reasoning", "")
+    reasoning = (raw_reason if isinstance(raw_reason, str)
+                 else json.dumps(raw_reason, default=str))
+    raw_mods = result.get("modifications", {})
+    modifications = raw_mods if isinstance(raw_mods, dict) else {}
+    return decision, reasoning, modifications
+
+
+def modify_composition_violation(modifications: dict) -> str | None:
+    """Return a reason string if a MODIFY's `modifications` object violates
+    the §6.3 / modifications.json composition rules, else None.
+
+    The two shapes are mutually exclusive (modifications.json `oneOf`):
+    wholesale `modified_content`, OR structured edits (`redactions` and/or
+    `parameter_overrides`) whose targets are DISJOINT — never both shapes,
+    never overlapping structured targets. §6.3:146: a Guardian MUST NOT
+    emit an object that breaks these, and an Observed Agent that receives
+    one "cannot determine the Guardian's intent and MUST fail closed,
+    treating the decision as DENY". This is a bug/attack shape from the
+    Guardian side — the adapter never creates it, but MUST refuse it
+    rather than half-apply one branch and ignore the contradiction
+    (PR #22 spec audit A4)."""
+    if not isinstance(modifications, dict):
+        return None  # caller treats empty/absent as no-usable-mutation
+    has_content = "modified_content" in modifications
+    has_redactions = "redactions" in modifications
+    has_overrides = "parameter_overrides" in modifications
+    redactions = modifications.get("redactions")
+    overrides = modifications.get("parameter_overrides")
+    if has_content and (has_redactions or has_overrides):
+        return ("modifications combines wholesale modified_content with "
+                "structured edits — the two shapes are mutually exclusive "
+                "(§6.3)")
+    if has_content and not isinstance(modifications.get("modified_content"), str):
+        return "modified_content is not a string — Guardian intent is unusable (§6.3)"
+    if has_redactions and not isinstance(redactions, list):
+        return "redactions is not an array — Guardian intent is unusable (§6.3)"
+    if has_overrides and not isinstance(overrides, dict):
+        return ("parameter_overrides is not an object — Guardian intent is "
+                "unusable (§6.3)")
+
+    def _pointer_token(value: str) -> str:
+        """Encode one object-member name as an RFC 6901 token."""
+        return value.replace("~", "~0").replace("/", "~1")
+
+    def _paths_overlap(left: str, right: str) -> bool:
+        """True when equal paths or one JSON Pointer contains the other."""
+        return (left == right or left == "" or right == ""
+                or left.startswith(right + "/")
+                or right.startswith(left + "/"))
+
+    override_paths = {
+        f"/{_pointer_token(key)}": key
+        for key in (overrides or {})
+        if isinstance(key, str)
+    }
+    if has_redactions:
+        for r in redactions:
+            if not isinstance(r, dict):
+                return ("redactions contains a non-object item — Guardian "
+                        "intent is unusable (§6.3)")
+            path = r.get("path")
+            if not isinstance(path, str) or (path and not path.startswith("/")):
+                return (f"redaction path {path!r} is not an RFC 6901 JSON "
+                        "Pointer — Guardian intent is unusable (§6.3)")
+            # JSON Pointer permits only ~0 and ~1 escape sequences.  Reject a
+            # malformed pointer rather than compare a different path from the
+            # one the Guardian intended.
+            if re.search(r"~(?:[^01]|$)", path):
+                return (f"redaction path '{path}' has an invalid JSON Pointer "
+                        "escape — Guardian intent is unusable (§6.3)")
+            if has_overrides:
+                for override_path, key in override_paths.items():
+                    if _paths_overlap(path, override_path):
+                        return (f"redaction path '{path}' overlaps "
+                                f"parameter_override '{key}' — structured "
+                                "targets MUST be disjoint (§6.3)")
+    return None
+
+
 # ----- JSON-RPC error code → audit cause label -----
 #
 # Adapters use this when the Guardian returns a JSON-RPC `error` response
@@ -395,18 +511,19 @@ def guardian_error_cause(code: int | None) -> str:
 
 # ----- Guardian refusals fail closed -----
 #
-# §6.4's fail posture governs "no usable decision arrived" (timeout,
-# transport failure, silent Guardian). These codes are different: the
-# Guardian is ALIVE and REFUSED the envelope. Every one of them is
-# attacker-reachable — oversize the body past the Guardian's cap
+# DELIBERATELY STRICTER THAN v0.1 SPEC TEXT (tracked as spec issue #32).
+# §6.4:156 as written routes ANY "error response instead of a decision"
+# to the fail posture (default proceed). We do NOT do that for the codes
+# below: the Guardian is ALIVE and REFUSED the envelope, and every one of
+# them is attacker-reachable — oversize the body past the Guardian's cap
 # (-32600 before policy runs), replay a request_id the adapter derives
 # deterministically (-32005), strip or corrupt the signature (-32004),
-# present a stale captured envelope (-32006). Routing refusals through
-# the fail-open posture converts each into a policy-bypass primitive
-# (PR #22 review). Adapters MUST treat these as DENY regardless of
-# ACS_DEFAULT_DENY / on_decision_failure. (v0.1 spec text doesn't yet
-# draw this distinction — tracked as a spec issue — but nothing in §6.4
-# forbids an adapter from failing closed on a refusal.)
+# present a stale captured envelope (-32006). Routing those through a
+# fail-OPEN posture turns each into a policy-bypass primitive. So we fail
+# CLOSED on them regardless of ACS_DEFAULT_DENY / on_decision_failure.
+# This is deliberate hardening ahead of the spec, NOT a claim that v0.1
+# mandates it — #32 proposes the normative text; until it lands, treat
+# this as adapter behavior, not a conformance requirement.
 GUARDIAN_REFUSAL_CODES = frozenset({
     -32000,  # SESSION_REFUSED — policy refuses this session
     -32004,  # SIGNATURE_INVALID
@@ -579,11 +696,17 @@ def ensure_session_handshake(
 
     Hardening (PR #22 review):
       - The ServerHello response envelope's signature is verified before
-        the payload is cached or returned; an unverifiable ServerHello
-        is a failure, not a Guardian.
+        it is cached or returned; an unverifiable ServerHello is a
+        failure, not a Guardian.
+      - The WHOLE signed response envelope is cached (not the bare
+        payload) and re-verified on every cache read — the cache file
+        sits at a predictable path writable by the observed agent, so an
+        unverified read would let the agent flip its own fail posture by
+        editing one word.
       - The response is bound to the ClientHello by JSON-RPC id.
       - Failures are negative-cached for a short TTL so a dead Guardian
-        costs one timeout, not one per hook event.
+        costs one timeout, not one per hook event; every negative-cache
+        hit is audited (§4.1:77 — an unguarded session must be recorded).
     """
     if timeout is None:
         timeout = _HANDSHAKE_TIMEOUT_S
@@ -594,15 +717,39 @@ def ensure_session_handshake(
             mtime = cache.stat().st_mtime
             if (time.time() - mtime) <= _HANDSHAKE_CACHE_TTL_S:
                 with open(cache) as f:
-                    return json.load(f)
+                    cached = json.load(f)
+                # §10 requires every response to carry a signature and the
+                # verifier to reject one that does not cover the envelope.
+                # This file sits at a predictable path writable by the
+                # observed agent (same uid as this process), and its only
+                # consumer is the fail posture, so trusting it unverified
+                # lets the agent downgrade its own supervisor by editing one
+                # word. Verify a cached envelope exactly like a fresh one
+                # (PR #22 review).
+                if not isinstance(cached, dict) or "result" not in cached:
+                    # Pre-0.1.2 cache held the bare payload, with no
+                    # signature to check. Treat as a miss and re-handshake.
+                    raise ValueError("legacy unsigned handshake cache entry")
+                if not verify_signature(cached, session_id=session_id):
+                    audit_event("handshake_cache_signature_invalid",
+                                guardian_url=guardian_url, session_id=session_id,
+                                detail="cached ServerHello failed verification; "
+                                       "re-handshaking")
+                    raise ValueError("cached ServerHello signature invalid")
+                return (cached.get("result") or {}).get("payload")
             # Else: cache is stale, fall through to re-handshake
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     if failure_marker.exists():
         try:
             if (time.time() - failure_marker.stat().st_mtime) <= _HANDSHAKE_FAILURE_TTL_S:
-                # Recent failure — fail fast instead of paying the
-                # network timeout again on every hook event.
+                # Recent failure. Fail fast rather than paying the network
+                # timeout on every hook event. §4.1:77 requires a session
+                # that starts unguarded to be recorded, and this branch is
+                # that case, so it is audited rather than silent
+                # (PR #22 review).
+                audit_event("handshake_negative_cache_hit",
+                            guardian_url=guardian_url, session_id=session_id)
                 return None
         except OSError:
             pass
@@ -623,7 +770,15 @@ def ensure_session_handshake(
                 "max_payload_size_bytes": 1_000_000,
                 "provenance_producer": "none",
                 "wrapped_protocols": wrapped_protocols or [],
-                "profiles_supported": ["acs-core"],
+                # EARN the badge: acs-core's baseline is signed envelope
+                # integrity (§10; conformance.md:23 "every request and
+                # response carries a signature"). An UNSIGNED session does
+                # not meet that floor, so it must not advertise acs-core —
+                # claiming it unconditionally asserted a conformance status
+                # the session demonstrably lacked (PR #22 spec audit A9).
+                "profiles_supported": (
+                    ["acs-core"] if _signing_secret() else []
+                ),
                 "signature_algorithms_supported": (
                     ["HMAC-SHA256"] if _signing_secret() else []
                 ),
@@ -684,7 +839,10 @@ def ensure_session_handshake(
                 pass
             fd = os.open(str(cache), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
-                json.dump(server_hello, f)
+                # Store the whole signed response, not result.payload, so the
+                # read path can re-verify it (§10 binds the signature to the
+                # envelope, so a bare payload cannot be checked at all).
+                json.dump(response, f)
             # A fresh success clears any lingering failure marker.
             try:
                 failure_marker.unlink()

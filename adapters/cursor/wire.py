@@ -75,29 +75,31 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 DEFAULT_ADAPTER_PATH = HERE / "acs_adapter.py"
 
-# ACS-Core minimum equivalence in Cursor's hook vocabulary. Maps to:
+# This branch's ACS-Core minimum in Cursor's vocabulary maps to:
 #   sessionStart       — ACS sessionStart
 #   beforeSubmitPrompt — ACS userMessage
 #   preToolUse         — ACS toolCallRequest
 #   postToolUse        — ACS toolCallResult
 #   afterAgentResponse — ACS agentResponse
 #   sessionEnd         — ACS sessionEnd
-#   subagentStart      — ACS subagentStart (Core floor post-#21 for
-#                        subagent-capable clients; the confused-deputy
-#                        gate). Cursor exposes subagentStart, so the
-#                        default installer MUST wire it — omitting it
-#                        left users following wire.py without the gate
-#                        even though the adapter and hooks.json.example
-#                        supported it (PR #22 sixth review).
-ACS_CORE_HOOKS = [
+CURRENT_CORE_HOOKS = [
     "sessionStart",
     "beforeSubmitPrompt",
     "preToolUse",
     "postToolUse",
     "afterAgentResponse",
     "sessionEnd",
+]
+
+# PR #21 (open; not in this branch) proposes subagentStart for the Core
+# floor when the client supports subagents. Cursor exposes that boundary,
+# so the conservative default wires the confused-deputy gate now. Omitting
+# it previously left users following wire.py without a gate that the
+# adapter and hooks.json.example already supported (PR #22 sixth review).
+PR21_PROPOSED_HOOKS = [
     "subagentStart",
 ]
+DEFAULT_HOOKS = CURRENT_CORE_HOOKS + PR21_PROPOSED_HOOKS
 
 # Hooks whose ACS verdict ACTUALLY GATES the action — the framework
 # blocks the agent from proceeding until the adapter returns a verdict.
@@ -310,12 +312,18 @@ def validate_inputs(args: argparse.Namespace) -> list[str]:
                 "envelope is HMAC-signed (so unmodifiable) but the payload "
                 "is readable on the wire. Use https:// for production.")
 
-        missing = set(ACS_CORE_HOOKS) - set(args.hooks)
+        missing = set(CURRENT_CORE_HOOKS) - set(args.hooks)
         if missing:
             warnings.append(
                 f"NOTE: wiring a SUBSET of ACS-Core's minimum hooks. "
                 f"Missing: {sorted(missing)}. ACS-Core conformance requires "
-                f"all {len(ACS_CORE_HOOKS)} ({', '.join(ACS_CORE_HOOKS)}).")
+                f"all {len(CURRENT_CORE_HOOKS)} "
+                f"({', '.join(CURRENT_CORE_HOOKS)}).")
+        if "subagentStart" not in args.hooks:
+            warnings.append(
+                "NOTE: subagentStart is not wired. PR #21 (open; not in "
+                "this branch) proposes it as a conditional Core gate for "
+                "subagent-capable clients; Cursor exposes that boundary.")
 
     return warnings
 
@@ -347,15 +355,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--python-bin",
                     default="python3",
                     help="Python interpreter the hook command uses (default: python3 from PATH).")
-    p.add_argument("--hooks", default=",".join(ACS_CORE_HOOKS),
-                    help=f"Comma-separated hook names to wire (default: ACS-Core minimum: "
-                         f"{','.join(ACS_CORE_HOOKS)}).")
+    p.add_argument("--hooks", default=",".join(DEFAULT_HOOKS),
+                    help="Comma-separated hook names to wire (default: this "
+                         "branch's ACS-Core minimum plus PR #21's proposed "
+                         f"subagentStart gate: {','.join(DEFAULT_HOOKS)}).")
     posture_group = p.add_mutually_exclusive_group()
     posture_group.add_argument("--default-deny", action="store_true",
                     help="Force fail-CLOSED on EVERY wired hook (sets BOTH Cursor's "
                          "native failClosed AND our ACS_DEFAULT_DENY=1). Default behavior: "
                          "fail-closed only on gate hooks "
-                         f"({', '.join(sorted(GATE_HOOKS & set(ACS_CORE_HOOKS)))}).")
+                         f"({', '.join(sorted(GATE_HOOKS & set(DEFAULT_HOOKS)))}).")
     posture_group.add_argument("--all-fail-open", action="store_true",
                     help="Force fail-OPEN on EVERY wired hook, including gates. NOT "
                          "RECOMMENDED — strict §6.4 default but a Guardian outage on a "
@@ -387,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.unwire:
         new = merge_unwire(
             existing,
-            hook_names if args.hooks else ACS_CORE_HOOKS + [
+            hook_names if args.hooks else DEFAULT_HOOKS + [
                 "stop", "beforeShellExecution", "afterShellExecution",
                 "beforeMCPExecution", "afterMCPExecution",
                 "afterFileEdit", "afterTabFileEdit",
