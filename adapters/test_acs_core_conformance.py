@@ -812,6 +812,9 @@ class Core04b_DispositionsLiveThroughAdapters(unittest.TestCase):
             "ACS_GUARDIAN_URL": guardian.url(),
             "ACS_HMAC_SECRET": self.SECRET,
             "ACS_HANDSHAKE": "0",
+            # Hermetic per-call turn/session state (see the claude
+            # test_adapter isolation note; PR #22 follow-up CI failure).
+            "ACS_SESSION_STATE_DIR": tempfile.mkdtemp(),
         })
         env.pop("ACS_HMAC_SECRET_FILE", None)
         proc = subprocess.run(
@@ -831,6 +834,9 @@ class Core04b_DispositionsLiveThroughAdapters(unittest.TestCase):
             "ACS_GUARDIAN_URL": guardian.url(),
             "ACS_HMAC_SECRET": self.SECRET,
             "ACS_HANDSHAKE": "0",
+            # Hermetic per-call turn/session state (see the claude
+            # test_adapter isolation note; PR #22 follow-up CI failure).
+            "ACS_SESSION_STATE_DIR": tempfile.mkdtemp(),
         })
         env.pop("ACS_HMAC_SECRET_FILE", None)
         proc = subprocess.run(
@@ -992,7 +998,8 @@ class Core04c_PromptGateAndMergeFailClosed(unittest.TestCase):
     def _env(self, g):
         env = os.environ.copy()
         env.update({"ACS_GUARDIAN_URL": g.url(), "ACS_HMAC_SECRET": self.SECRET,
-                    "ACS_HANDSHAKE": "0"})
+                    "ACS_HANDSHAKE": "0",
+                    "ACS_SESSION_STATE_DIR": tempfile.mkdtemp()})
         env.pop("ACS_HMAC_SECRET_FILE", None)
         env.pop("ACS_DEFAULT_DENY", None)   # shipped fail-open default on purpose
         return env

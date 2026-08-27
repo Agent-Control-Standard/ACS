@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 import unittest
@@ -54,6 +55,14 @@ class CursorAdapter(unittest.TestCase):
     def _run(self, event_name: str, event: dict, env_overrides: dict | None = None) -> tuple[int, str, str]:
         env = os.environ.copy()
         env["ACS_GUARDIAN_URL"] = f"http://127.0.0.1:{self.port}/acs"
+        # Isolate per-session state (turn tracking) from the developer's
+        # real state dir — leftover state from earlier runs made results
+        # diverge between local and clean CI runners (PR #22 follow-up CI
+        # failure on the claude twin of this helper).
+        if not (env_overrides and "ACS_SESSION_STATE_DIR" in env_overrides):
+            tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(tmp.cleanup)
+            env["ACS_SESSION_STATE_DIR"] = tmp.name
         if env_overrides:
             env.update(env_overrides)
         proc = subprocess.run(

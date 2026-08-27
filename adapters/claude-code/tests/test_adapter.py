@@ -12,6 +12,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -73,6 +74,16 @@ class AdapterRoundTrip(unittest.TestCase):
     ) -> tuple[int, str, str]:
         env = os.environ.copy()
         env["ACS_GUARDIAN_URL"] = f"http://127.0.0.1:{self.port}/acs"
+        # Isolate per-session state (turn tracking) from the developer's
+        # real state dir. Without this, an open turn left by an EARLIER
+        # RUN made Stop→turnEnd reach the Guardian locally while a clean
+        # CI runner (no leftover state) skipped it — local green, CI red
+        # (PR #22 follow-up CI failure). Tests that need state continuity
+        # across calls pass their own ACS_SESSION_STATE_DIR override.
+        if not (env_overrides and "ACS_SESSION_STATE_DIR" in env_overrides):
+            self._state_tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(self._state_tmp.cleanup)
+            env["ACS_SESSION_STATE_DIR"] = self._state_tmp.name
         if env_overrides:
             env.update(env_overrides)
         proc = subprocess.run(
@@ -238,12 +249,36 @@ class AdapterRoundTrip(unittest.TestCase):
                     "chain_hash": "0" * 64, "decision": "deny",
                     "reasoning": "policy hit",
                 }
-                with g:
+                # Stop maps to steps/turnEnd, which only reaches the
+                # Guardian when a turn is OPEN — so open one first with a
+                # real UserPromptSubmit, sharing one isolated state dir
+                # across both calls. (The original test sent a bare Stop;
+                # it passed locally only because an earlier run had left
+                # an open turn in the developer's default state dir — a
+                # clean CI runner had none, so the Stop was honestly
+                # skipped and the deny never happened: local green, CI
+                # red. State is now isolated per test.)
+                with g, tempfile.TemporaryDirectory() as state:
+                    env = {"ACS_GUARDIAN_URL": g.url(),
+                           "ACS_HMAC_SECRET": g.hmac_secret,
+                           "ACS_HANDSHAKE": "0",
+                           "ACS_SESSION_STATE_DIR": state}
+                    if hook == "Stop":
+                        # Open the turn: allow turnStart + userMessage
+                        # explicitly (the __default__ handler denies, which
+                        # would block the prompt before a turn opened).
+                        g.handlers["steps/turnStart"] = lambda req: {
+                            "type": "final", "acs_version": "0.1.0",
+                            "request_id": req["params"]["request_id"],
+                            "chain_hash": "0" * 64, "decision": "allow",
+                        }
+                        g.handlers["steps/userMessage"] = g.handlers["steps/turnStart"]
+                        self._run_adapter(
+                            _claude_code_event("UserPromptSubmit",
+                                               prompt="open a turn"),
+                            env_overrides=env)
                     rc, out, err = self._run_adapter(
-                        _claude_code_event(hook),
-                        env_overrides={"ACS_GUARDIAN_URL": g.url(),
-                                       "ACS_HMAC_SECRET": g.hmac_secret,
-                                       "ACS_HANDSHAKE": "0"})
+                        _claude_code_event(hook), env_overrides=env)
                 self.assertNotIn('"decision": "block"', out,
                     f"{hook} carries no decision; a block tells Claude Code to "
                     f"keep going. Got {out!r}")
