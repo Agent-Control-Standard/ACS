@@ -38,7 +38,7 @@ Contributions from implementations that exercise revocation are the way to close
 | `REPLAY_CONSUMED` | REJECT | The authorization was already used once; one authorization covers one act |
 | `STALE_DECISION` | REJECT | The evidence is older than the declared freshness bound |
 | `PRINCIPAL_MISMATCH` | REJECT | Approval bound to a different agent, tool, or signing device than the one acting |
-| `REFERENCE_MISSING` | REJECT | A required observability reference is absent or zeroed |
+| `REFERENCE_MISSING` | REJECT | A required observability reference is present and unusable: zeroed, or bound to a different context |
 | `REFERENCE_MISMATCH` | REJECT | The named reference diverges from the one already bound to this action's context |
 | `MALFORMED_EVIDENCE` | UNMEASURABLE | Evidence present but not decodable to the declared shape; consumers must fail closed |
 | `ORACLE_UNAVAILABLE` | UNMEASURABLE | The state needed to judge could not be read; absence of measurement is never a pass |
@@ -77,15 +77,33 @@ wrong class of attack.
 python conformance/negative/runner.py --adapter your_adapter.py
 ```
 
-The adapter exposes `evaluate(vector) -> {"verdict": ..., "code": ..., "reason": ...,
-"entry_point": ...}`, where `entry_point` names the production entry point the adapter
-dispatched through for that vector. The runner exits non-zero on: any verdict mismatch,
-any code mismatch (positive controls included), any missing `reason_must_mention`
-substring, any category lacking a positive control (a control counts only if it expects
-`PASS`), any answer naming no entry point, or any category whose positive controls
-resolved through a different entry point than its negative vectors. The last two rules
-exist because a suite whose positive controls certify a test double certifies nothing:
-an adapter that reads the answer key passes every content check and fails only there.
+The adapter exposes `evaluate(question) -> {"verdict": ..., "code": ..., "reason": ...,
+"entry_point": ...}`, where `question` carries only `{"id", "category", "input"}` - the
+expected verdict and the `positive_control` flag never leave the runner - and `entry_point`
+names the production entry point the adapter dispatched through for that vector. The runner
+exits non-zero on: an empty suite, any verdict mismatch, any code mismatch (positive
+controls included), any missing `reason_must_mention` substring, any category lacking a
+positive control (a control counts only if it expects `PASS`), any answer naming no entry
+point, or any category whose positive controls resolved through a different entry point
+than its negative vectors. Vector failures and category failures are counted and reported
+separately, so the conformance count never absorbs a category-level result.
+
+The answer key is handled one layer earlier: since the adapter is never handed the expected
+verdict, an adapter that would derive its answer from it has nothing to derive it from, and
+fails on its first call. That family is no longer something the suite detects, it is
+something that cannot be expressed (review of 2026-08-27, run against `459ec820`: a
+six-line answer-key adapter scored 18/18 under the previous contract, and scores 0/18 with
+`KeyError: 'expected'` under this one).
+
+The entry-point rules remain a declaration the runner compares only against itself. They
+catch a suite whose positive controls and negative vectors resolve through different paths;
+they do not establish that the named function ran. Observing execution from outside the
+adapter is the mechanism that would, and it is discussed in #35.
+
+An empty vector file is refused. A suite with no vectors distinguishes nothing, and the
+count it would otherwise print - `0/0 vectors conform` with a zero exit - is
+indistinguishable from a suite that passed. The rule the structural gate applies per
+category applies to the suite itself.
 
 ## Provenance
 
