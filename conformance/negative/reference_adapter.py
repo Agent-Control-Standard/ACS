@@ -26,7 +26,13 @@ def evaluate(vector):
         if oracle.get("shape", "").endswith("_6_fields") and oracle.get("fields_served") != 6:
             return unmeasurable("MALFORMED_EVIDENCE", f"expected 6 fields, served {oracle.get('fields_served')}")
 
-    # Observability references: the omission itself is refused, before anything else.
+    # Observability references. NOTE: this can only judge a reference that is present and
+    # wrong. Nothing in a vector declares that a given action REQUIRED one, so an action
+    # that omits the field is indistinguishable here from one for which no reference was
+    # ever due - `commit_funds` appears in this suite both with a reference (category 6)
+    # and without one on vectors that must pass. The "absent" arm of REFERENCE_MISSING is
+    # therefore not expressible against the current vector shape, and the enumeration text
+    # says so rather than promising it.
     if "registry_ref" in action:
         ref = action["registry_ref"]
         if set(ref.replace("0x", "")) == {"0"}:
@@ -39,8 +45,17 @@ def evaluate(vector):
     # Principal binding.
     if auth.get("decision_for") and auth["decision_for"] != action.get("actor"):
         return reject("PRINCIPAL_MISMATCH", f"decision names agent {auth['decision_for']}, actor differs")
-    if "required_signer" in action and auth.get("connected_device_derives") not in (None, action["required_signer"]):
-        return reject("PRINCIPAL_MISMATCH", "connected device derives a different key; wrong device")
+    if "required_signer" in action:
+        # `not in (None, required)` accepted the absence of evidence: an action naming a
+        # required signer, with nothing said about the connected device, passed every guard.
+        # Absence of a measurement is never a match; it is the UNMEASURABLE case by the
+        # enumeration's own distinction.
+        derived = auth.get("connected_device_derives")
+        if derived is None:
+            return unmeasurable("ORACLE_UNAVAILABLE",
+                                "no evidence of which device is connected; absence is never a match")
+        if derived != action["required_signer"]:
+            return reject("PRINCIPAL_MISMATCH", "connected device derives a different key; wrong device")
 
     # Replay.
     if auth.get("consumed"):
