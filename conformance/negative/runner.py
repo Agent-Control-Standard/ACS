@@ -14,9 +14,13 @@ The last rule is structural, not cosmetic: a suite made only of must-reject inpu
 distinguish an enforcement layer that works from one that rejects everything.
 
 Adapter contract: a Python file exposing
-    evaluate(vector: dict) -> {"verdict": "PASS|REJECT|UNMEASURABLE", "code": str|None,
-                               "reason": str, "entry_point": str}
-where entry_point names the production entry point the adapter dispatched through.
+    evaluate(question: dict) -> {"verdict": "PASS|REJECT|UNMEASURABLE", "code": str|None,
+                                 "reason": str, "entry_point": str}
+where question carries only {"id", "category", "input"} - the expected verdict and the
+control flag never leave the runner, so an adapter that would derive its verdict from
+the answer has nothing to derive it from (review 5444732337, run against 459ec820:
+a six-line answer-key adapter scored 18/18 while enforcing nothing) - and entry_point
+names the production entry point the adapter dispatched through.
 
 Usage:
     python runner.py --adapter path/to/adapter.py [--vectors vectors/negative_vectors.json]
@@ -42,6 +46,15 @@ def load_adapter(path: Path):
     return mod
 
 
+def is_positive_control(v):
+    """A positive control is DECLARED and EXPECTS PASS - decided once, in the one function
+    both sites call (review 5444732337: the structural gate applied this rule while the
+    entry-point bucketing read the declared flag alone, so a must-reject vector carrying
+    the flag was refused a place in the count and still landed in the positive bucket).
+    A declared flag is not a positive control; only an expected PASS is (review 4996153628)."""
+    return bool(v.get("positive_control")) and v["expected"]["verdict"] == "PASS"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True, type=Path)
@@ -52,13 +65,18 @@ def main() -> int:
     vectors = suite["vectors"]
     adapter = load_adapter(args.adapter)
 
+    # An empty suite discriminates nothing, and the count it prints is what hides that:
+    # "0/0 vectors conform" with a zero exit reads exactly like a suite that passed.
+    # The rule the gate below enforces per category has to hold for the suite itself.
+    if not vectors:
+        print("SUITE INVALID: no vectors. An empty suite cannot distinguish an enforcement "
+              "layer from one that does nothing, and reports a clean run either way.")
+        return 2
+
     # Structural gate first: every category present must carry a positive control.
     cats = defaultdict(lambda: {"neg": 0, "pos": 0})
     for v in vectors:
-        # A declared flag is not a positive control; only an expected PASS is (review 4996153628:
-        # a must-reject vector flagged positive_control satisfied the gate with zero must-pass inputs).
-        is_pos = v.get("positive_control") and v["expected"]["verdict"] == "PASS"
-        cats[v["category"]]["pos" if is_pos else "neg"] += 1
+        cats[v["category"]]["pos" if is_positive_control(v) else "neg"] += 1
     missing = [c for c, k in sorted(cats.items()) if k["pos"] == 0]
     if missing:
         print(f"SUITE INVALID: categories without a positive control: {missing}")
@@ -68,10 +86,14 @@ def main() -> int:
     failures = []
     entry_points = defaultdict(lambda: {"pos": set(), "neg": set()})
     for v in vectors:
+        # The adapter is never handed the answer: expected verdict and control flag stay in
+        # the runner, so the answer-key family stops being something to detect and becomes
+        # something that cannot be expressed (review 5444732337).
         try:
-            out = adapter.evaluate(v) or {}
-        except Exception as e:  # an adapter crash is a failure, never a skip
-            failures.append((v["id"], f"adapter raised {type(e).__name__}: {e}"))
+            question = {"id": v["id"], "category": v["category"], "input": v["input"]}
+            out = adapter.evaluate(question) or {}
+        except Exception as e:  # an adapter crash - or a malformed vector - is a failure, never a skip
+            failures.append((v.get("id", "?"), f"adapter raised {type(e).__name__}: {e}"))
             continue
         exp = v["expected"]
         # The suite certifies an enforcement layer, not a test double (review 4996153628):
@@ -80,31 +102,37 @@ def main() -> int:
         if not ep:
             failures.append((v["id"], "adapter reported no entry_point - cannot tell the enforcement layer from a test double"))
             continue
-        entry_points[v["category"]]["pos" if v.get("positive_control") else "neg"].add(ep)
+        entry_points[v["category"]]["pos" if is_positive_control(v) else "neg"].add(ep)
         if out.get("verdict") != exp["verdict"]:
             failures.append((v["id"], f"verdict {out.get('verdict')!r} != expected {exp['verdict']!r}"))
             continue
         # code and reason are compared on PASS vectors too (review 4996153628: a positive
-        # control's code field previously went uncompared).
-        if True:
-            if out.get("code") != exp.get("code"):
-                failures.append((v["id"], f"code {out.get('code')!r} != expected {exp.get('code')!r}"))
-                continue
-            reason = (out.get("reason") or "").lower()
-            for needle in exp.get("reason_must_mention", []):
-                if needle.lower() not in reason:
-                    failures.append((v["id"], f"reason does not mention {needle!r}: {reason[:120]!r}"))
-                    break
+        # control's code field previously went uncompared; the always-true conditional that
+        # wrapped this block is gone - review 5444732337 called it, cosmetic and right).
+        if out.get("code") != exp.get("code"):
+            failures.append((v["id"], f"code {out.get('code')!r} != expected {exp.get('code')!r}"))
+            continue
+        reason = (out.get("reason") or "").lower()
+        for needle in exp.get("reason_must_mention", []):
+            if needle.lower() not in reason:
+                failures.append((v["id"], f"reason does not mention {needle!r}: {reason[:120]!r}"))
+                break
 
+    # Category failures are counted apart from vector failures: subtracting them from the
+    # vector total printed "17/18 vectors conform" on a suite whose 18 vectors all conformed,
+    # which is a wrong number reported by the very line that is supposed to make the run legible.
+    category_failures = []
     for c, k in sorted(entry_points.items()):
         if k["pos"] and k["neg"] and k["pos"] != k["neg"]:
-            failures.append((f"cat{c}", f"positive controls resolved through {sorted(k['pos'])} but negatives through {sorted(k['neg'])} - the gate certified a different code path than the one negatively tested"))
+            category_failures.append((f"cat{c}", f"positive controls resolved through {sorted(k['pos'])} but negatives through {sorted(k['neg'])} - the gate certified a different code path than the one negatively tested"))
 
     print(f"{len(vectors) - len(failures)}/{len(vectors)} vectors conform "
           f"({sum(k['pos'] for k in cats.values())} positive controls across {len(cats)} categories)")
     for vid, why in failures:
         print(f"  FAIL {vid}: {why}")
-    return 1 if failures else 0
+    for cid, why in category_failures:
+        print(f"  FAIL {cid}: {why}")
+    return 1 if (failures or category_failures) else 0
 
 
 if __name__ == "__main__":
