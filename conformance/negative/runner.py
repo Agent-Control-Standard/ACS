@@ -98,7 +98,9 @@ def main() -> int:
         exp = v["expected"]
         # The suite certifies an enforcement layer, not a test double (review 4996153628):
         # every adapter answer must name the production entry point it dispatched through.
-        ep = out.get("entry_point")
+        # A name made of spaces is not a name: `if not ep` accepts "   ", and the field
+        # the suite treats as structural would be satisfied by whitespace.
+        ep = (out.get("entry_point") or "").strip()
         if not ep:
             failures.append((v["id"], "adapter reported no entry_point - cannot tell the enforcement layer from a test double"))
             continue
