@@ -486,6 +486,27 @@
       "positive_control": true
     },
     {
+      "id": "neg-cat4-003",
+      "category": 4,
+      "description": "No evidence of which device is connected: the operation requires the device holding key K1, and nothing was read about what is plugged in. Absence of a measurement is not a match - the action is refused under the unmeasurable code, not under the mismatch code, because no mismatch was observed.",
+      "input": {
+        "action": {
+          "type": "sign_transaction",
+          "required_signer": "0xAAAA"
+        },
+        "authorization": {},
+        "state": {}
+      },
+      "expected": {
+        "verdict": "UNMEASURABLE",
+        "code": "ORACLE_UNAVAILABLE",
+        "reason_must_mention": [
+          "device"
+        ]
+      },
+      "positive_control": false
+    },
+    {
       "id": "pos-cat5-001",
       "category": 5,
       "description": "POSITIVE CONTROL. Well-formed evidence of the declared shape (address encoding with zeroed leading bytes). MUST pass: strictness is about shape, not about refusing evidence per se.",
