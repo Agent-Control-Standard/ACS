@@ -105,6 +105,35 @@ count it would otherwise print - `0/0 vectors conform` with a zero exit - is
 indistinguishable from a suite that passed. The rule the structural gate applies per
 category applies to the suite itself.
 
+## Negative controls for the suite itself
+
+```
+python conformance/negative/selftest.py
+```
+
+A suite that has only ever been run against an implementation which passes it has not been
+shown to discriminate, and a verifier that rejected every input would pass every must-reject
+vector ever written. `selftest.py` is the pairing: twenty-four cases the suite must refuse,
+plus the one it must accept, so that a green run means the gate is live rather than absent.
+
+Three families. **Fake adapters** enforce nothing or satisfy the letter of the adapter
+contract while defeating its purpose: one that would read the answer key, one that refuses
+everything, one that allows everything, one that names no entry point, one whose entry point
+is only whitespace, one that answers the must-pass inputs from a second path, and two that
+return the right verdict with the wrong code or the wrong reason. **Runner guards** are
+inputs refused before any adapter is consulted: an empty suite, and a suite whose positive
+controls have been removed. **Adapter mutants** delete exactly one check from the reference
+adapter, one mutant per check, and the suite has to go red for every one.
+
+The mutants are the part that finds vectors nobody wrote. A mutant that survives is not a
+tolerable gap: it names a rule the suite claims to enforce and does not exercise. Two came
+out of the first run of this file. The entry-point check accepted a name made of spaces,
+because `if not ep` is true for `""` and false for `"   "`. And the rule refusing an action
+whose signing device was never read survived its own deletion, because no vector exercised
+it - `neg-cat4-003` is that vector, and it was written because the mutant lived. A mutant
+whose pattern no longer matches the adapter is reported as such rather than counted as
+killed, so a rule that silently stops being tested shows up as a changed count.
+
 ## Provenance
 
 Vectors are generalized from an enforcement layer running in production since June 2026
