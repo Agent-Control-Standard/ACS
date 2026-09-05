@@ -10,6 +10,10 @@ Apache License, Version 2.0. See LICENSE.
 Prose documentation in this repository is licensed under the Creative Commons
 Attribution-ShareAlike 4.0 International License. See LICENSE-DOCS.
 
+The landing page bundles the Inter typeface, Copyright (c) 2016 The Inter Project
+Authors (https://github.com/rsms/inter), licensed under the SIL Open Font License,
+Version 1.1. See landing/assets/fonts/OFL.txt.
+
 See LICENSING.md for the full scope map.
 
 Prior history: releases up to and including v0.1.0 were published under the MIT

@@ -27,7 +27,7 @@ The standard covers the following aspects
 
 ## Getting Started
 
-- 📚 **Explore the Documentation:** Visit the [Documentation Site](https://agentcontrolstandard.ai) for a complete overview, the full specification, tutorials, and guides.
+- 📚 **Explore the Documentation:** Once GitHub Pages is enabled, visit the [documentation site](https://genai-security-project.github.io/agent-control-standard/docs/) for a complete overview, the full specification, tutorials, and guides. The [project landing page](https://genai-security-project.github.io/agent-control-standard/) covers what ACS is and why it exists.
 - 📝 **View the Specification:** [Specification](https://github.com/GenAI-Security-Project/agent-control-standard/tree/main/specification)
 
 ## Contributing

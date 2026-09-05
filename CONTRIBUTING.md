@@ -37,13 +37,13 @@ All submissions go through GitHub pull request review. See [GitHub's PR guide](h
 ## Development Process
 
 1. **Fork the repository** and clone your fork
-2. **Create a feature branch** — use `feature/<short-description>` or `fix/<short-description>`
+2. **Create a feature branch.** Use `feature/<short-description>` or `fix/<short-description>`
 3. **Make your changes** following the style guide
 4. **Sign your commits** with `git commit -s` (required by the DCO below)
 5. **Open a pull request** against `main`
 6. **Address review feedback** to land your change
 
-For changes to the spec itself (`acs_schema.json`, hooks, events), open a [Discussion](https://github.com/GenAI-Security-Project/agent-control-standard/discussions) before submitting a PR — these affect downstream implementers and warrant a longer conversation.
+For changes to the spec itself (`acs_schema.json`, hooks, events), open a [Discussion](https://github.com/GenAI-Security-Project/agent-control-standard/discussions) before submitting a PR. These affect downstream implementers and warrant a longer conversation.
 
 ## What We Need
 
@@ -88,6 +88,16 @@ By making a contribution to this project, I certify that:
 By contributing, you agree that your contributions will be licensed under the license that governs the file you touch. Code and schemas fall under the [Apache License 2.0](./LICENSE). Documentation falls under [CC BY-SA 4.0](./LICENSE-DOCS). See [LICENSING.md](./LICENSING.md) for the scope map.
 
 This guide is based on [github-contributing](https://raw.githubusercontent.com/standard/.github/refs/heads/master/CONTRIBUTING.md).
+
+## Before the first Pages deploy
+
+`.github/workflows/deploy-pages.yml` and `.github/workflows/monitor-pages.yml` both
+assume GitHub Pages is already enabled for this repository. Until it is, the deploy fails
+at the Configure Pages step and the monitor fails on its schedule.
+
+Enabling it is a one-time repository setting, done by an administrator: Settings, then
+Pages, then set Build and deployment Source to GitHub Actions. Do this before merging any
+change that turns those workflows on, not after.
 
 ## Community
 
