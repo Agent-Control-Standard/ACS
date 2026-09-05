@@ -171,3 +171,25 @@ def test_font_license_ships_with_the_font():
     text = (LANDING / "assets" / "fonts" / "OFL.txt").read_text(encoding="utf-8")
     assert "SIL Open Font License" in text
     assert "The Inter Project Authors" in text
+
+
+def test_the_theme_control_is_an_icon_with_an_accessible_name(page):
+    """A text button was replaced by the sun and moon readers already recognize.
+
+    The icons are decorative, so the control carries its own accessible name and a
+    visually hidden label rather than relying on the glyph.
+    """
+    assert 'id="theme-toggle"' in page
+    assert "Switch theme" not in page.split('id="theme-toggle"')[1].split("</button>")[0].replace(
+        '<span class="visually-hidden">Switch theme</span>', ""
+    )
+    assert 'aria-label="Switch to dark theme"' in page
+    assert 'class="icon-sun"' in page and 'class="icon-moon"' in page
+    assert page.count('aria-hidden="true"') >= 2
+
+
+def test_only_one_theme_mark_shows_at_a_time():
+    css = (LANDING / "assets" / "acs.css").read_text(encoding="utf-8")
+    assert "#theme-toggle .icon-sun { display: none; }" in css
+    assert ':root[data-theme="dark"] #theme-toggle .icon-moon { display: none; }' in css
+    assert ".visually-hidden" in css

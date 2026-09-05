@@ -121,3 +121,12 @@ def test_the_theme_still_styles_the_override():
         pytest.skip("installed Material layout differs, nothing to compare")
     for klass in [".md-source", ".md-source__repository"]:
         assert klass in css, f"{klass} is gone from the installed theme"
+
+
+def test_docs_palette_is_a_two_state_sun_and_moon_toggle():
+    """Three states and a switch glyph did not match the landing page's control."""
+    config = (REPO / "mkdocs.yml").read_text(encoding="utf-8")
+    assert "material/weather-night" in config
+    assert "material/weather-sunny" in config
+    assert "toggle-switch" not in config
+    assert config.count("media: \"(prefers-color-scheme") == 2

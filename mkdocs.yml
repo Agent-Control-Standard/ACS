@@ -25,24 +25,18 @@ theme:
     # enable synchronized tabs
     - content.tabs.link
   palette:
-    - media: "(prefers-color-scheme)"
-      toggle:
-        icon: material/link
-        name: Switch to light mode
+    # The media queries pick the reader's system preference on first load. The toggle
+    # then overrides it, which is the same two-state behavior the landing page has.
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
       toggle:
-        icon: material/toggle-switch
+        icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: black
-      accent: indigo
       toggle:
-        icon: material/toggle-switch-off
-        name: Switch to system preference
+        icon: material/weather-sunny
+        name: Switch to light mode
   font: false
   favicon: assets/icon.svg
 

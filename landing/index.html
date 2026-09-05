@@ -29,7 +29,16 @@
         <a href="https://owasp.slack.com">Slack</a>
       </nav>
     </div>
-    <button id="theme-toggle" type="button">Switch theme</button>
+    <button id="theme-toggle" type="button" aria-label="Switch to dark theme">
+      <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>
+      </svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 1.8v3M12 19.2v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M1.8 12h3M19.2 12h3M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/>
+      </svg>
+      <span class="visually-hidden">Switch theme</span>
+    </button>
   </aside>
 
   <main>
@@ -221,16 +230,31 @@
   // system preference and remembers the override.
   (function () {
     var root = document.documentElement;
+    var toggle = document.getElementById("theme-toggle");
+
+    function resolved() {
+      return root.getAttribute("data-theme")
+        || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    }
+
+    function label() {
+      toggle.setAttribute(
+        "aria-label",
+        resolved() === "dark" ? "Switch to light theme" : "Switch to dark theme"
+      );
+    }
+
     try {
       var saved = localStorage.getItem("acs-theme");
       if (saved) root.setAttribute("data-theme", saved);
     } catch (e) { /* private mode blocks storage, so the system preference still applies */ }
-    document.getElementById("theme-toggle").addEventListener("click", function () {
-      var current = root.getAttribute("data-theme")
-        || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      var next = current === "dark" ? "light" : "dark";
+
+    label();
+    toggle.addEventListener("click", function () {
+      var next = resolved() === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
       try { localStorage.setItem("acs-theme", next); } catch (e) { /* ignore */ }
+      label();
     });
   })();
 </script>

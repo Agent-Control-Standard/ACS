@@ -146,19 +146,55 @@ section:first-of-type { border-top: 0; }
 .cta-primary { background-color: var(--acs-brand); color: var(--acs-text-inverse); border-color: var(--acs-brand); }
 
 #theme-toggle {
-  font: inherit;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   color: var(--acs-text-soft);
   background-color: transparent;
   border: 1px solid var(--acs-border);
   border-radius: 999px;
-  padding: 0.5rem 1rem;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 #theme-toggle:hover {
   background-color: var(--acs-surface);
   color: var(--acs-text);
+}
+#theme-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+/* The moon is filled rather than stroked, so it reads as a shape at this size. */
+#theme-toggle .icon-moon { fill: currentColor; stroke: none; }
+
+/* Show the mark for the theme a click would give, not the one already showing. */
+#theme-toggle .icon-sun { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) #theme-toggle .icon-moon { display: none; }
+  :root:not([data-theme="light"]) #theme-toggle .icon-sun { display: inline; }
+}
+:root[data-theme="dark"] #theme-toggle .icon-moon { display: none; }
+:root[data-theme="dark"] #theme-toggle .icon-sun { display: inline; }
+:root[data-theme="light"] #theme-toggle .icon-moon { display: inline; }
+:root[data-theme="light"] #theme-toggle .icon-sun { display: none; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.25rem; }
