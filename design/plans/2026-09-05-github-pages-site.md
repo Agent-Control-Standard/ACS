@@ -2394,6 +2394,21 @@ endpoints still serve their own `$id`.
 
 Commit and push that change.
 
+- [ ] **Step 10: Retire the note that says the namespace is not served**
+
+`CLAUDE.md` records under Schema namespace: "The base is not yet served: GitHub Pages is
+not enabled on this repo, so remote retrieval 404s." That sentence is accurate until
+Step 3 and false immediately after. Replace it with:
+
+```markdown
+The base is served from this repository. `.github/workflows/deploy-pages.yml` publishes
+every schema at the path its `$id` declares, and the deploy fails if any of them does not
+resolve. `.github/workflows/monitor-pages.yml` rechecks that every six hours.
+```
+
+Do this only after Step 7 confirms the URIs resolve. Writing it earlier would trade one
+false statement for another.
+
 ---
 
 ## Premortem remediation map
