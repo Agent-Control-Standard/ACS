@@ -239,3 +239,24 @@ Do not rebase `$id` onto the marketing domain during the cutover.
   repository and resolve when the redirect lands.
 - Seven A2A hook pages under `docs/spec/instrument/a2a/hooks/` are absent from the MkDocs
   navigation. They publish as orphans reachable only by direct URL. Tracked separately.
+
+## Rollback
+
+A build failure needs no rollback. Pages keeps serving the last successful deployment.
+
+A successful deploy of wrong content does. In order of speed:
+
+1. Re-run the deploy job of the last good workflow run from the Actions tab. Artifact
+   retention is 30 days, so this stays available for a month.
+2. `git revert` the offending commit, then merge. This takes a full pipeline run.
+
+Both are available to anyone with write access. The scheduled monitor in
+`.github/workflows/monitor-pages.yml` checks every six hours that the schema endpoints
+still serve their own `$id`, so a silent regression surfaces within that window rather
+than waiting for a consumer to report it.
+
+## Status
+
+The site went live on 2026-09-05. The first deploy succeeded, and all 44 schema URIs were
+confirmed serving their own `$id`. The `github-pages` environment is restricted to
+protected branches, which is the second layer behind the workflow's own branch check.

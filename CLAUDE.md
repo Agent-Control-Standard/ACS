@@ -94,8 +94,8 @@ This is a documentation-focused project built with:
 
 ### Hosting (decoupled from this repo)
 This repository is the source of truth for the ACS spec, and it now carries the workflow
-that publishes the site. Once Pages is enabled, `.github/workflows/deploy-pages.yml`
-builds three things on every merge to `main`: the landing page from `landing/`, the
+that publishes the site. `.github/workflows/deploy-pages.yml` builds three things on
+every merge to `main`: the landing page from `landing/`, the
 MkDocs documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
 
 Schema publish paths derive from each schema's own `$id`, which is validated and
@@ -134,10 +134,10 @@ Schema `$id` values are based at `https://genai-security-project.github.io/agent
 
 `$id` is identity, not a fetch target. Every `$ref` in the package is relative and resolves against the enclosing `$id` base, so the whole set must share one base. Two bases means the relative refs resolve to URIs no `$id` declares, which is the defect fixed in `4fb84c1`. If you add a subschema, give it an `$id` under the same base and keep its refs relative.
 
-The base is served once GitHub Pages is enabled on this repository, which
-`.github/workflows/deploy-pages.yml` then publishes to on every merge to `main` and
-`.github/workflows/monitor-pages.yml` rechecks every six hours. Until that setting is
-turned on, remote retrieval 404s and only local and file-path validation works.
+The base is served. `.github/workflows/deploy-pages.yml` publishes every schema at the
+path its `$id` declares on each merge to `main`, and the deploy fails if any of them
+does not resolve. `.github/workflows/monitor-pages.yml` rechecks every six hours. All 44
+URIs were confirmed resolving on the first deploy.
 
 `$id` is versioned by **spec** version, not release version. `.github/workflows/sync_version.py` deliberately leaves `$id` alone. See `1af1f92`.
 
