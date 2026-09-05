@@ -600,7 +600,7 @@ Create `landing/assets/acs.css`. Token values come from the live site, except th
   --acs-node-stroke: #6b7079;   /* 4.98:1 on the page */
   --acs-spoke: #6b7079;
   --acs-hex-fill: #f4f5f7;
-  /* Was #c4cdd8 for 1.47:1 against the hexagon fill. The centre of the diagram was
+  /* Was #c4cdd8 for 1.47:1 against the hexagon fill. The center of the diagram was
      close to invisible. #7d8899 measures 3.29:1. */
   --acs-hex-stroke: #7d8899;
   --acs-tier-1: #0f7b3f;
@@ -740,7 +740,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
 }
 
 /* Continuous motion is a vestibular trigger and a battery cost. CSS animation is
-   stopped here; the SVG's SMIL elements carry their own guard, because
+   stopped here. The SVG's SMIL elements carry their own guard, because
    `animation: none` does not reach them. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -749,7 +749,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
 
 - [ ] **Step 3: Write the starburst**
 
-Create `landing/assets/starburst.svg`. Geometry comes from the live site: a `0 0 680 680` viewBox, centre `(340, 340)`, six nodes of radius 48. Node centres clockwise from top: `(340, 80)` LLM agent, `(565.17, 210)` Tool call, `(565.17, 470)` Output guard, `(340, 600)` Sub agent, `(114.83, 470)` Memory store, `(114.83, 210)` Code exec.
+Create `landing/assets/starburst.svg`. Geometry comes from the live site: a `0 0 680 680` viewBox, center `(340, 340)`, six nodes of radius 48. Node centers clockwise from top: `(340, 80)` LLM agent, `(565.17, 210)` Tool call, `(565.17, 470)` Output guard, `(340, 600)` Sub agent, `(114.83, 470)` Memory store, `(114.83, 210)` Code exec.
 
 SMIL animation ignores `animation: none`, so each animating element carries `systemLanguage`-independent guards through a CSS rule that sets `visibility` on a wrapper is not reliable either. The dependable approach is to gate the animation elements themselves with a media query in an internal stylesheet, which SVG honours.
 
@@ -784,9 +784,9 @@ SMIL animation ignores `animation: none`, so each animating element carries `sys
     <animate attributeName="opacity" values="0.2;0" dur="8s" begin="4s" repeatCount="indefinite"/>
   </circle>
 
-  <!-- One group per node: a dashed quadratic spoke, a particle travelling it, the node,
+  <!-- One group per node: a dashed quadratic spoke, a particle traveling it, the node,
        and a two-line label. Particle begin times stagger by 1.5s so traffic reads as
-       continuous rather than synchronised. -->
+       continuous rather than synchronized. -->
   <g>
     <path d="M340,340 Q356,197 340,80" stroke="var(--acs-spoke)" stroke-width="1.2" stroke-dasharray="4 3" fill="none"/>
     <circle r="3.5" fill="var(--acs-node-stroke)" opacity="0.7">
@@ -1055,14 +1055,14 @@ Create `landing/index.html`. The title carries no em dash. The contact list sepa
 </footer>
 
 <script>
-  // Theme toggle. The page renders correctly without this; it only overrides the
+  // Theme toggle. The page renders correctly without this. It only overrides the
   // system preference and remembers the override.
   (function () {
     var root = document.documentElement;
     try {
       var saved = localStorage.getItem("acs-theme");
       if (saved) root.setAttribute("data-theme", saved);
-    } catch (e) { /* private mode blocks storage; system preference still applies */ }
+    } catch (e) { /* private mode blocks storage, so the system preference still applies */ }
     document.getElementById("theme-toggle").addEventListener("click", function () {
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
@@ -1084,7 +1084,7 @@ Tokens mirror agentcontrolstandard.org, except five that failed a
 measured contrast check and are annotated with their computed ratios.
 The focus ring was a translucent overlay compositing to 1.48:1 against
 the page where WCAG SC 1.4.11 requires 3:1, and the hexagon stroke at
-the centre of the diagram measured 1.47:1 against its own fill.
+the center of the diagram measured 1.47:1 against its own fill.
 
 The hero is a machine-filled placeholder rather than a hand-applied
 paste, so the renderer's placeholder check covers it. Inter ships with
@@ -2171,11 +2171,11 @@ row making that explicit:
 | Missing security response headers on the Pages site, which GitHub Pages does not allow us to set |
 ```
 
-- [ ] **Step 4: Give the new directories a licence**
+- [ ] **Step 4: Give the new directories a license**
 
 `LICENSING.md` maps `specification/**`, `.github/**`, `docs/**`, and a fixed list of root
 Markdown files. It covers none of `landing/`, `tools/`, `tests/`, or `design/`, so the
-footer's licence claim currently describes files the scope map does not reach. Add to the
+footer's license claim currently describes files the scope map does not reach. Add to the
 scope table:
 
 ```markdown
@@ -2245,7 +2245,7 @@ the first half grants, and dropping the paragraph would have deleted the
 RFC 2606 rule that licenses eleven example addresses in docs/.
 
 LICENSING.md covered none of landing/, tools/, tests/, or design/, so
-the footer named licences for files the scope map did not reach. It also
+the footer named licenses for files the scope map did not reach. It also
 now records where the reused design tokens and diagram came from.
 
 CODEOWNERS gated the workflow file and left the code that workflow runs
@@ -2399,8 +2399,8 @@ Commit and push that change.
 | F20 no monitoring (Medium) | Task 5: `monitor-pages.yml` every six hours |
 | F22 no meta-validation (Medium) | Task 1: `Draft202012Validator.check_schema` over the real tree |
 | F23 `${{ }}` in `run:` (Low) | Task 5: `env:` plus a script |
-| F25 provenance and licence scope (Medium) | Task 6 Steps 4 and 5, plus a tracking issue |
-| F26 footer links no licence (Low) | Task 2: linked licences, copyright line, document nav |
+| F25 provenance and license scope (Medium) | Task 6 Steps 4 and 5, plus a tracking issue |
+| F26 footer links no license (Low) | Task 2: linked licenses, copyright line, document nav |
 | F27 email routing (Medium) | Task 2: contact split from reporting, both processes linked |
 | F28 uncited regulatory claims (Low) | Task 2: cited to Article 14 and MANAGE 2.4, NIST described as voluntary |
 | F29 em dash in `<title>` (Low) | Task 2, guarded by a test |
