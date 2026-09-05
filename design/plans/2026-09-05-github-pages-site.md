@@ -502,7 +502,7 @@ if __name__ == "__main__":
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_publish_schemas.py -v`
-Expected: PASS, 27 tests (the parametrized case counts as 8)
+Expected: PASS, 29 tests (the parametrized case contributes 8)
 
 - [ ] **Step 7: Run the publisher against the real tree**
 
@@ -1636,7 +1636,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_render_landing.py tests/test_landing_page.py -v`
-Expected: PASS, 32 tests
+Expected: PASS, 30 tests
 
 - [ ] **Step 5: Render the page and check it by eye**
 
@@ -2443,7 +2443,7 @@ description no longer matches the workflow.
 `REQUIRED_PLACEHOLDERS`, and both test files. All three CLIs take positional arguments in
 the order the workflow passes them.
 
-**Test counts.** 27 + 32 + 4 = 63. Task 4 Step 5 and Task 6 Step 7 both expect 63.
+**Test counts.** 29 + 30 + 4 = 63. Task 4 Step 5 and Task 6 Step 7 both expect 63.
 
 **Known gap, out of scope.** Seven A2A hook pages under `docs/spec/instrument/a2a/hooks/`
 are absent from the `mkdocs.yml` navigation and publish as orphans reachable only by
