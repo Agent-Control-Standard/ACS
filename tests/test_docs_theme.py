@@ -93,6 +93,19 @@ def test_repository_link_survives_the_override(built_docs):
     assert "github.com/GenAI-Security-Project/agent-control-standard" in index
 
 
+def test_the_header_keeps_its_repository_icon(built_docs):
+    """The icon vanished once when this partial was rewritten and a person had to catch it.
+
+    Asserting the mark is inlined turns a silent regression into a failing build. The
+    fetch hook staying absent is covered separately, and both have to hold together.
+    """
+    index = (built_docs / "index.html").read_text(encoding="utf-8")
+    match = re.search(r'class="md-source__icon md-icon">\s*(<svg.*?</svg>)', index, re.S)
+    assert match, "the repository icon is not inlined in the header"
+    assert "viewBox" in match.group(1)
+    assert 'data-md-component="source"' not in index
+
+
 def test_the_theme_still_styles_the_override():
     """The override uses the theme's class names, which the theme's stylesheet supplies.
 
