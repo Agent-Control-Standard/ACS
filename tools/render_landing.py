@@ -166,7 +166,14 @@ def main(argv: list[str]) -> int:
         return 1
     out.mkdir(parents=True, exist_ok=True)
     (out / "index.html").write_text(page, encoding="utf-8")
-    shutil.copytree(landing / "assets", out / "assets", dirs_exist_ok=True)
+    shutil.copytree(
+        landing / "assets",
+        out / "assets",
+        dirs_exist_ok=True,
+        # The diagram is inlined into the page, so publishing it again would ship a
+        # second copy that nothing references and that can drift from the inlined one.
+        ignore=shutil.ignore_patterns("starburst.svg"),
+    )
     print(f"rendered landing page to {out}")
     return 0
 

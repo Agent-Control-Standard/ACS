@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 680" fill="none"
-     class="starburst" role="img"
+     role="img"
      aria-label="Six agent decision points routed through a central ACS control panel">
   <style>
     /* SMIL does not respond to `animation: none`. Disabling the elements is what works. */

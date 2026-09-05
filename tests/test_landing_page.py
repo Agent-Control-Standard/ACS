@@ -161,3 +161,26 @@ def test_built_with_section_names_the_standards(page):
 def test_no_dead_a2a_link(page):
     """The documentation still links a google-a2a.github.io path that now returns 404."""
     assert "google-a2a.github.io" not in page
+
+
+def test_vendored_font_matches_its_recorded_checksum():
+    """The checksum documents provenance. Verifying it makes the record load-bearing."""
+    import hashlib
+
+    fonts = LANDING / "assets" / "fonts"
+    recorded = {}
+    for line in (fonts / "CHECKSUMS.txt").read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            digest, name = line.split()
+            recorded[name.lstrip("*")] = digest
+    assert recorded, "CHECKSUMS.txt is empty"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256((fonts / name).read_bytes()).hexdigest()
+        assert actual == digest, f"{name}: recorded {digest}, actual {actual}"
+
+
+def test_font_license_ships_with_the_font():
+    """OFL-1.1 conditions redistribution on shipping the notice and the license text."""
+    text = (LANDING / "assets" / "fonts" / "OFL.txt").read_text(encoding="utf-8")
+    assert "SIL Open Font License" in text
+    assert "The Inter Project Authors" in text

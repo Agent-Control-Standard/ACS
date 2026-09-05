@@ -89,6 +89,16 @@ By contributing, you agree that your contributions will be licensed under the li
 
 This guide is based on [github-contributing](https://raw.githubusercontent.com/standard/.github/refs/heads/master/CONTRIBUTING.md).
 
+## Before the first Pages deploy
+
+`.github/workflows/deploy-pages.yml` and `.github/workflows/monitor-pages.yml` both
+assume GitHub Pages is already enabled for this repository. Until it is, the deploy fails
+at the Configure Pages step and the monitor fails on its schedule.
+
+Enabling it is a one-time repository setting, done by an administrator: Settings, then
+Pages, then set Build and deployment Source to GitHub Actions. Do this before merging any
+change that turns those workflows on, not after.
+
 ## Community
 
 - **[GitHub Discussions](https://github.com/GenAI-Security-Project/agent-control-standard/discussions)**: Ask questions, share ideas

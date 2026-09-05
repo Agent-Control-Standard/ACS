@@ -20,11 +20,17 @@
 /specification/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
 /docs/spec/             @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
 
-# These generate and publish the public site. A change here alters what the front door
-# says, which is the same class of privilege the /.github/ rule below protects.
-/tools/        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
-/landing/      @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
-/GOVERNANCE.md @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+# These generate and publish the public site, or feed the build that does. A change
+# here alters what the front door says, which is the same class of privilege the
+# /.github/ rule below protects. mkdocs.yml in particular accepts a hooks: key that
+# executes Python inside the build job.
+/tools/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/landing/       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/GOVERNANCE.md  @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/mkdocs.yml     @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/pyproject.toml @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/uv.lock        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/tests/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 
 # CI runs with write access to the repository. Changes here are a
 # privilege-escalation surface and warrant admin review.

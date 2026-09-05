@@ -26,7 +26,7 @@ Partial reports are welcome. We would rather triage something incomplete than ne
 | The GitHub Actions workflows in `.github/workflows/` | Automated scanner output with no demonstrated impact |
 | Hook or event definitions that leak sensitive data by design | Missing security headers on sites we do not operate |
 | Supply-chain issues in this repository's dependencies | Social engineering of maintainers or contributors |
-| The published site at genai-security-project.github.io/agent-control-standard, including the landing page, the documentation, and the schema endpoints | |
+| The published site at genai-security-project.github.io/agent-control-standard once Pages is enabled, including the landing page, the documentation, and the schema endpoints | |
 | The build and publish tooling in `tools/` and `.github/workflows/` | |
 | | Missing security response headers on the Pages site, which GitHub Pages does not allow us to set |
 

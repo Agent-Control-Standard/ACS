@@ -18,7 +18,7 @@ Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors.
 | `design/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `landing/assets/fonts/**` | SIL Open Font License 1.1 | `OFL-1.1` |
 
-Full texts live in [`LICENSE`](./LICENSE) for Apache 2.0 and [`LICENSE-DOCS`](./LICENSE-DOCS) for CC BY-SA 4.0. Attribution details live in [`NOTICE`](./NOTICE).
+Full texts live in [`LICENSE`](./LICENSE) for Apache 2.0, [`LICENSE-DOCS`](./LICENSE-DOCS) for CC BY-SA 4.0, and [`landing/assets/fonts/OFL.txt`](./landing/assets/fonts/OFL.txt) for the SIL Open Font License 1.1. Attribution details live in [`NOTICE`](./NOTICE).
 
 Code samples inside the documentation carry the Apache 2.0 grant, not the ShareAlike obligation. Copy a JSON payload or a hook definition out of `docs/` into a proprietary agent and nothing forces you to open-source the result.
 
