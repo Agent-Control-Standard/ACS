@@ -1913,7 +1913,7 @@ on:
 # Deny by default. Each job grants itself only what it needs.
 permissions: {}
 
-# One group for every deploy so they serialise on the single Pages site they share.
+# One group for every deploy so they serialize on the single Pages site they share.
 # Pull request builds group per ref and cancel stale runs. Keying everything on ref
 # would let a dispatch on a branch deploy alongside a push to main.
 concurrency:
@@ -1996,6 +1996,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      # The job checks out the repository so the verify step can reach
+      # tools/verify_published.py. A job that declares its own block gets none for
+      # every scope it omits, so this has to be restated here.
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -2093,7 +2097,7 @@ installs with --no-dev, which excludes the group pytest lives in.
 The deploy job now also checks the ref. workflow_dispatch can target any
 branch, and gating on event name alone let a feature branch publish to
 the production site. Concurrency groups every deploy together so they
-serialise on the one Pages site, while pull request builds group per ref
+serialize on the one Pages site, while pull request builds group per ref
 and cancel stale runs.
 
 Verification fetches and parses each document and asserts it serves its
