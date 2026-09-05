@@ -130,3 +130,17 @@ def test_docs_palette_is_a_two_state_sun_and_moon_toggle():
     assert "material/weather-sunny" in config
     assert "toggle-switch" not in config
     assert config.count("media: \"(prefers-color-scheme") == 2
+
+
+def test_link_colour_survives_the_theme_default_palette(built_docs):
+    """Material's palette sets --md-typeset-a-color from its default indigo primary.
+
+    The scheme rules alone tie with it at equal specificity, so the ACS value only wins
+    when the selector also matches the primary attribute the built pages always carry.
+    """
+    css = (REPO / "docs" / "stylesheets" / "extra.css").read_text(encoding="utf-8")
+    assert '[data-md-color-scheme="slate"][data-md-color-primary]' in css
+    assert '[data-md-color-scheme="default"][data-md-color-primary]' in css
+    # The pages must still carry the attribute the fix depends on.
+    index = (built_docs / "index.html").read_text(encoding="utf-8")
+    assert "data-md-color-primary=" in index

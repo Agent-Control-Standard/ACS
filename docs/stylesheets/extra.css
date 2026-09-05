@@ -53,6 +53,18 @@
   --md-footer-bg-color--dark: #000000;
 }
 
+/* The theme's own palette sets --md-typeset-a-color from the primary colour, and the
+   built pages always carry a data-md-color-primary attribute. Matching on both wins
+   deterministically rather than relying on file order at equal specificity. */
+[data-md-color-scheme="default"][data-md-color-primary] {
+  --md-typeset-a-color: #1b4f72;
+  --md-accent-fg-color: #1b4f72;
+}
+[data-md-color-scheme="slate"][data-md-color-primary] {
+  --md-typeset-a-color: #63b3ed;
+  --md-accent-fg-color: #63b3ed;
+}
+
 /* Square off Material's rounded chrome to match the landing page's flatter shapes. */
 .md-typeset code { border-radius: 4px; }
 .md-typeset pre > code { border-radius: 8px; }
