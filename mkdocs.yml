@@ -56,9 +56,9 @@ extra:
     provider: google
     property: !ENV GOOGLE_ANALYTICS_KEY
   social:
-    - icon: /fontawesome/regular/envelope
-      name: Send us an email
-      link: mailto:acs@zenity.io
+    - icon: /fontawesome/brands/github
+      name: Join the discussion on GitHub
+      link: https://github.com/GenAI-Security-Project/agent-control-standard/discussions
 
 nav:
   - Trustworthy Agents: README.md
