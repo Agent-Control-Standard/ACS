@@ -59,9 +59,12 @@ Releases up to and including v0.1.0 were published under the MIT License. That g
 ## Provenance of the landing page design
 
 The design tokens in `landing/assets/acs.css`, the diagram geometry in
-`landing/assets/starburst.svg`, and the mark in `landing/assets/icon.svg` derive from
-agentcontrolstandard.org, which the OWASP GenAI Security Project operates and which is
-built from a separate repository. They are used here as the project's own work.
+`landing/assets/starburst.svg`, and the mark in `landing/assets/icon.svg`, which is
+duplicated at `docs/assets/icon.svg` because MkDocs requires a theme logo inside its own
+documentation directory, derive from agentcontrolstandard.org, which the OWASP GenAI
+Security Project operates and which is built from a separate repository. They are used
+here as the project's own work. Both copies of the mark are covered by the
+`landing/**` row above.
 
 If any part of that site was produced by a party outside the project, confirm in writing
 who holds the rights before the next release.

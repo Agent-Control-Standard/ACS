@@ -58,7 +58,8 @@
 .md-typeset pre > code { border-radius: 8px; }
 .md-typeset table:not([class]) { border-radius: 8px; overflow: hidden; }
 
-/* The logo is an SVG now, so it needs an explicit box. */
+/* Size the header mark. Material emits it as an img, and the default box is too tall
+   for the wordmark this site uses. */
 .md-header__button.md-logo {
   padding: 0.2rem;
   margin: 0;

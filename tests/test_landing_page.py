@@ -15,17 +15,6 @@ from render_landing import render
 REPO = Path(__file__).resolve().parents[1]
 LANDING = REPO / "landing"
 
-# Anchor links are prose and fetch nothing. Only resource loads reach a third party,
-# so the guard matches loading constructs rather than every href on the page. The
-# sibling guard in tests/test_site_config.py was weakened by allowlisting citations
-# before it was scoped this way.
-RESOURCE_TAG = re.compile(
-    r"""<(?:script|link|img|iframe|source|audio|video|embed|object)\b[^>]*?"""
-    r"""(?:src|href|data)\s*=\s*['"](?:https?:)?//([^/'"]+)""",
-    re.I,
-)
-IMPORT_RULE = re.compile(r"""@import\s+(?:url\()?['"]?(?:https?:)?//([^/'"]+)""", re.I)
-
 
 @pytest.fixture(scope="module")
 def page() -> str:
@@ -58,13 +47,11 @@ def test_the_only_email_is_the_approved_one(page):
 
 
 def test_page_loads_no_third_party_resource(page):
-    """The page must fetch nothing it does not serve itself.
+    """The page and the stylesheet it loads must both fetch nothing external."""
+    from conftest import third_party_hosts
 
-    Everything it needs is vendored, so an empty result is the correct result and any
-    host appearing here is a regression.
-    """
-    hosts = {m.group(1) for m in RESOURCE_TAG.finditer(page)}
-    hosts |= {m.group(1) for m in IMPORT_RULE.finditer(page)}
+    hosts = third_party_hosts(page, set())
+    hosts |= third_party_hosts((LANDING / "assets" / "acs.css").read_text(encoding="utf-8"), set())
     assert not hosts, f"third-party resource loads: {hosts}"
 
 

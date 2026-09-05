@@ -1,7 +1,10 @@
 {#-
-  Overrides the theme's partial to drop data-md-component="source". That attribute makes
-  Material fetch release and star counts from api.github.com on every page load, which
-  sends each reader's IP address to a third party. The link itself is kept.
+  Derived from partials/source.html in Material for MkDocs, which is licensed under the
+  MIT License, Copyright (c) 2016-2025 Martin Donath. See NOTICE.
+
+  The only change is dropping data-md-component="source". That attribute makes Material
+  fetch release and star counts from api.github.com on every page load, which sends each
+  reader's IP address to a third party. The link itself is kept.
 -#}
 <a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source">
   <div class="md-source__icon md-icon">

@@ -226,7 +226,9 @@
       if (saved) root.setAttribute("data-theme", saved);
     } catch (e) { /* private mode blocks storage, so the system preference still applies */ }
     document.getElementById("theme-toggle").addEventListener("click", function () {
-      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      var current = root.getAttribute("data-theme")
+        || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      var next = current === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
       try { localStorage.setItem("acs-theme", next); } catch (e) { /* ignore */ }
     });

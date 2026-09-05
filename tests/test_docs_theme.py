@@ -69,6 +69,13 @@ def test_docs_use_the_same_mark_as_the_landing_page():
     assert (REPO / "docs" / "assets" / "icon.svg").is_file()
 
 
+def test_the_two_copies_of_the_mark_stay_identical():
+    """MkDocs needs the logo inside docs_dir, so the file exists twice. Nothing else
+    keeps the copies in step."""
+    assert (REPO / "docs" / "assets" / "icon.svg").read_bytes() == \
+        (REPO / "landing" / "assets" / "icon.svg").read_bytes()
+
+
 def test_docs_do_not_call_the_github_api_at_runtime(built_docs):
     """Material fetches star counts from api.github.com when this hook is present.
 
@@ -84,3 +91,23 @@ def test_repository_link_survives_the_override(built_docs):
     index = (built_docs / "index.html").read_text(encoding="utf-8")
     assert 'class="md-source"' in index
     assert "github.com/GenAI-Security-Project/agent-control-standard" in index
+
+
+def test_the_source_override_tracks_upstream():
+    """If Material changes that partial, the override silently keeps the old shape.
+
+    Comparing against the installed template turns that into a failing test on the
+    upgrade, rather than a divergence nobody notices.
+    """
+    import material
+
+    upstream = (Path(material.__file__).parent / "templates" / "partials" / "source.html")
+    if not upstream.is_file():
+        pytest.skip("installed Material layout differs, nothing to compare")
+
+    def body(text: str) -> str:
+        without_comment = re.sub(r"\{#-.*?-#\}", "", text, flags=re.S)
+        return re.sub(r'\s*data-md-component="source"', "", without_comment).strip()
+
+    assert body(upstream.read_text(encoding="utf-8")) == \
+        body((REPO / "overrides" / "partials" / "source.html").read_text(encoding="utf-8"))

@@ -134,7 +134,10 @@ Schema `$id` values are based at `https://genai-security-project.github.io/agent
 
 `$id` is identity, not a fetch target. Every `$ref` in the package is relative and resolves against the enclosing `$id` base, so the whole set must share one base. Two bases means the relative refs resolve to URIs no `$id` declares, which is the defect fixed in `4fb84c1`. If you add a subschema, give it an `$id` under the same base and keep its refs relative.
 
-The base is not yet served: GitHub Pages is not enabled on this repo, so remote retrieval 404s. Local and file-path validation is unaffected.
+The base is served once GitHub Pages is enabled on this repository, which
+`.github/workflows/deploy-pages.yml` then publishes to on every merge to `main` and
+`.github/workflows/monitor-pages.yml` rechecks every six hours. Until that setting is
+turned on, remote retrieval 404s and only local and file-path validation works.
 
 `$id` is versioned by **spec** version, not release version. `.github/workflows/sync_version.py` deliberately leaves `$id` alone. See `1af1f92`.
 

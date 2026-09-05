@@ -25,6 +25,8 @@
 # /.github/ rule below protects. mkdocs.yml in particular accepts a hooks: key that
 # executes Python inside the build job. The overrides directory holds theme templates
 # the build renders into every page, which carries the same reach.
+# The docs stylesheet and asset directories render into every documentation page and
+# can reach a third party through url(), @font-face, or @import with no script at all.
 /tools/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 /landing/       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 /GOVERNANCE.md  @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
@@ -33,6 +35,8 @@
 /uv.lock        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 /tests/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 /overrides/     @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/docs/stylesheets/ @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/docs/assets/      @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
 
 # CI runs with write access to the repository. Changes here are a
 # privilege-escalation surface and warrant admin review.

@@ -185,3 +185,13 @@ def test_render_fails_when_the_template_drops_a_placeholder(spec_tree):
 def test_render_fails_when_an_unknown_placeholder_survives(spec_tree):
     with pytest.raises(RenderError, match="unfilled placeholder"):
         render(FULL_TEMPLATE + "<!--ACS:UNKNOWN-->", spec_tree, GOVERNANCE, "<svg/>")
+
+
+def test_main_does_not_republish_the_inlined_diagram(tmp_path):
+    """The diagram is inlined, so publishing it again ships a second copy that can drift."""
+    import render_landing
+
+    assert render_landing.main(["render_landing.py", str(REPO / "landing"), str(tmp_path)]) == 0
+    assert not (tmp_path / "assets" / "starburst.svg").exists()
+    assert (tmp_path / "assets" / "acs.css").is_file()
+    assert (tmp_path / "assets" / "icon.svg").is_file()

@@ -14,15 +14,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Anchor links are prose and fetch nothing. Only resource loads reach a third party,
-# so the guard matches loading constructs rather than every href on the page.
-RESOURCE_TAG = re.compile(
-    r"""<(?:script|link|img|iframe|source|audio|video|embed|object)\b[^>]*?"""
-    r"""(?:src|href|data)\s*=\s*['"](?:https?:)?//([^/'"]+)""",
-    re.I,
-)
-IMPORT_RULE = re.compile(r"""@import\s+(?:url\()?['"]?(?:https?:)?//([^/'"]+)""", re.I)
-
 # The canonical URL the test build is given. Anything else is a third party.
 SELF_HOSTS = {"example.org"}
 
@@ -62,15 +53,13 @@ def test_built_site_loads_nothing_from_google(built_site):
 def test_built_site_loads_no_third_party_resource(built_site):
     """The site must fetch nothing it does not serve itself.
 
-    Measured before this guard existed: the built site had zero third-party resource
-    loads once analytics and theme fonts were off. An empty result is the correct
-    result, so any host appearing here is a regression.
+    Stylesheets are scanned as well as markup. A url() in a stylesheet every page loads
+    reaches a third party without any script, and an HTML-only scan cannot see it.
     """
+    from conftest import third_party_hosts
+
     offenders: dict[str, str] = {}
-    for page in built_site.rglob("*.html"):
-        text = page.read_text(encoding="utf-8")
-        for match in list(RESOURCE_TAG.finditer(text)) + list(IMPORT_RULE.finditer(text)):
-            host = match.group(1)
-            if host not in SELF_HOSTS:
-                offenders.setdefault(host, page.name)
+    for asset in list(built_site.rglob("*.html")) + list(built_site.rglob("*.css")):
+        for host in third_party_hosts(asset.read_text(encoding="utf-8"), SELF_HOSTS):
+            offenders.setdefault(host, asset.name)
     assert not offenders, f"third-party resource loads: {offenders}"
