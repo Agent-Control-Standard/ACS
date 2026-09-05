@@ -2148,10 +2148,10 @@ and are correct.
 In `CLAUDE.md`, replace the body of "Hosting (decoupled from this repo)":
 
 ```markdown
-This repository is the source of truth for the ACS spec and, since the Pages workflow
-landed, it also publishes the site. `.github/workflows/deploy-pages.yml` builds three
-things on every merge to `main`: the landing page from `landing/`, the MkDocs
-documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
+This repository is the source of truth for the ACS spec, and it now carries the workflow
+that publishes the site. Once Pages is enabled, `.github/workflows/deploy-pages.yml`
+builds three things on every merge to `main`: the landing page from `landing/`, the
+MkDocs documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
 
 Schema publish paths derive from each schema's own `$id`, which is validated and
 contained because `$id` is a pull-request-writable string used to build a filesystem
@@ -2202,9 +2202,9 @@ footer's license claim currently describes files the scope map does not reach. A
 scope table:
 
 ```markdown
-| `landing/**`, `tools/**`, `tests/**` | Apache-2.0 |
-| `design/**` | CC BY-SA 4.0 |
-| `landing/assets/fonts/**` | SIL Open Font License 1.1, see `landing/assets/fonts/CHECKSUMS.txt` |
+| `landing/**`, `tools/**`, `tests/**` | Apache License 2.0 | `Apache-2.0` |
+| `design/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
+| `landing/assets/fonts/**` | SIL Open Font License 1.1 | `OFL-1.1` |
 ```
 
 - [ ] **Step 5: Record the provenance of the reused design**
@@ -2406,8 +2406,11 @@ every schema at the path its `$id` declares, and the deploy fails if any of them
 resolve. `.github/workflows/monitor-pages.yml` rechecks that every six hours.
 ```
 
-Do this only after Step 7 confirms the URIs resolve. Writing it earlier would trade one
-false statement for another.
+In the same edit, change the Hosting section's "Once Pages is enabled" back to the
+present tense, because at that point it is.
+
+Do both only after Step 7 confirms the URIs resolve. Writing either earlier would trade
+one false statement for another.
 
 ---
 
