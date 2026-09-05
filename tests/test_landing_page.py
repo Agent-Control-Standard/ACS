@@ -15,6 +15,17 @@ from render_landing import render
 REPO = Path(__file__).resolve().parents[1]
 LANDING = REPO / "landing"
 
+# Anchor links are prose and fetch nothing. Only resource loads reach a third party,
+# so the guard matches loading constructs rather than every href on the page. The
+# sibling guard in tests/test_site_config.py was weakened by allowlisting citations
+# before it was scoped this way.
+RESOURCE_TAG = re.compile(
+    r"""<(?:script|link|img|iframe|source|audio|video|embed|object)\b[^>]*?"""
+    r"""(?:src|href|data)\s*=\s*['"](?:https?:)?//([^/'"]+)""",
+    re.I,
+)
+IMPORT_RULE = re.compile(r"""@import\s+(?:url\()?['"]?(?:https?:)?//([^/'"]+)""", re.I)
+
 
 @pytest.fixture(scope="module")
 def page() -> str:
@@ -46,12 +57,15 @@ def test_the_only_email_is_the_approved_one(page):
     assert found == {"rock.lambros@owasp.org"}
 
 
-def test_no_third_party_origin(page):
-    """The page must contact nothing. Same reasoning that removed analytics."""
-    hosts = set(re.findall(r"""(?:href|src)\s*=\s*['"]https?://([^/'"]+)""", page))
-    allowed = {"github.com", "owasp.slack.com", "owasp.org", "www.apache.org",
-               "creativecommons.org", "eur-lex.europa.eu", "doi.org"}
-    assert hosts <= allowed, f"unexpected origins: {hosts - allowed}"
+def test_page_loads_no_third_party_resource(page):
+    """The page must fetch nothing it does not serve itself.
+
+    Everything it needs is vendored, so an empty result is the correct result and any
+    host appearing here is a regression.
+    """
+    hosts = {m.group(1) for m in RESOURCE_TAG.finditer(page)}
+    hosts |= {m.group(1) for m in IMPORT_RULE.finditer(page)}
+    assert not hosts, f"third-party resource loads: {hosts}"
 
 
 def test_no_inline_event_handlers(page):
@@ -136,3 +150,14 @@ def test_focus_ring_and_muted_text_meet_contrast():
     assert ratio(dark_muted, "#161616") >= 4.5
     light_hex = token("--acs-hex-stroke", ":root {")
     assert ratio(light_hex, "#f4f5f7") >= 3.0
+
+
+def test_built_with_section_names_the_standards(page):
+    """The section carries named standards with a stated relationship, not a logo wall."""
+    for standard in ["OWASP ASI", "AIVSS", "OpenTelemetry", "OCSF", "CycloneDX", "SPDX", "MCP", "A2A"]:
+        assert standard in page
+
+
+def test_no_dead_a2a_link(page):
+    """The documentation still links a google-a2a.github.io path that now returns 404."""
+    assert "google-a2a.github.io" not in page
