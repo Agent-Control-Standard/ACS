@@ -93,10 +93,10 @@ This is a documentation-focused project built with:
 - **MkDocs Material** for local documentation preview
 
 ### Hosting (decoupled from this repo)
-This repository is the source of truth for the ACS spec and, since the Pages workflow
-landed, it also publishes the site. `.github/workflows/deploy-pages.yml` builds three
-things on every merge to `main`: the landing page from `landing/`, the MkDocs
-documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
+This repository is the source of truth for the ACS spec, and it now carries the workflow
+that publishes the site. Once Pages is enabled, `.github/workflows/deploy-pages.yml`
+builds three things on every merge to `main`: the landing page from `landing/`, the
+MkDocs documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
 
 Schema publish paths derive from each schema's own `$id`, which is validated and
 contained because `$id` is a pull-request-writable string used to build a filesystem

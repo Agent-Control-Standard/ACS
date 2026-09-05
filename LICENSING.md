@@ -14,9 +14,9 @@ Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors.
 | Code samples embedded in any Markdown file | Apache License 2.0 | `Apache-2.0` |
 | `docs/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTORS.md`, `STYLE.md`, `SPEC_REVIEW_PRINCIPLES.md`, `LICENSING.md` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
-| `landing/**`, `tools/**`, `tests/**` | Apache-2.0 |
-| `design/**` | CC BY-SA 4.0 |
-| `landing/assets/fonts/**` | SIL Open Font License 1.1, see `landing/assets/fonts/CHECKSUMS.txt` |
+| `landing/**`, `tools/**`, `tests/**` | Apache License 2.0 | `Apache-2.0` |
+| `design/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
+| `landing/assets/fonts/**` | SIL Open Font License 1.1 | `OFL-1.1` |
 
 Full texts live in [`LICENSE`](./LICENSE) for Apache 2.0 and [`LICENSE-DOCS`](./LICENSE-DOCS) for CC BY-SA 4.0. Attribution details live in [`NOTICE`](./NOTICE).
 
@@ -65,3 +65,6 @@ built from a separate repository. They are used here as the project's own work.
 
 If any part of that site was produced by a party outside the project, confirm in writing
 who holds the rights before the next release.
+
+The vendored font is Inter, redistributed under the SIL Open Font License 1.1. Its
+recorded checksum is in `landing/assets/fonts/CHECKSUMS.txt`.
