@@ -15,6 +15,7 @@ Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors.
 | `docs/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTORS.md`, `STYLE.md`, `SPEC_REVIEW_PRINCIPLES.md`, `LICENSING.md` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `landing/**`, `tools/**`, `tests/**` | Apache License 2.0 | `Apache-2.0` |
+| `overrides/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `design/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `landing/assets/fonts/**` | SIL Open Font License 1.1 | `OFL-1.1` |
 

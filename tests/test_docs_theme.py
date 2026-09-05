@@ -93,21 +93,18 @@ def test_repository_link_survives_the_override(built_docs):
     assert "github.com/GenAI-Security-Project/agent-control-standard" in index
 
 
-def test_the_source_override_tracks_upstream():
-    """If Material changes that partial, the override silently keeps the old shape.
+def test_the_theme_still_styles_the_override():
+    """The override uses the theme's class names, which the theme's stylesheet supplies.
 
-    Comparing against the installed template turns that into a failing test on the
-    upgrade, rather than a divergence nobody notices.
+    Writing the partial for this project means nothing tracks upstream markup. What still
+    has to hold is that these classes exist, because a rename upstream would leave the
+    header rendering unstyled with every other test passing.
     """
     import material
 
-    upstream = (Path(material.__file__).parent / "templates" / "partials" / "source.html")
-    if not upstream.is_file():
+    stylesheets = Path(material.__file__).parent / "templates" / "assets" / "stylesheets"
+    css = "".join(p.read_text(encoding="utf-8") for p in stylesheets.glob("main.*.css"))
+    if not css:
         pytest.skip("installed Material layout differs, nothing to compare")
-
-    def body(text: str) -> str:
-        without_comment = re.sub(r"\{#-.*?-#\}", "", text, flags=re.S)
-        return re.sub(r'\s*data-md-component="source"', "", without_comment).strip()
-
-    assert body(upstream.read_text(encoding="utf-8")) == \
-        body((REPO / "overrides" / "partials" / "source.html").read_text(encoding="utf-8"))
+    for klass in [".md-source", ".md-source__repository"]:
+        assert klass in css, f"{klass} is gone from the installed theme"

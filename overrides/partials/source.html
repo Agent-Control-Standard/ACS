@@ -1,17 +1,12 @@
 {#-
-  Derived from partials/source.html in Material for MkDocs, which is licensed under the
-  MIT License, Copyright (c) 2016-2025 Martin Donath. See NOTICE.
+  Renders the repository link in the documentation header.
 
-  The only change is dropping data-md-component="source". That attribute makes Material
-  fetch release and star counts from api.github.com on every page load, which sends each
-  reader's IP address to a third party. The link itself is kept.
+  The theme's own partial sets data-md-component="source", which makes it fetch release
+  and star counts from api.github.com on every page load and sends each reader's IP
+  address to a third party. This override exists to render the link without that hook.
+
+  The class names come from the theme's stylesheet, which is what styles this element.
 -#}
-<a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source">
-  <div class="md-source__icon md-icon">
-    {% set icon = config.theme.icon.repo or "fontawesome/brands/git-alt" %}
-    {% include ".icons/" ~ icon ~ ".svg" %}
-  </div>
-  <div class="md-source__repository">
-    {{ config.repo_name }}
-  </div>
+<a class="md-source" href="{{ config.repo_url }}" title="{{ config.repo_name }}">
+  <span class="md-source__repository">{{ config.repo_name }}</span>
 </a>
