@@ -78,6 +78,7 @@ The ACS framework consists of three interconnected layers:
 - `docs/spec/trace/events.md`: Event catalog and schemas
 - `docs/topics/core_concepts.md`: Fundamental concepts and terminology
 - `docs/topics/ACS_in_action_example.md`: Step-by-step implementation example
+- `project.owasp.yaml`: OWASP Nest project metadata, validated in CI against `owasp/nest-schema`
 - `mkdocs.yml`: Documentation site configuration
 
 ### Navigation Structure
@@ -92,7 +93,19 @@ This is a documentation-focused project built with:
 - **MkDocs Material** for local documentation preview
 
 ### Hosting (decoupled from this repo)
-This repository is the **source of truth for the ACS spec** (schema, hooks, events, AgBOM definitions, written specification). The marketing and docs site at **agentcontrolstandard.ai** is built and deployed independently from a separate repository — changes here do not propagate automatically. The `.org` and `.com` domains redirect to `.ai`.
+This repository is the **source of truth for the ACS spec** (schema, hooks, events, AgBOM definitions, written specification). The marketing and docs site at **agentcontrolstandard.org** is built and deployed independently from a separate repository — changes here do not propagate automatically. The `.ai` and `.com` domains redirect to `.org`.
+
+### Contact channels
+The repository carries no email addresses, by policy. Community contact is GitHub Discussions, security reporting is GitHub private vulnerability reporting, and Code of Conduct enforcement routes to the OWASP CoC process so that a report about a maintainer does not land with the maintainers. Do not add a contact address to documentation, `project.owasp.yaml`, or the site config. Example addresses in specification documents must use the RFC 2606 reserved domains (`example.com`, `example.net`, `example.org`).
+
+### Schema namespace
+Schema `$id` values are based at `https://genai-security-project.github.io/agent-control-standard/schema/<spec-version>/`, not at any of the project domains. The namespace follows the org and repo so that schema identity survives a domain or hosting change. Do not rebase `$id` onto a marketing domain.
+
+`$id` is identity, not a fetch target. Every `$ref` in the package is relative and resolves against the enclosing `$id` base, so the whole set must share one base. Two bases means the relative refs resolve to URIs no `$id` declares, which is the defect fixed in `4fb84c1`. If you add a subschema, give it an `$id` under the same base and keep its refs relative.
+
+The base is not yet served: GitHub Pages is not enabled on this repo, so remote retrieval 404s. Local and file-path validation is unaffected.
+
+`$id` is versioned by **spec** version, not release version. `.github/workflows/sync_version.py` deliberately leaves `$id` alone. See `1af1f92`.
 
 ### Roadmap Context
 - **v0.1** (Current): Documentation, schemas, and requirements
