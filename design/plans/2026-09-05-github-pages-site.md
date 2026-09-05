@@ -1700,12 +1700,17 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-ALLOWED_HOSTS = {
-    "github.com", "owasp.slack.com", "owasp.org", "www.apache.org",
-    "creativecommons.org", "eur-lex.europa.eu", "doi.org",
-    "genai-security-project.github.io", "json-schema.org",
-    "opentelemetry.io", "cyclonedx.org", "spdx.dev",
-}
+# Anchor links are prose and fetch nothing. Only resource loads reach a third party,
+# so the guard matches loading constructs rather than every href on the page.
+RESOURCE_TAG = re.compile(
+    r"""<(?:script|link|img|iframe|source|audio|video|embed|object)\b[^>]*?"""
+    r"""(?:src|href|data)\s*=\s*['"](?:https?:)?//([^/'"]+)""",
+    re.I,
+)
+IMPORT_RULE = re.compile(r"""@import\s+(?:url\()?['"]?(?:https?:)?//([^/'"]+)""", re.I)
+
+# The canonical URL the test build is given. Anything else is a third party.
+SELF_HOSTS = {"example.org"}
 
 
 @pytest.fixture(scope="module")
@@ -1740,11 +1745,21 @@ def test_built_site_loads_nothing_from_google(built_site):
         assert "fonts.gstatic.com" not in text
 
 
-def test_built_site_fetches_no_unexpected_origin(built_site):
+def test_built_site_loads_no_third_party_resource(built_site):
+    """The site must fetch nothing it does not serve itself.
+
+    Measured before this guard existed: the built site had zero third-party resource
+    loads once analytics and theme fonts were off. An empty result is the correct
+    result, so any host appearing here is a regression.
+    """
+    offenders: dict[str, str] = {}
     for page in built_site.rglob("*.html"):
-        for host in re.findall(r"""(?:src|href)\s*=\s*['"]https?://([^/'"]+)""",
-                               page.read_text(encoding="utf-8")):
-            assert host in ALLOWED_HOSTS, f"{page.name} fetches {host}"
+        text = page.read_text(encoding="utf-8")
+        for match in list(RESOURCE_TAG.finditer(text)) + list(IMPORT_RULE.finditer(text)):
+            host = match.group(1)
+            if host not in SELF_HOSTS:
+                offenders.setdefault(host, page.name)
+    assert not offenders, f"third-party resource loads: {offenders}"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
