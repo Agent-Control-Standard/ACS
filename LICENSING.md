@@ -67,8 +67,9 @@ Security Project operates and which is built from a separate repository. They ar
 here as the project's own work. Both copies of the mark are covered by the
 `landing/**` row above.
 
-If any part of that site was produced by a party outside the project, confirm in writing
-who holds the rights before the next release.
+The OWASP GenAI Security Project holds the rights to this design, confirmed by the
+project lead. No outside party has a claim on the tokens, the diagram geometry, or the
+mark, so they are covered by the rows above with no further condition.
 
 The vendored font is Inter, redistributed under the SIL Open Font License 1.1. Its
 recorded checksum is in `landing/assets/fonts/CHECKSUMS.txt`.

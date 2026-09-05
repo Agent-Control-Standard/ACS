@@ -193,3 +193,21 @@ def test_only_one_theme_mark_shows_at_a_time():
     assert "#theme-toggle .icon-sun { display: none; }" in css
     assert ':root[data-theme="dark"] #theme-toggle .icon-moon { display: none; }' in css
     assert ".visually-hidden" in css
+
+
+def test_the_sidebar_shows_the_same_mark_as_the_documentation(page):
+    """The two surfaces drew the same file differently, text here and an image there."""
+    assert 'src="assets/icon.svg"' in page
+    assert '<img src="assets/icon.svg" alt=""' in page
+
+
+def test_the_specification_is_not_listed_as_an_external_resource(page):
+    """It is served from this site, so it belongs with the sections rather than beside
+    GitHub and Slack."""
+    # "External resources" names both the <h2> and the nav's aria-label, so the nav
+    # content follows the last occurrence, not the first.
+    external = page.split("External resources")[-1].split("</nav>")[0]
+    assert "docs/" not in external
+    assert "github.com" in external and "owasp.slack.com" in external
+    sections = page.split('aria-label="Sections"')[1].split("</nav>")[0]
+    assert 'href="docs/"' in sections

@@ -121,10 +121,27 @@ button:focus-visible { outline: 3px solid var(--acs-focus-ring); outline-offset:
   padding: 2rem 1.5rem; border-right: 1px solid var(--acs-border);
   display: flex; flex-direction: column; gap: 1.5rem;
 }
-.wordmark { font-weight: 700; letter-spacing: 0.12em; font-size: 1.1rem; text-decoration: none; }
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-size: 1.1rem;
+  text-decoration: none;
+}
+.wordmark img { width: 28px; height: 28px; border-radius: 6px; }
 .sidebar nav { display: flex; flex-direction: column; gap: 0.6rem; }
 .sidebar nav a { text-decoration: none; color: var(--acs-text-soft); }
 .sidebar nav a:hover { color: var(--acs-text); }
+/* This one navigates to the documentation while its neighbours are in-page anchors. */
+.sidebar nav a.nav-primary {
+  font-weight: 600;
+  color: var(--acs-text);
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.2rem;
+  border-bottom: 1px solid var(--acs-border);
+}
 .sidebar h2 { font-size: 0.75rem; text-transform: uppercase; color: var(--acs-text-muted); }
 
 main { padding: 4rem 3rem; max-width: 1100px; }
