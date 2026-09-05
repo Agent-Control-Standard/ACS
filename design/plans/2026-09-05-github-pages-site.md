@@ -1306,7 +1306,7 @@ def test_render_fails_when_an_unknown_placeholder_survives(spec_tree):
 Create `tests/test_landing_page.py`. Every guard runs against the rendered page, because the injected content is the half no human reviews:
 
 ```python
-"""Content guards on the page that actually ships.
+"""Content guards on the page that ships.
 
 These run against render() output, not the template. The template is hand-reviewed;
 the injected sections are not.
@@ -1400,7 +1400,7 @@ def test_footer_links_the_governing_documents(page):
         assert doc in page
 
 
-def test_licence_names_are_linked(page):
+def test_license_names_are_linked(page):
     assert "apache.org/licenses/LICENSE-2.0" in page
     assert "creativecommons.org/licenses/by-sa/4.0" in page
 
@@ -1419,8 +1419,8 @@ def test_focus_ring_and_muted_text_meet_contrast():
     """Encodes the measurements that four inherited token values failed."""
     css = (LANDING / "assets" / "acs.css").read_text(encoding="utf-8")
 
-    def luminance(hex_colour: str) -> float:
-        h = hex_colour.lstrip("#")
+    def luminance(hex_color: str) -> float:
+        h = hex_color.lstrip("#")
         channels = []
         for i in (0, 2, 4):
             c = int(h[i : i + 2], 16) / 255
