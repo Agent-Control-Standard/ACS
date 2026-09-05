@@ -542,7 +542,7 @@ Builds the static page. Every value that varies with repository state is a place
 
 **Files:**
 - Create: `landing/index.html`, `landing/assets/acs.css`, `landing/assets/starburst.svg`, `landing/assets/icon.svg`, `landing/assets/fonts/`
-- Create: `tests/test_landing_page.py` (guards run in Task 3, against rendered output)
+- This task ships no tests. Its guards live in `tests/test_landing_page.py`, which Task 3 creates, because they assert properties of the **rendered** page rather than this template.
 
 **Interfaces:**
 - Consumes: nothing.
