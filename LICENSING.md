@@ -14,6 +14,9 @@ Copyright 2025-2026 The OWASP GenAI Security Project and the ACS contributors.
 | Code samples embedded in any Markdown file | Apache License 2.0 | `Apache-2.0` |
 | `docs/**` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
 | `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTORS.md`, `STYLE.md`, `SPEC_REVIEW_PRINCIPLES.md`, `LICENSING.md` | CC BY-SA 4.0 | `CC-BY-SA-4.0` |
+| `landing/**`, `tools/**`, `tests/**` | Apache-2.0 |
+| `design/**` | CC BY-SA 4.0 |
+| `landing/assets/fonts/**` | SIL Open Font License 1.1, see `landing/assets/fonts/CHECKSUMS.txt` |
 
 Full texts live in [`LICENSE`](./LICENSE) for Apache 2.0 and [`LICENSE-DOCS`](./LICENSE-DOCS) for CC BY-SA 4.0. Attribution details live in [`NOTICE`](./NOTICE).
 
@@ -52,3 +55,13 @@ These licenses cover copyright. They grant no rights to the OWASP name, the OWAS
 ## License history
 
 Releases up to and including v0.1.0 were published under the MIT License. That grant stands. Anyone who obtained ACS under the MIT License keeps their rights under it. Contributions merged after the relicense are governed by the terms on this page.
+
+## Provenance of the landing page design
+
+The design tokens in `landing/assets/acs.css`, the diagram geometry in
+`landing/assets/starburst.svg`, and the mark in `landing/assets/icon.svg` derive from
+agentcontrolstandard.org, which the OWASP GenAI Security Project operates and which is
+built from a separate repository. They are used here as the project's own work.
+
+If any part of that site was produced by a party outside the project, confirm in writing
+who holds the rights before the next release.

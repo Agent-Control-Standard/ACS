@@ -93,10 +93,41 @@ This is a documentation-focused project built with:
 - **MkDocs Material** for local documentation preview
 
 ### Hosting (decoupled from this repo)
-This repository is the **source of truth for the ACS spec** (schema, hooks, events, AgBOM definitions, written specification). The marketing and docs site at **agentcontrolstandard.org** is built and deployed independently from a separate repository — changes here do not propagate automatically. The `.ai` and `.com` domains redirect to `.org`.
+This repository is the source of truth for the ACS spec and, since the Pages workflow
+landed, it also publishes the site. `.github/workflows/deploy-pages.yml` builds three
+things on every merge to `main`: the landing page from `landing/`, the MkDocs
+documentation under `/docs/`, and the JSON schemas under `/schema/<spec-version>/`.
+
+Schema publish paths derive from each schema's own `$id`, which is validated and
+contained because `$id` is a pull-request-writable string used to build a filesystem
+path. The build fails on an unsafe or duplicated `$id` and on any `$ref` that does not
+resolve, fragment included.
+
+`GOVERNANCE.md` is a build input. Its workstream table renders into the published page,
+so a change to its shape can fail the deploy, and its contents are escaped as untrusted
+text.
+
+The marketing site at **agentcontrolstandard.org** is still built and deployed from a
+separate repository. It will redirect here later. Adding the custom domain makes GitHub
+301 the `github.io` URIs to it, which schema tooling follows. Do not rebase `$id` onto
+the marketing domain during that cutover. A `CNAME` must be written into `_site` by the
+build. Placing one in `landing/` does not reach the artifact.
 
 ### Contact channels
-The repository carries no email addresses, by policy. Community contact is GitHub Discussions, security reporting is GitHub private vulnerability reporting, and Code of Conduct enforcement routes to the OWASP CoC process so that a report about a maintainer does not land with the maintainers. Do not add a contact address to documentation, `project.owasp.yaml`, or the site config. Example addresses in specification documents must use the RFC 2606 reserved domains (`example.com`, `example.net`, `example.org`).
+The repository carries one contact address and no others. `rock.lambros@owasp.org`
+appears on the landing page for general questions about the project. Do not add any
+other contact address to documentation, `project.owasp.yaml`, or the site config.
+
+Routing is unchanged. Community contact is GitHub Discussions and the
+`#team-genai-asi-acs-general` channel on `owasp.slack.com`. Security reporting is GitHub
+private vulnerability reporting, which is the channel `SECURITY.md` covers. Code of
+Conduct enforcement routes to the OWASP CoC process so that a report about a maintainer
+does not land with the maintainers. The landing page links both, so publishing an
+address does not pull reports out of the processes that handle them independently.
+
+Example addresses in specification documents must use the RFC 2606 reserved domains
+(`example.com`, `example.net`, `example.org`). Eleven of these exist in `docs/` today
+and are correct.
 
 ### Schema namespace
 Schema `$id` values are based at `https://genai-security-project.github.io/agent-control-standard/schema/<spec-version>/`, not at any of the project domains. The namespace follows the org and repo so that schema identity survives a domain or hosting change. Do not rebase `$id` onto a marketing domain.
