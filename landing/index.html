@@ -182,14 +182,14 @@
 </footer>
 
 <script>
-  // Theme toggle. The page renders correctly without this; it only overrides the
+  // Theme toggle. The page renders correctly without this. It only overrides the
   // system preference and remembers the override.
   (function () {
     var root = document.documentElement;
     try {
       var saved = localStorage.getItem("acs-theme");
       if (saved) root.setAttribute("data-theme", saved);
-    } catch (e) { /* private mode blocks storage; system preference still applies */ }
+    } catch (e) { /* private mode blocks storage, so the system preference still applies */ }
     document.getElementById("theme-toggle").addEventListener("click", function () {
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);

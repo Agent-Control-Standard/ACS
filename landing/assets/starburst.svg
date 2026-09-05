@@ -28,9 +28,9 @@
     <animate attributeName="opacity" values="0.2;0" dur="8s" begin="4s" repeatCount="indefinite"/>
   </circle>
 
-  <!-- One group per node: a dashed quadratic spoke, a particle travelling it, the node,
+  <!-- One group per node: a dashed quadratic spoke, a particle traveling it, the node,
        and a two-line label. Particle begin times stagger by 1.5s so traffic reads as
-       continuous rather than synchronised. -->
+       continuous rather than synchronized. -->
   <g>
     <path d="M340,340 Q356,197 340,80" stroke="var(--acs-spoke)" stroke-width="1.2" stroke-dasharray="4 3" fill="none"/>
     <circle r="3.5" fill="var(--acs-node-stroke)" opacity="0.7">

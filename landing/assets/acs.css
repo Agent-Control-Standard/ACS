@@ -30,7 +30,7 @@
   --acs-node-stroke: #6b7079;   /* 4.98:1 on the page */
   --acs-spoke: #6b7079;
   --acs-hex-fill: #f4f5f7;
-  /* Was #c4cdd8 for 1.47:1 against the hexagon fill. The centre of the diagram was
+  /* Was #c4cdd8 for 1.47:1 against the hexagon fill. The center of the diagram was
      close to invisible. #7d8899 measures 3.29:1. */
   --acs-hex-stroke: #7d8899;
   --acs-tier-1: #0f7b3f;
@@ -170,7 +170,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
 }
 
 /* Continuous motion is a vestibular trigger and a battery cost. CSS animation is
-   stopped here; the SVG's SMIL elements carry their own guard, because
+   stopped here. The SVG's SMIL elements carry their own guard, because
    `animation: none` does not reach them. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
