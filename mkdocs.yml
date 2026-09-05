@@ -42,9 +42,7 @@ theme:
       toggle:
         icon: material/toggle-switch-off
         name: Switch to system preference
-  font:
-    text: Roboto
-    code: Roboto Mono
+  font: false
   favicon: assets/logo.png
 
 plugins:
@@ -52,9 +50,6 @@ plugins:
 
 # Additional configuration
 extra:
-  analytics:
-    provider: google
-    property: !ENV GOOGLE_ANALYTICS_KEY
   social:
     - icon: /fontawesome/brands/github
       name: Join the discussion on GitHub

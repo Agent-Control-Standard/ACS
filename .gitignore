@@ -11,3 +11,4 @@ __pycache__/
 
 # Subagent-driven development scratch. Never committed.
 .superpowers/
+_site/
