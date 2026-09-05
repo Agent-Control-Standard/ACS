@@ -72,3 +72,7 @@ who holds the rights before the next release.
 
 The vendored font is Inter, redistributed under the SIL Open Font License 1.1. Its
 recorded checksum is in `landing/assets/fonts/CHECKSUMS.txt`.
+
+The documentation header inlines the GitHub mark from the Simple Icons set bundled with
+Material for MkDocs, dedicated to the public domain under CC0 1.0 Universal. It is
+included at build time rather than vendored, so no copy lives in this repository.
