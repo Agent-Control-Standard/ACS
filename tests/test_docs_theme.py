@@ -67,3 +67,20 @@ def test_docs_use_the_same_mark_as_the_landing_page():
     assert "logo: assets/icon.svg" in config
     assert "favicon: assets/icon.svg" in config
     assert (REPO / "docs" / "assets" / "icon.svg").is_file()
+
+
+def test_docs_do_not_call_the_github_api_at_runtime(built_docs):
+    """Material fetches star counts from api.github.com when this hook is present.
+
+    A runtime fetch is invisible to the markup-scanning guards, so this asserts the
+    trigger is absent rather than trying to find the request.
+    """
+    for page in built_docs.rglob("*.html"):
+        assert 'data-md-component="source"' not in page.read_text(encoding="utf-8")
+
+
+def test_repository_link_survives_the_override(built_docs):
+    """Dropping the fetch must not drop the link it decorated."""
+    index = (built_docs / "index.html").read_text(encoding="utf-8")
+    assert 'class="md-source"' in index
+    assert "github.com/GenAI-Security-Project/agent-control-standard" in index

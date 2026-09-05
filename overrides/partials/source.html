@@ -1,0 +1,14 @@
+{#-
+  Overrides the theme's partial to drop data-md-component="source". That attribute makes
+  Material fetch release and star counts from api.github.com on every page load, which
+  sends each reader's IP address to a third party. The link itself is kept.
+-#}
+<a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source">
+  <div class="md-source__icon md-icon">
+    {% set icon = config.theme.icon.repo or "fontawesome/brands/git-alt" %}
+    {% include ".icons/" ~ icon ~ ".svg" %}
+  </div>
+  <div class="md-source__repository">
+    {{ config.repo_name }}
+  </div>
+</a>
