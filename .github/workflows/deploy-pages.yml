@@ -68,8 +68,10 @@ jobs:
 
       - name: Build the documentation site
         env:
-          # mkdocs.yml reads site_url from this. Unset produces no canonical URL.
-          GITHUB_PAGES_URL: ${{ steps.pages.outputs.base_url || 'https://genai-security-project.github.io/agent-control-standard' }}
+          # mkdocs.yml reads site_url from this, and MkDocs builds into _site/docs/, so
+          # the value must name the docs subpath. Passing the site root makes every
+          # canonical URL and every sitemap entry omit /docs/ and resolve to a 404.
+          GITHUB_PAGES_URL: ${{ steps.pages.outputs.base_url && format('{0}/docs/', steps.pages.outputs.base_url) || 'https://genai-security-project.github.io/agent-control-standard/docs/' }}
         run: uv run --no-dev mkdocs build --strict -d _site/docs
 
       - name: Render the landing page

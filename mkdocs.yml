@@ -16,7 +16,7 @@ docs_dir: docs
 
 theme:
   name: material
-  logo: assets/logo.png
+  logo: assets/icon.svg
   features:
     - search.suggest
     # edit this page for each doc page
@@ -43,7 +43,7 @@ theme:
         icon: material/toggle-switch-off
         name: Switch to system preference
   font: false
-  favicon: assets/logo.png
+  favicon: assets/icon.svg
 
 plugins:
   - search
