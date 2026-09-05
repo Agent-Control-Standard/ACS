@@ -1671,13 +1671,17 @@ outside every check."
 
 ---
 
-## Task 4: Site configuration and CI enforcement
+## Task 4: Site configuration
 
-Removes every third-party request and makes the test suite a merge gate. Writing a test is not a control. Running it on every pull request is.
+Removes every third-party request from the documentation site.
+
+The gate that runs these tests is Task 5's `test` job, which `build` depends on. Writing a test is not a control and running it on every pull request is, so this task supplies the guard and Task 5 supplies the enforcement.
 
 **Files:**
-- Modify: `mkdocs.yml`, `.gitignore`, `pyproject.toml`
+- Modify: `mkdocs.yml`, `.gitignore`
 - Create: `tests/test_site_config.py`
+
+`pyproject.toml` already carries the `dev` dependency group from Task 1. It needs no change here.
 
 - [ ] **Step 1: Write the failing test**
 
