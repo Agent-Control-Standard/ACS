@@ -56,10 +56,29 @@ def test_built_site_loads_no_third_party_resource(built_site):
     Stylesheets are scanned as well as markup. A url() in a stylesheet every page loads
     reaches a third party without any script, and an HTML-only scan cannot see it.
     """
-    from conftest import third_party_hosts
+    from conftest import stylesheet_hosts, third_party_hosts
 
     offenders: dict[str, str] = {}
-    for asset in list(built_site.rglob("*.html")) + list(built_site.rglob("*.css")):
+    for asset in built_site.rglob("*.html"):
         for host in third_party_hosts(asset.read_text(encoding="utf-8"), SELF_HOSTS):
             offenders.setdefault(host, asset.name)
+    for asset in built_site.rglob("*.css"):
+        for host in stylesheet_hosts(asset.read_text(encoding="utf-8"), SELF_HOSTS):
+            offenders.setdefault(host, asset.name)
     assert not offenders, f"third-party resource loads: {offenders}"
+
+
+def test_no_first_party_javascript_ships(built_site):
+    """Every script comes from the pinned theme.
+
+    A prefix, not a substring. A path merely containing assets/javascripts/ can be
+    our own code sitting in the docs tree.
+    """
+    from conftest import VENDORED_PREFIXES
+
+    stray = [
+        p.relative_to(built_site).as_posix()
+        for p in built_site.rglob("*.js")
+        if not p.relative_to(built_site).as_posix().startswith(VENDORED_PREFIXES)
+    ]
+    assert stray == [], f"first-party JavaScript needs a human decision: {stray}"

@@ -48,10 +48,10 @@ def test_the_only_email_is_the_approved_one(page):
 
 def test_page_loads_no_third_party_resource(page):
     """The page and the stylesheet it loads must both fetch nothing external."""
-    from conftest import third_party_hosts
+    from conftest import stylesheet_hosts, third_party_hosts
 
     hosts = third_party_hosts(page, set())
-    hosts |= third_party_hosts((LANDING / "assets" / "acs.css").read_text(encoding="utf-8"), set())
+    hosts |= stylesheet_hosts((LANDING / "assets" / "acs.css").read_text(encoding="utf-8"), set())
     assert not hosts, f"third-party resource loads: {hosts}"
 
 
