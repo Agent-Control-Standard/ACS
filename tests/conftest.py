@@ -48,11 +48,10 @@ _CSS_FETCH = re.compile(
 )
 _CSS_HOST = re.compile(r"""^(?:[a-z][a-z0-9+.-]*:)?//([^/?#]+)""", re.I)
 
-# Scripts under this path come from the installed theme and are pinned by uv.lock.
-# The prefix is relative to the mkdocs output root, which is the directory the
-# built_site fixture builds into and _site/docs in the deploy workflow. A prefix,
-# not a substring: as a substring any path merely containing the segment passes.
-VENDORED_PREFIXES = ("assets/javascripts/",)
+# Scripts come from the installed theme, pinned by uv.lock. The path is relative to
+# the mkdocs output root, which is the directory built_site builds into and
+# _site/docs in the deploy workflow.
+VENDORED_PREFIX = "assets/javascripts/"
 
 
 def write_schema(root: Path, rel: str, sid: str, body: dict | None = None) -> Path:
@@ -92,10 +91,13 @@ class _Scanner(html.parser.HTMLParser):
             self._capturing = tag
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # A self-closed script or style has no body. Aliasing this to handle_starttag
-        # would leave capturing switched on for the rest of the document, so every
-        # later paragraph would be scanned as if it were script text.
+        # HTML honors a self-closing slash only on void and foreign elements, so a
+        # browser ignores it on script and style and executes the body that follows.
+        # Python's parser reports those through this handler instead, so capturing
+        # has to start here too. Skipping it hid a body the browser would run.
         self._collect(tag, attrs)
+        if tag in ("script", "style"):
+            self._capturing = tag
 
     def handle_endtag(self, tag: str) -> None:
         if tag == self._capturing:
@@ -145,3 +147,27 @@ def stylesheet_hosts(css: str, self_hosts: set[str]) -> set[str]:
         if host:
             hosts.add(host.group(1).lower())
     return hosts - {host.lower() for host in self_hosts}
+
+
+def theme_script_names() -> set[str]:
+    """Return every script the installed theme ships, relative to its assets root.
+
+    A path check cannot tell a first-party file dropped into the theme's own output
+    directory from the theme's own code, because mkdocs copies docs/assets/ there
+    verbatim. Comparing against what the package installs can.
+    """
+    import material
+
+    root = Path(material.__file__).parent / "templates" / "assets" / "javascripts"
+    return {path.relative_to(root).as_posix() for path in root.rglob("*.js")}
+
+
+def stray_scripts(built_site: Path) -> list[str]:
+    """Return every built script the pinned theme does not ship."""
+    vendored = theme_script_names()
+    stray: list[str] = []
+    for path in built_site.rglob("*.js"):
+        rel = path.relative_to(built_site).as_posix()
+        if not rel.startswith(VENDORED_PREFIX) or rel[len(VENDORED_PREFIX):] not in vendored:
+            stray.append(rel)
+    return stray

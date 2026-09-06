@@ -68,17 +68,15 @@ def test_built_site_loads_no_third_party_resource(built_site):
     assert not offenders, f"third-party resource loads: {offenders}"
 
 
-def test_no_first_party_javascript_ships(built_site):
-    """Every script comes from the pinned theme.
+def test_only_scripts_the_pinned_theme_ships_reach_the_site(built_site):
+    """Every script must be one the installed theme installs.
 
-    A prefix, not a substring. A path merely containing assets/javascripts/ can be
-    our own code sitting in the docs tree.
+    A path check cannot tell our own file from the theme's, because mkdocs copies
+    docs/assets/ into the same output directory, so docs/assets/javascripts/x.js
+    lands beside the theme's own bundle. Comparing against the package's manifest
+    can, which puts a first-party script in front of a human wherever it is placed.
     """
-    from conftest import VENDORED_PREFIXES
+    from conftest import stray_scripts
 
-    stray = [
-        p.relative_to(built_site).as_posix()
-        for p in built_site.rglob("*.js")
-        if not p.relative_to(built_site).as_posix().startswith(VENDORED_PREFIXES)
-    ]
-    assert stray == [], f"first-party JavaScript needs a human decision: {stray}"
+    stray = stray_scripts(built_site)
+    assert stray == [], f"script not shipped by the pinned theme: {stray}"

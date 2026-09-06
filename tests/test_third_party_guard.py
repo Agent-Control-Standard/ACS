@@ -29,6 +29,12 @@ MUST_CATCH = {
     "anchor rel=preconnect": '<a rel="preconnect" href="https://evil.tld/">y</a>',
     "entity-encoded scheme": '<img src="&#104;ttps://evil.tld/x.png">',
     "uppercase scheme": '<img src="HTTPS://evil.tld/x.png">',
+    # HTML honors a self-closing slash only on void and foreign elements, so a
+    # browser ignores it here and runs the body. Python's parser reports these
+    # through a different handler, which is how an earlier version missed them.
+    "self-closed script with a body": '<script/>fetch("https://evil.tld/x")</script>',
+    "self-closed style with a body":
+        '<style/>body{background:url(https://evil.tld/z.png)}</style>',
 }
 
 MUST_IGNORE = {
@@ -41,8 +47,6 @@ MUST_IGNORE = {
     "anchor rel=noopener": '<a href="https://github.com/x" rel="noopener">r</a>',
     "anchor rel=edit": '<a href="https://github.com/x/edit" rel="edit">e</a>',
     "html comment": "<!-- https://evil.tld/x --><p>ok</p>",
-    "self-closed script then prose":
-        '<script src="/a.js"/><p>See https://good.example.com for more.</p>',
 }
 
 CSS_CATCH = {
