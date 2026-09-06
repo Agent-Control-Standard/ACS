@@ -39,31 +39,44 @@ class RenderError(Exception):
     """Repository state does not supply what the template asks for."""
 
 
-def _versions(source: Path) -> set[str]:
+def _version_key(version: str) -> tuple[int, ...]:
+    """Order versions numerically, so v0.10.0 sorts above v0.2.0 rather than below it."""
+    return tuple(int(part) for part in version.lstrip("v").split("."))
+
+
+def _versions(source: Path) -> dict[str, int]:
+    """Map each spec version present to the number of schemas it publishes."""
     try:
         docs = load_schemas(source)
-        return {target_for(doc, path, source).split("/")[0] for path, doc in docs.items()}
+        counts: dict[str, int] = {}
+        for path, doc in docs.items():
+            version = target_for(doc, path, source).split("/")[0]
+            counts[version] = counts.get(version, 0) + 1
+        return counts
     except SchemaError as error:
         raise RenderError(str(error)) from error
+
+
+def _schema_facts(source: Path) -> tuple[str, int]:
+    """Return the newest spec version and how many schemas that version publishes.
+
+    Old versions stay published so their $id URIs keep resolving, so more than one
+    version is the expected steady state. Counting across all of them would print a
+    total beside a single version name and say something false about that version.
+    """
+    counts = _versions(source)
+    if not counts:
+        raise RenderError(f"no schemas found under {source}")
+    version = max(counts, key=_version_key)
+    return version, counts[version]
 
 
 def spec_version(source: Path) -> str:
-    """Return the highest spec version present.
-
-    Old versions stay published so their $id URIs keep resolving, so more than one
-    version is the expected steady state rather than an error.
-    """
-    versions = _versions(source)
-    if not versions:
-        raise RenderError(f"no schemas found under {source}")
-    return max(versions, key=lambda v: tuple(int(p) for p in v.lstrip("v").split(".")))
+    return _schema_facts(source)[0]
 
 
 def schema_count(source: Path) -> int:
-    try:
-        return len(load_schemas(source))
-    except SchemaError as error:
-        raise RenderError(str(error)) from error
+    return _schema_facts(source)[1]
 
 
 def parse_workstreams(text: str) -> list[tuple[str, str]]:
@@ -132,9 +145,9 @@ def render(template: str, source: Path, governance: str, starburst: str) -> str:
     if missing:
         raise RenderError(f"template is missing placeholder: {', '.join(missing)}")
 
-    version = spec_version(source)
+    version, count = _schema_facts(source)
     out = template.replace("<!--ACS:SPEC_VERSION-->", html.escape(version))
-    out = out.replace("<!--ACS:SCHEMA_COUNT-->", str(schema_count(source)))
+    out = out.replace("<!--ACS:SCHEMA_COUNT-->", str(count))
     out = out.replace("<!--ACS:SCHEMA_HREF-->", html.escape(f"schema/{version}/acs_schema.json"))
     out = out.replace("<!--ACS:WORKSTREAMS-->", render_workstreams(parse_workstreams(governance)))
     # Inlining is required: an SVG loaded through <img> cannot read the page's CSS
@@ -164,16 +177,20 @@ def main(argv: list[str]) -> int:
     except OSError as error:
         print(f"error: cannot read a landing page source: {error}", file=sys.stderr)
         return 1
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "index.html").write_text(page, encoding="utf-8")
-    shutil.copytree(
-        landing / "assets",
-        out / "assets",
-        dirs_exist_ok=True,
-        # The diagram is inlined into the page, so publishing it again would ship a
-        # second copy that nothing references and that can drift from the inlined one.
-        ignore=shutil.ignore_patterns("starburst.svg"),
-    )
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "index.html").write_text(page, encoding="utf-8")
+        shutil.copytree(
+            landing / "assets",
+            out / "assets",
+            dirs_exist_ok=True,
+            # The diagram is inlined into the page, so publishing it again would ship a
+            # second copy that nothing references and that can drift from the inlined one.
+            ignore=shutil.ignore_patterns("starburst.svg"),
+        )
+    except OSError as error:
+        print(f"error: cannot write the rendered site: {error}", file=sys.stderr)
+        return 1
     print(f"rendered landing page to {out}")
     return 0
 

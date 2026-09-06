@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
+import render_landing
 from publish_schemas import BASE
 from render_landing import (
     RenderError, parse_workstreams, render, render_workstreams, schema_count, spec_version,
@@ -73,6 +74,58 @@ def test_spec_version_returns_the_highest_of_several(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"$id": BASE + f"{version}/x.json"}), encoding="utf-8")
     assert spec_version(root) == "v0.10.0"
+
+
+@pytest.fixture
+def multi_version_tree(tmp_path):
+    """Two versions, with the newer holding fewer schemas.
+
+    Both numbers differ from the total, or an assertion cannot tell "count within
+    the reported version" from "count everything".
+    """
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    for name in ("a", "b", "c"):
+        write_schema(src, f"v0.2.0/{name}.json", BASE + f"v0.2.0/{name}.json")
+    for name in ("d", "e"):
+        write_schema(src, f"v0.10.0/{name}.json", BASE + f"v0.10.0/{name}.json")
+    return src
+
+
+def test_the_count_belongs_to_the_version_it_is_printed_beside(multi_version_tree):
+    version, count = render_landing._schema_facts(multi_version_tree)
+    assert version == "v0.10.0"
+    assert count == 2, "counting all five states a number about the wrong version"
+
+
+def test_version_order_is_numeric_not_lexicographic(multi_version_tree):
+    """v0.10.0 sorts above v0.2.0 only under a numeric key.
+
+    The single-version fixture this replaced could not tell the two apart, so a
+    deliberately broken comparison still passed.
+    """
+    assert render_landing._schema_facts(multi_version_tree)[0] == "v0.10.0"
+    assert render_landing.spec_version(multi_version_tree) == "v0.10.0"
+
+
+def test_main_reports_a_copy_failure_without_a_traceback(tmp_path, monkeypatch, capsys):
+    """The fixture carries every placeholder, or render raises before the copy.
+
+    main() resolves the schema source from __file__, not the working directory, so
+    it reads the real specification/ tree and no chdir is needed.
+    """
+    landing = tmp_path / "landing"
+    (landing / "assets").mkdir(parents=True)
+    (landing / "index.html").write_text("".join(render_landing.REQUIRED_PLACEHOLDERS))
+    (landing / "assets" / "starburst.svg").write_text("<svg></svg>")
+
+    def boom(*args, **kwargs):
+        raise OSError("assets unreadable")
+
+    monkeypatch.setattr(render_landing.shutil, "copytree", boom)
+    assert render_landing.main(["render_landing.py", str(landing), str(tmp_path / "out")]) == 1
+    assert "assets unreadable" in capsys.readouterr().err
 
 
 # --- governance parsing ---------------------------------------------------
