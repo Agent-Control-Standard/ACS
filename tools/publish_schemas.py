@@ -79,6 +79,10 @@ def target_for(doc: dict, path: Path, source: Path) -> str:
         raise SchemaError(f"{path}: $id outside namespace: {sid}")
 
     tail = sid[len(BASE) :]
+    # SAFE_TAIL admits no % in any character class, so this is not the layer that
+    # stops a percent-encoded traversal. It stays because it labels the attempt.
+    # An operator reading a build log can tell someone trying something from
+    # someone making a typo.
     if unquote(tail) != tail:
         raise SchemaError(f"{path}: $id must not be percent-encoded: {sid}")
     if not SAFE_TAIL.match(tail):

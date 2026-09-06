@@ -23,12 +23,10 @@ Partial reports are welcome. We would rather triage something incomplete than ne
 | --- | --- |
 | Flaws in the ACS specification that lead implementers into insecure designs | The marketing site at agentcontrolstandard.org, which is built and deployed from a separate repository |
 | Errors in the JSON Schemas under `specification/` | Findings against third-party agent frameworks that happen to implement ACS |
-| The GitHub Actions workflows in `.github/workflows/` | Automated scanner output with no demonstrated impact |
+| The build and publish tooling in `tools/` and the GitHub Actions workflows in `.github/workflows/` | Automated scanner output with no demonstrated impact |
 | Hook or event definitions that leak sensitive data by design | Missing security headers on sites we do not operate |
 | Supply-chain issues in this repository's dependencies | Social engineering of maintainers or contributors |
-| The published site at genai-security-project.github.io/agent-control-standard once Pages is enabled, including the landing page, the documentation, and the schema endpoints | |
-| The build and publish tooling in `tools/` and `.github/workflows/` | |
-| | Missing security response headers on the Pages site, which GitHub Pages does not allow us to set |
+| The published site at genai-security-project.github.io/agent-control-standard, including the landing page, the documentation, and the schema endpoints | Missing security response headers on the Pages site, which GitHub Pages does not allow us to set |
 
 A specification flaw counts. If a hook definition forces implementers to log secrets, or an event schema makes an authorization bypass easy to write, that is a finding even though no code here executes.
 

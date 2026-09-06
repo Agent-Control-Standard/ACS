@@ -15,6 +15,11 @@
 # Default owners for anything not matched below.
 *                       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
 
+/CLAUDE.md       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/STYLE.md        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/CONTRIBUTING.md @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/design/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+
 # The specification is the highest-blast-radius surface in the repository.
 # A schema change propagates to every downstream implementer.
 /specification/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
