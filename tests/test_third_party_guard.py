@@ -51,6 +51,20 @@ MUST_CATCH = {
     # The legacy idiom for hiding script from very old parsers. It still executes.
     "script wrapped in comment delimiters":
         '<script><!--\nfetch("https://evil.tld/f")\n//--></script>',
+    # CSS in the markup is still CSS. Routing an inline style through the script
+    # matcher, which requires an explicit scheme, dropped every protocol-relative
+    # url() a style block carries. The rendered landing page ships one such block.
+    "inline style, protocol-relative url":
+        '<style>a{background:url(//evil.tld/x.png)}</style>',
+    "inline style, protocol-relative import":
+        '<style>@import url(//evil.tld/s.css);</style>',
+    "inline style, font-face src": '<style>@font-face{src:url(//evil.tld/f.woff2)}</style>',
+    # A comment delimiter inside an attribute value is text, and a browser also
+    # closes a comment on --!>. Reading either wrong blanks every element after it.
+    "comment delimiter inside an attribute":
+        '<a title="<!--">x</a><script>fetch("https://evil.tld/g")</script>',
+    "comment closed with a bang":
+        '<!-- x --!><script>fetch("https://evil.tld/h")</script>',
 }
 
 MUST_IGNORE = {
@@ -68,6 +82,9 @@ MUST_IGNORE = {
         '<!-- <script>fetch("https://evil.tld/x")</script> --><p>hi</p>',
     "style inside an html comment":
         '<!-- <style>@import "https://evil.tld/i.css";</style> -->',
+    "inline style that is self-hosted":
+        '<style>a{background:url(//genai-security-project.github.io/a.png)}</style>',
+    "inline style that is relative": '<style>a{background:url(../img/a.png)}</style>',
     # An unterminated comment consumes the rest of the document, so nothing after
     # it runs and nothing after it should be scanned.
     "script inside an unterminated comment":
