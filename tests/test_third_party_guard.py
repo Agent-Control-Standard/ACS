@@ -91,6 +91,25 @@ def test_stylesheet_non_fetches_are_ignored(css):
     assert stylesheet_hosts(css, SELF) == set()
 
 
+def test_a_self_closed_script_owns_everything_up_to_the_closing_tag():
+    """This reads as a false positive and is not one.
+
+    A browser ignores the self-closing slash on script, so the element stays open
+    and the markup between it and the next closing tag is the script's raw text.
+    Treating that text as script text is what the browser does. Two earlier
+    versions of this guard traded between missing the body and sweeping the rest
+    of the document, so the behavior is pinned here rather than left to whoever
+    reads the parser next.
+    """
+    markup = '<script src="/a.js"/><p>https://third.example.com</p><div></script></div>'
+    assert third_party_hosts(markup, SELF) == {"third.example.com"}
+
+
+def test_a_url_ending_at_a_tag_boundary_keeps_its_host_intact():
+    """The host must not swallow the angle bracket that follows it."""
+    assert third_party_hosts('<script>u="https://evil.tld"</script>', SELF) == {"evil.tld"}
+
+
 def test_a_base_element_is_named_by_its_own_check():
     """base rewrites resolution for the whole page, so every relative URL leaves it.
 
