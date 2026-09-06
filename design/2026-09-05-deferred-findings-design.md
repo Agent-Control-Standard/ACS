@@ -141,9 +141,13 @@ The no-third-party guard has now been found incomplete four times. Each previous
 
 Two dimensions widen together.
 
-**File coverage.** Scan every text asset the build emits, not `*.html` and `*.css`. Measured: no test globs `*.js`, and the shipped Material bundle contains the literal strings `https://api.github.com`, `https://unpkg.com`, and `https://clipboardjs.com`. The `api.github.com` hook is absent from the built pages, confirmed, so those strings are most likely inert attribution banners and inactive fallbacks. The finding is not that the site leaks. It is that no guard could tell us either way.
+**File coverage.** Measured before specifying: a bare `*.js` scan is not viable. The build emits roughly twenty vendored files under `assets/javascripts/`, and every lunr language pack carries attribution URLs for `snowball.tartarus.org`, `mozilla.org`, and `github.com`. An exception list naming twenty files is noise rather than a control.
 
-Vendored third-party bundles will contain such strings legitimately, so a bare scan of `*.js` fails immediately on Material's own bundle. The guard therefore separates first-party output from vendored assets: files the build generates are scanned strictly, and vendored bundle paths are recorded in an explicit, commented exception list. An exception list that names three files and explains why is a control. An extension allowlist that silently skips a whole language is not.
+The measurement showed the property actually worth guarding. This project ships **no first-party JavaScript file**. The landing page's only script is inline and already covered by the HTML scan, and every `.js` under the built site comes from the installed theme, pinned by `uv.lock`.
+
+So the guard asserts that fact rather than scanning bundles it cannot meaningfully audit: every `.js` in the built site must live under a known vendored prefix. Adding `docs/js/custom.js` fails the guard and gets a human decision, which is the moment third-party code could enter. Strict content scanning stays on the files the build generates from our own content, which is the HTML and the first-party stylesheets.
+
+That is narrower than "scan everything," and it is honest about what it does. Scanning a minified vendor bundle for hostnames produces findings nobody can action.
 
 **Attribute coverage.** Add the fetch-triggering attributes the pattern misses regardless of quoting: `poster`, `background`, `formaction`, `cite`, `longdesc`, `manifest`, and `srcset`, plus unquoted values. Measured: `<video poster="//evil.example/beacon.jpg">` passes the current guard undetected. The recurring failure category is attribute-name coverage, so a mutation test that only injects `srcset` would miss the fifth instance the same way.
 
