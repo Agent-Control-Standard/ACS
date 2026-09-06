@@ -19,6 +19,16 @@ A v0.1.0-conformant deployment implements **ACS-Core** (the Instrument baseline)
     - **Deterministic layer** (OPA/Rego, Cedar): always runs first.
     - **Agent layer** (LLM): invoked only when the deterministic layer's chain config delegates. Optional in v0.1; deterministic-only deployments are fully conformant.
 
+## Identity
+
+Identity answers who is acting. A **principal** is the authenticated party initiating or acting within a session. ACS keeps three identities distinct: which agent is under governance, which Guardian decided, and who authored the policy that produced the decision. Conflating them collapses an audit trail into "the agent did it."
+
+ACS invents no identity format. Descriptors carry a `type` discriminator naming the scheme (`posix_uid`, `oauth_subject`, `cert_subject`), and ACS stays agnostic to the rest. No authentication mechanism is mandated. Deployments declare the one they use at handshake, which binds ACS to the identity infrastructure an organization already runs.
+
+Identity is an upstream dependency of authorization: a capability decision is only as meaningful as the identity bound to it. An asserted identity is weaker than one bound by a verified credential, so policy gating high-impact actions should require the stronger rung. See [Concepts › Identity](../concepts/identity.md) and [Concepts › Trust basis](../concepts/trust.md).
+
+Runtime identity for agents raises problems that human and workload identity models do not answer, from delegation chains spanning five to ten hops to intent that must survive mid-task reframing. The Identity workstream tracks those as open work. See [Identity › Overview](../identity/overview.md) for the five runtime challenges and [Identity › Standards](../identity/standards.md) for where existing standards stop short.
+
 ## Vocabulary
 
 ACS scopes what it observes to a **session**, and within it to **turns** and **steps**. Each step produces a `ContextEntry` in the session's append-only audit chain, and the Guardian's verdict on it is one of five **dispositions** (`allow`, `deny`, `modify`, `ask`, `defer`).
@@ -60,6 +70,7 @@ ACS carries MCP and A2A intact. Wrapped MCP messages flow through `protocols/MCP
 ## Read Next
 
 - [Concepts](../concepts/README.md)
+- [Identity for Agents](../identity/overview.md)
 - [ACS in Action](./ACS_in_action_example.md)
 - [Conformance Profiles](../spec/conformance.md)
 - [Specification](../spec/instrument/specification.md)

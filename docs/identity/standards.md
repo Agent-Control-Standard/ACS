@@ -192,7 +192,7 @@ The following drafts are actively shaping identity for autonomous systems, AI ag
 
 ### Workload Identity (WIMSE)
 
-The WIMSE working group's workload identity stack that AIMS composes onto. This page **proposes** WIMSE identifiers as the recommended agent identifier, with SPIFFE SVIDs as a conformant implementation. Whether ACS mandates a specific identifier scheme is an open working group question. The normative position remains [docs/concepts/identity.md](https://github.com/Agent-Control-Standard/ACS/blob/main/docs/concepts/identity.md), which mandates no authentication mechanism and keeps identifier schemes off the wire; a deployment using `posix_uid` or `oauth_subject` stays conformant today.
+The WIMSE working group's workload identity stack that AIMS composes onto. This page **proposes** WIMSE identifiers as the recommended agent identifier, with SPIFFE SVIDs as a conformant implementation. Whether ACS mandates a specific identifier scheme is an open working group question. The normative position remains [docs/concepts/identity.md](../concepts/identity.md), which mandates no authentication mechanism and keeps identifier schemes off the wire; a deployment using `posix_uid` or `oauth_subject` stays conformant today.
 
 | Draft | Description | Link |
 |---|---|---|
@@ -268,7 +268,7 @@ If ACS and AIMS are positioned correctly, they are **complementary, not competin
 
 | Topic | Resolution |
 |---|---|
-| **Identifier model** | **Proposed: WIMSE identifier recommended, SPIFFE conformant.** Would align ACS with AIMS, WIMSE WG, and NIST. Pending WG sign-off and reconciliation with [docs/concepts/identity.md](https://github.com/Agent-Control-Standard/ACS/blob/main/docs/concepts/identity.md), which currently mandates no identifier scheme. |
+| **Identifier model** | **Proposed: WIMSE identifier recommended, SPIFFE conformant.** Would align ACS with AIMS, WIMSE WG, and NIST. Pending WG sign-off and reconciliation with [docs/concepts/identity.md](../concepts/identity.md), which currently mandates no identifier scheme. |
 | **Token lifetimes** | AIMS sets the baseline; proposed ACS ceilings (15 min LLM / 5 min MCP / 60 s high-risk) are open work items pending a normative spec clause. |
 | **Sender-constrained tokens** | Both require DPoP or mTLS. Cross-reference, no divergence. |
 | **Audit logging** | ACS identity blocks **extend** AIMS minimum audit event fields rather than diverging from them. |
