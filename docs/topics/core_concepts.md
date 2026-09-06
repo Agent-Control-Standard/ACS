@@ -1,6 +1,6 @@
 # Core Concepts
 
-ACS specifies how an AI agent exposes its behavior so a separate **Guardian Agent** can permit, deny, or modify what the agent does, in real time, with a verifiable audit trail. The agent being monitored is an **Observed Agent**.
+ACS specifies how an AI agent exposes its behavior so a separate **Guardian Agent** can permit, deny, or modify what the agent does, in real time, with an observable, reconstructable audit trail. The agent being monitored is an **Observed Agent**.
 
 ## The three pillars
 
