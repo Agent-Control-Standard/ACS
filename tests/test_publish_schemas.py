@@ -234,6 +234,79 @@ def test_publish_ignores_an_external_ref(tmp_path):
     assert publish(src, out) == ["v0.1.0/a.json"]
 
 
+# --- write safety -----------------------------------------------------------
+
+def test_a_dangling_ref_leaves_no_output_directory(tmp_path):
+    """Absence, not emptiness. An implementation that mkdirs first satisfies 'empty'."""
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    out = tmp_path / "out"
+    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json",
+                 body={"properties": {"x": {"$ref": BASE + "v0.1.0/gone.json"}}})
+    with pytest.raises(SchemaError, match="which no \\$id publishes"):
+        publish(src, out)
+    assert not out.exists()
+
+
+def test_the_written_bytes_are_the_bytes_that_were_parsed(tmp_path, monkeypatch):
+    """A second read at write time could substitute content nothing validated.
+
+    Mutating the file the instant parsing finishes proves which read feeds the write.
+    """
+    import publish_schemas as ps
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    out = tmp_path / "out"
+    target = write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
+    real_read = ps._read
+
+    def read_then_tamper(source):
+        parsed = real_read(source)
+        target.write_bytes(b'{"$id": "tampered, never validated"}')
+        return parsed
+
+    monkeypatch.setattr(ps, "_read", read_then_tamper)
+    ps.publish(src, out)
+    written = json.loads((out / "v0.1.0/a.json").read_text())
+    assert written["$id"] == BASE + "v0.1.0/a.json"
+
+
+def test_a_symlink_out_of_the_source_tree_is_refused(tmp_path):
+    """The symlink's own path satisfies every check while its target supplies bytes.
+
+    Without resolving, any file on the runner becomes publishable as a schema by
+    adding one three-line, self-consistent-looking entry under specification/.
+    """
+    src = tmp_path / "spec"
+    (src / "v0.1.0").mkdir(parents=True)
+    outside = tmp_path / "secret.json"
+    outside.write_text(json.dumps({"$id": BASE + "v0.1.0/c.json", "token": "leak"}))
+    (src / "v0.1.0" / "c.json").symlink_to(outside)
+    with pytest.raises(SchemaError, match="resolves outside"):
+        publish(src, tmp_path / "out")
+
+
+def test_two_paths_differing_only_by_case_are_refused(tmp_path):
+    """A case-insensitive filesystem collapses these into one file.
+
+    A Linux commit or the GitHub web editor can carry both. CI would publish two
+    schemas while a maintainer's local checkout shows one, so the tree a human
+    verifies is not the tree that deploys.
+    """
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
+    upper = src / "v0.1.0" / "A.json"
+    if upper.exists():
+        pytest.skip("case-insensitive filesystem cannot hold both names")
+    write_schema(src, "v0.1.0/A.json", BASE + "v0.1.0/A.json")
+    with pytest.raises(SchemaError, match="differs from"):
+        publish(src, tmp_path / "out")
+
+
 # --- the real tree --------------------------------------------------------
 
 def test_publish_handles_the_real_specification_tree(tmp_path):
