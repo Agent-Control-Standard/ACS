@@ -35,6 +35,11 @@ MUST_CATCH = {
     "self-closed script with a body": '<script/>fetch("https://evil.tld/x")</script>',
     "self-closed style with a body":
         '<style/>body{background:url(https://evil.tld/z.png)}</style>',
+    # A browser closes on either of these, tokenizing and discarding what it finds
+    # before the bracket. Matching only whitespace there loses the whole body.
+    "closing tag carrying an attribute":
+        '<script>fetch("https://evil.tld/a")</script data-x="y"><p>after</p>',
+    "closing tag with a slash": '<script>fetch("https://evil.tld/b")</script/><p>after</p>',
 }
 
 MUST_IGNORE = {
@@ -46,6 +51,12 @@ MUST_IGNORE = {
     "svg namespace": '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
     "anchor rel=noopener": '<a href="https://github.com/x" rel="noopener">r</a>',
     "anchor rel=edit": '<a href="https://github.com/x/edit" rel="edit">e</a>',
+    # Commented-out markup never runs. Flagging it is the noise that gets a guard
+    # switched off, and old tracking code left in a comment is a real pattern.
+    "script inside an html comment":
+        '<!-- <script>fetch("https://evil.tld/x")</script> --><p>hi</p>',
+    "style inside an html comment":
+        '<!-- <style>@import "https://evil.tld/i.css";</style> -->',
     "html comment": "<!-- https://evil.tld/x --><p>ok</p>",
 }
 
