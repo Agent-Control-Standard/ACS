@@ -47,6 +47,20 @@ jobs:
       # configure-pages calls GET /repos/{owner}/{repo}/pages, which needs this.
       pages: read
     steps:
+      - name: Decide whether this run deploys
+        id: gate
+        # Through env, never interpolated into the shell. sync_version.yml documents why:
+        # github context data is untrusted input and a run: string is not the place for it.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$REF_NAME" = "refs/heads/main" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -60,10 +74,10 @@ jobs:
 
       - name: Configure Pages
         id: pages
-        # Skipped on pull requests. The action fails when Pages is not yet enabled, and
-        # a fork's token cannot read the Pages API at all. Pull requests only need a
-        # site_url, and the constant below is correct for them.
-        if: github.event_name != 'pull_request'
+        # Gated on the same branch check the deploy job enforces. Without it, a
+        # workflow_dispatch from a feature branch configured Pages and uploaded an
+        # artifact that the deploy job then declined to publish.
+        if: steps.gate.outputs.publish == 'true'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Build the documentation site
@@ -82,7 +96,10 @@ jobs:
         run: uv run --no-dev python tools/publish_schemas.py specification _site/schema
 
       - name: Upload the artifact
-        if: github.event_name != 'pull_request'
+        # Gated on the same branch check the deploy job enforces, not just the event
+        # half. If the gate step is ever skipped, its output is empty and this step
+        # fails closed rather than uploading an artifact the deploy job would decline.
+        if: steps.gate.outputs.publish == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
@@ -96,6 +113,10 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    # 44 checks at six attempts of ten seconds apiece can run well over half an hour
+    # during a real outage. Without a limit, a failing run holds the runner against
+    # GitHub's six-hour default.
+    timeout-minutes: 20
     permissions:
       contents: read
       pages: write
@@ -116,6 +137,4 @@ jobs:
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
-          python3 tools/verify_published.py "$PAGE_URL" \
-            schema/v0.1.0/acs_schema.json \
-            schema/v0.1.0/hooks/session-start.json
+          python3 tools/verify_published.py "${PAGE_URL%/}/schema" --from specification

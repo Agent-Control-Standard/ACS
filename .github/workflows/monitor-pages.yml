@@ -12,6 +12,10 @@ permissions: {}
 jobs:
   check:
     runs-on: ubuntu-latest
+    # 44 checks at six attempts of ten seconds apiece can run well over half an hour
+    # during a real outage. Without a limit, a failing run holds the runner against
+    # GitHub's six-hour default.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -22,6 +26,4 @@ jobs:
         env:
           PAGE_URL: https://genai-security-project.github.io/agent-control-standard/
         run: |
-          python3 tools/verify_published.py "$PAGE_URL" \
-            schema/v0.1.0/acs_schema.json \
-            schema/v0.1.0/hooks/session-start.json
+          python3 tools/verify_published.py "${PAGE_URL%/}/schema" --from specification
