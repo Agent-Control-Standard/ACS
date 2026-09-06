@@ -129,7 +129,10 @@ def test_a_draft_declaring_its_own_location_is_refused_by_the_tail_pattern(tmp_p
 - [ ] **Step 4: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_publish_schemas.py -q`
-Expected: the 26 parametrized cases fail, because those directory names publish today.
+Expected: 38 failures. The 26 parametrized cases fail because those directory names
+publish today, and eleven call sites plus the duplicate-id test fail with `TypeError`
+because Step 1 moved them to the three-argument form before Step 6 changes the
+signature. Both clear by Step 8, which is the step that gates the commit.
 
 - [ ] **Step 5: Move the one file that breaks the identity**
 
