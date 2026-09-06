@@ -2,6 +2,8 @@
 
 This page answers questions ACS gets from enterprise security teams, framework implementers, researchers working on agent-security paradigms, and the press. If your question is not answered here, open an issue or join the working group.
 
+> **This section is non-normative.** It explains the standard in plain language and defines nothing. Where this page and a specification document disagree, the specification governs. [Conformance Profiles](../spec/conformance.md) is the normative statement of what each profile requires.
+
 ---
 
 ## About ACS
@@ -16,7 +18,7 @@ ACS (Agent Control Standard) is a runtime governance specification for AI agents
    │ Runtime hooks + dispositions     │  │ Deterministic event emission     │  │ Agent Bill of Materials          │
    │                                  │  │                                  │  │                                  │
    │ • 19 lifecycle hooks (steps/*)   │  │ • OTel semconv mappings,         │  │ • Canonical AgBOM schema         │
-   │ • 5 dispositions                 │  │   one per step                   │  │ • CycloneDX 1.6 serialization    │
+   │ • Disposition vocabulary         │  │   one per step                   │  │ • CycloneDX 1.6 serialization    │
    │   (allow / deny / modify /       │  │ • OCSF event-class mappings,     │  │ • SPDX 3.0 serialization         │
    │    ask / defer)                  │  │   one per step                   │  │ • SWID serialization             │
    │ • Two-layer Guardian             │  │ • Deployment emits at least      │  │ • agbom/snapshot at session start│
@@ -25,7 +27,7 @@ ACS (Agent Control Standard) is a runtime governance specification for AI agents
    │ • Replay protection              │  │ • Provenance carried forward     │  │                                  │
    │ • JSON-RPC 2.0 envelope          │  │   onto every emitted event       │  │                                  │
    │ • HMAC-SHA256 baseline signature │  │                                  │  │                                  │
-   │ • system/ping liveness           │  │                                  │  │                                  │
+   │ • Liveness (system/ping)         │  │                                  │  │                                  │
    └──────────────────────────────────┘  └──────────────────────────────────┘  └──────────────────────────────────┘
 ```
 
@@ -41,7 +43,9 @@ A hook is a **checkpoint** the framework pauses at whenever the agent is about t
 
 The analogy: airport security. Every passenger crosses the same set of checkpoints before boarding. A passenger cannot bypass a checkpoint by being important or being in a hurry, and the framework cannot bypass a hook either. The checkpoint asks one question (should this proceed?), gets one decision (`allow` / `deny` / `modify` / `ask` / `defer`), and the journey continues based on the answer.
 
-ACS defines 22 such checkpoints across the agent lifecycle. The Guardian decides each one independently.
+ACS defines 19 `steps/*` lifecycle hooks. Fourteen of them are decision-eligible, meaning the Guardian can stop or change what happens next. The other five fire after the fact and are audit-only records: `postCompact`, `subagentStop`, `skillUnload`, `turnEnd`, and `sessionEnd`. Size your policy work and latency budget against the fourteen. The `agbom/*` methods are also decision-eligible, and `system/ping` is not, since a Guardian always answers it with `allow` ([§13](../spec/instrument/specification.md#13-liveness-system-methods)).
+
+A hook that is not decision-eligible still matters. It is how the audit chain learns that the thing finished.
 
 ### How does it all combine in one session?
 
@@ -62,7 +66,9 @@ Three groups, with different motivations:
 - **Framework and platform builders** need a way to make their security story portable. Adopting ACS means their customers' existing security investments work against the framework on day one, without bespoke integration.
 - **Compliance and audit functions** need their agent governance to produce a record an outside auditor will trust — tamper-evident, cryptographically signed, and reconstructible after the fact. The first two groups want to prevent the wrong action in real time; this group needs to *prove* what happened, months later, in a form that survives a regulator's challenge. ACS-Audit (hash-chained audit log committing to request content) plus ACS-Crypto (signed envelopes, post-quantum-ready) produce that record; most off-the-shelf agent platforms cannot.
 
-This is true even for a single agent on a single framework. ACS adds four concrete things the framework does not provide on its own: actions intercepted before they execute (the framework calls the Guardian and waits before sending the email or making the API call), a hash-chained audit log of every action and decision, a policy authority outside the LLM's context that prompt injection cannot influence, and OTel + OCSF event streams the SIEM consumes without bespoke parsing.
+This is true even for a single agent on a single framework. ACS adds four concrete things the framework does not provide on its own: actions intercepted before they execute (the framework calls the Guardian and waits before sending the email or making the API call), a hash-chained audit log of every action and decision, a policy authority that sits outside the agent's LLM context, and OTel + OCSF event streams the SIEM consumes without bespoke parsing.
+
+On that third one, be precise about what "outside" buys you. A deterministic Guardian running Cedar or Rego evaluates policy the agent's context cannot reach. A deployment that also enables the optional LLM-backed Agent layer puts a second model in the path, and that model does read attacker-reachable content, which is why [§12.2](../spec/instrument/specification.md#122-agent-layer) requires it to treat untrusted data as data and to wrap untrusted fields. The deterministic layer always runs first.
 
 ### What is new here?
 
@@ -70,18 +76,11 @@ Existing efforts solve one slice each. Vendor governance tools come with each ve
 
 ### Who is behind ACS?
 
-ACS is a vendor-neutral community effort led by a group of industry practitioners working across six parallel workstreams. No single company owns or steers the standard; workstream leads come from multiple organizations, and every PR goes through community review.
+ACS is an OWASP project. It is a vendor-neutral community effort: workstream leads come from multiple organizations, no single company owns or steers the standard, and every pull request goes through community review.
 
-| Workstream | Leads |
-|---|---|
-| Spec and Release | Ariel Fogel, Bar Kaduri |
-| Identity | Eva Benn, Richard Bird |
-| Testing and Validation | Aruneesh Salhotra |
-| Coding Agents | _recruiting_ |
-| Ref Impl & Framework Integrations | _recruiting_ |
-| Documentation and Content | _recruiting_ |
+Work is split across five workstreams, each owning a slice of the standard and running its own review. **[GOVERNANCE.md](https://github.com/GenAI-Security-Project/agent-control-standard/blob/main/GOVERNANCE.md) is the authoritative roster**, naming the project lead, the two leads per workstream, and the founding credit. It is kept in sync with repository write access and `CODEOWNERS`, which a table copied into this page would not be. Read it there rather than here.
 
-Governance is by workstream leads (the Architecture Review Board) with an Advisory Board of executives and SMEs driving adoption. Cadence is a biweekly working-group call. Contribution path is in [CONTRIBUTING.md](https://github.com/Agent-Control-Standard/ACS/blob/main/CONTRIBUTING.md).
+Contribution guidance is in [CONTRIBUTING.md](https://github.com/GenAI-Security-Project/agent-control-standard/blob/main/CONTRIBUTING.md).
 
 ---
 
@@ -101,11 +100,13 @@ No. ACS defines the contract for asking the policy and honoring its answer. The 
 
 ### Is ACS just observability?
 
-No. ACS evolved out of an earlier initiative called **AOS (Agent Observability Standard)**, which focused only on event emission. As the working group matured, runtime enforcement became the central concern, and the spec expanded to include hooks that fire **before** the action executes, dispositions the agent must honor (`allow`, `deny`, `modify`, `ask`, `defer`), and the runtime behavior that goes with them. The project rebranded to ACS to reflect the broader scope: observability is the Trace pillar; control is the Instrument pillar; inventory is the Inspect pillar.
+No. Observability records what happened. ACS also gates what is about to happen, through hooks that fire **before** the action executes and dispositions the agent honors (`allow`, `deny`, `modify`, `ask`, `defer`). Observability is one of three pillars here: Trace records, Instrument controls, Inspect inventories. A deployment can run Trace alone and get a strong audit stream, but the enforcement property comes from Instrument.
 
 ### Does ACS prevent prompt injection?
 
-No, and no runtime mechanism can. Current research finds essentially every production LLM remains vulnerable to some form of prompt injection. What ACS prevents is the agent acting on injected reasoning without being detected.
+No, and no runtime mechanism can. Current research finds essentially every production LLM remains vulnerable to some form of prompt injection. What ACS adds is that the agent acting on injected reasoning becomes visible and gateable, rather than silent.
+
+One caveat belongs here rather than buried further down. The default failure posture is fail-open with a mandatory audit record, so an attacker who can stall or break the Guardian channel converts enforcement into audit. Deployments that will not accept that trade set `on_decision_failure: deny`. See [what happens when the Guardian fails](#what-happens-when-the-guardian-fails).
 
 The mechanism is **deviation detection**. ACS requires the agent to declare what it is doing this session (its intent) and to send each proposed action through a Guardian before executing it. The Guardian compares the action against three things: the declared intent, the policy library, and the trust basis of the data driving the action. An injected agent generally deviates on at least one of those three, and the Guardian denies, modifies, or escalates the action before it runs.
 
@@ -117,22 +118,26 @@ Injection still happens. The LLM's reasoning still gets corrupted by attacker-co
 
 ### How do I make my framework ACS-conformant?
 
-Implement **ACS-Core**, which has ten components:
+Implement **ACS-Core**. [Conformance Profiles](../spec/conformance.md) is the authority on exactly what that requires and at what strength. Rather than restate it here and let the two drift apart, this answer describes the shape of the work.
 
-1. **Handshake** — `handshake/hello` with ClientHello and ServerHello capability negotiation
-2. **JSON-RPC 2.0 envelope** — with `request_id`, `timestamp`, `acs_version`, and `metadata` required on every request
-3. **Hook taxonomy minimum** — `sessionStart`, `userMessage` or `agentTrigger`, `toolCallRequest`, `toolCallResult`, `agentResponse`, `sessionEnd`, `subagentStart`, `subagentStop`. The subagent hooks are mandatory because a sub-agent is itself an Observed Agent under delegated authority; frameworks without a sub-agent abstraction satisfy this vacuously (the hooks never fire).
-4. **Five dispositions** — `allow`, `deny`, `modify`, `ask`, `defer` with the required fields per disposition
-5. **SessionContext** — `session_id`, rolling `chain_hash` (SHA-256), append-only ContextEntry chain, with the Guardian publishing the chain head on content-bearing responses. Intent is optional in core but required for IBAC deployments.
-6. **Replay protection** — `request_id` (UUID) and `timestamp` on every request; Guardian MUST reject replays per §10.3
-7. **Baseline integrity** — HMAC-SHA256 signature over the canonical envelope on every request and response, with an HKDF-derived per-session key
-8. **Decision honoring** — the Observed Agent MUST wait for the Guardian's decision and apply it; on decision failure (timeout, transport failure, error response) it applies the `on_decision_failure` posture (default `proceed`, fail-open) and records every fail-open proceed as an audit event (§6.4)
-9. **Liveness** — `system/ping`
-10. **Wrapped MCP** — `protocols/MCP/*` for governing MCP tool calls under the same Guardian
+You are building ten things:
 
-Additional hooks (`turnStart`/`turnEnd`, `preCompact`/`postCompact`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `skillRegister`/`skillLoad`/`skillUnload`) are normatively defined and SHOULD be implemented when the framework can observe the corresponding event. The handshake declares which methods the framework implements and the Guardian negotiates accordingly.
+- **A handshake.** `handshake/hello`, where both sides declare what they support and negotiate the session.
+- **An envelope.** JSON-RPC 2.0 carrying `request_id`, `timestamp`, `acs_version`, and `metadata`.
+- **A hook surface.** Enough of the lifecycle that a Guardian sees the session start, the agent's inputs and outputs, tool calls going out and coming back, and the session end.
+- **The disposition vocabulary.** `allow`, `deny`, `modify`, `ask`, `defer`, each with its required fields.
+- **Session state.** `session_id`, a rolling `chain_hash`, and an append-only ContextEntry chain whose head the Guardian publishes on content-bearing responses. Intent is optional at Core and load-bearing for IBAC deployments.
+- **Replay protection.** A UUID `request_id` and a `timestamp` on every request, which the Guardian checks.
+- **Baseline integrity.** An HMAC-SHA256 signature over the canonical envelope, keyed per session via HKDF.
+- **Decision honoring.** Wait for the verdict and apply it. On timeout, transport failure, or an error with no decision, apply the negotiated `on_decision_failure` posture (`proceed` by default, which is fail-open) and record every fail-open proceed as an audit event.
+- **Liveness.** `system/ping`.
+- **Wrapped MCP.** `protocols/MCP/*`, so one Guardian governs MCP tool calls and native tool calls the same way.
 
-ACS-Core does NOT require field-level Provenance, Trace event emission, AgBOM, asymmetric or post-quantum signatures, or `request_hash` on ContextEntry. Those are organized as optional profiles deployments can layer on. See [Conformance Profiles](../spec/conformance.md).
+The remaining hooks (`turnStart`/`turnEnd`, `preCompact`/`postCompact`, `knowledgeRetrieval`, `memoryContextRetrieval`, `memoryStore`, `skillRegister`/`skillLoad`/`skillUnload`) are defined in the spec and worth implementing wherever your framework can observe the matching event. The handshake declares what you implement and the Guardian negotiates against it.
+
+Check the conformance chapter for which of these are strictly required and which your deployment can decline and still claim ACS-Core. That line moves as the spec evolves, and this page deliberately does not duplicate it.
+
+ACS-Core asks for none of field-level Provenance, Trace event emission, AgBOM, asymmetric or post-quantum signatures, or `request_hash` on ContextEntry. Those are optional profiles you layer on.
 
 ```
                        ┌────────────────────────┐
@@ -174,7 +179,7 @@ No, same principle for all three: ACS specifies the category (you need a transpo
 
 ### Where is the schema?
 
-JSON Schemas for every envelope and hook payload are under [`specification/v0.1.0/`](https://github.com/Agent-Control-Standard/ACS/tree/main/specification/v0.1.0). Data-bearing hooks ship two variants: the base schema (permissive, where `provenance` is optional) and the `*.acs-provenance.json` strict variant required by the ACS-Provenance profile.
+JSON Schemas for every envelope and hook payload are under [`specification/v0.1.0/`](https://github.com/GenAI-Security-Project/agent-control-standard/tree/main/specification/v0.1.0). Data-bearing hooks ship two variants: the base schema (permissive, where `provenance` is optional) and the `*.acs-provenance.json` strict variant required by the ACS-Provenance profile.
 
 ---
 
@@ -195,9 +200,11 @@ Yes. The IDE case (coding assistants and IDE copilots) uses stdio transport with
 
 ### What is the operational overhead?
 
-Depends on the implementation. In well-tuned deployments the overhead is below the noise floor of the LLM inference call itself — close to imperceptible.
+Depends on the implementation, and the project has published no benchmark, so this answer describes the shape of the cost rather than quoting numbers.
 
-Each gated action is one Guardian round-trip. With a deterministic Guardian (Cedar / OPA / Rego) running locally or in a co-located service, per-action latency is microseconds to single-digit milliseconds. Hooks fire on actions that cross out into the real world (tool calls, memory writes, external messages), so the round-trip count is proportional to action volume rather than token volume. For a typical agent that takes 5 to 10 such actions per session, total Guardian overhead lands in the tens-of-milliseconds range while inference itself remains the dominant cost.
+Each gated action costs one Guardian round trip. Hooks fire on actions that cross out into the real world (tool calls, memory writes, external messages), so the count scales with action volume rather than token volume. A deterministic Guardian on Cedar or Rego, co-located with the agent, is the cheap case. Latency then depends on where the Guardian runs, how the transport is configured, and how much policy it evaluates, which is why the honest answer is to measure your own deployment rather than trust a range quoted here.
+
+Two costs are easy to miss when estimating. Where the adapter spawns a process per hook rather than holding a connection, that spawn can dominate the Guardian's own evaluation time. And a deployment that routes some escalations to the optional LLM-backed Guardian layer pays inference cost per escalation on top, which is the tuning knob.
 
 A deployment that adds the LLM-backed Guardian layer for some escalations pays per-escalation inference cost on top of that, which is the deployment's tuning knob.
 
@@ -303,16 +310,16 @@ The papers define enforcement *mechanisms* (label-based information flow, intent
 Beyond that layer difference, ACS specifies five things none of AARM, FIDES, CaMeL, IBAC, or Conseca specifies:
 
 1. **A complete wire envelope** — JSON-RPC 2.0 with required fields, disposition vocabulary (allow / deny / modify / ask / defer), replay protection, baseline HMAC-SHA256 integrity. The actual bytes a framework emits.
-2. **A concrete hook taxonomy** — 22 named hooks across `steps/*`, `agbom/*`, and `system/*`, each with a JSON schema and a fixed firing context. The research frameworks describe abstract control points (`intent.parse`, `action.authorize`, `context.ingest`); ACS defines them as concrete wire methods with payloads.
+2. **A concrete hook taxonomy** — 22 named methods, being the 19 `steps/*` lifecycle hooks plus `agbom/snapshot`, `agbom/changed`, and `system/ping`, each with a JSON schema and a fixed firing context. The research frameworks describe abstract control points (`intent.parse`, `action.authorize`, `context.ingest`); ACS defines them as concrete wire methods with payloads.
 3. **Three-pillar coverage in one spec** — Instrument (runtime control), Trace (observability), Inspect (inventory). Each research framework addresses one slice.
-4. **Conformance profiles** — declarable tiers (`acs-core`, `acs-trace`, `acs-inspect`, `acs-provenance`, `acs-crypto`, `acs-audit`) letting deployments mix capabilities and Guardians negotiate compatibility at handshake time.
+4. **Conformance profiles** — declarable tiers (`acs-core`, `acs-trace`, `acs-inspect`, `acs-inspect-dynamic`, `acs-provenance`, `acs-crypto`, `acs-audit`) letting deployments mix capabilities and Guardians negotiate compatibility at handshake time.
 5. **Runtime behavior contract** — the agent waits for the Guardian's decision, honors the disposition, records fail-open proceeds. AARM describes the architecture; ACS specifies the conformance behavior.
 
 The composition story is the practical payoff: one Guardian can run FIDES, IBAC, and AARM-style enforcement against the same hook payloads at the same time, because the wire stays paradigm-neutral.
 
 ### Where do I plug in a new paradigm?
 
-ACS is intentionally extensible without wire surgery. A new paradigm names itself a key in `policy_data` (conventionally lowercase, e.g. `"my-paradigm": { ... }`), defines its `reason_codes` vocabulary, optionally proposes a conformance profile if it needs a declarable capability tier, and writes a binding to one of the reference policy engines (OPA/Rego is the v0.1 reference). The wire contract stays neutral. See [Spec Review Principle 4](https://github.com/Agent-Control-Standard/ACS/blob/main/SPEC_REVIEW_PRINCIPLES.md#4-the-wire-is-paradigm-neutral-new-paradigms-ride-existing-elements-first).
+ACS is intentionally extensible without wire surgery. A new paradigm names itself a key in `policy_data` (conventionally lowercase, e.g. `"my-paradigm": { ... }`), defines its `reason_codes` vocabulary, optionally proposes a conformance profile if it needs a declarable capability tier, and writes a binding to one of the reference policy engines (OPA/Rego is the v0.1 reference). The wire contract stays neutral. See [Spec Review Principle 4](https://github.com/GenAI-Security-Project/agent-control-standard/blob/main/SPEC_REVIEW_PRINCIPLES.md#4-the-wire-is-paradigm-neutral-new-paradigms-ride-existing-elements-first).
 
 ### Will ACS adopt my paradigm into the core spec?
 
@@ -324,7 +331,7 @@ When a paradigm needs a wire signal that no existing field can carry, yes. That 
 
 ### What is in v0.1.0?
 
-ACS-Core (mandatory), and six optional profiles: ACS-Trace, ACS-Inspect, ACS-Inspect-Dynamic, ACS-Provenance, ACS-Crypto, ACS-Audit. Full content lock and the design record are in [Conformance Profiles](../spec/conformance.md) and the [v0.1.0 schemas](https://github.com/Agent-Control-Standard/ACS/tree/main/specification/v0.1.0).
+ACS-Core (mandatory), and six optional profiles: ACS-Trace, ACS-Inspect, ACS-Inspect-Dynamic, ACS-Provenance, ACS-Crypto, ACS-Audit. Full content lock and the design record are in [Conformance Profiles](../spec/conformance.md) and the [v0.1.0 schemas](https://github.com/GenAI-Security-Project/agent-control-standard/tree/main/specification/v0.1.0).
 
 ### What is coming in v0.2?
 
@@ -332,4 +339,4 @@ A2A wrapping (the `protocols/A2A/*` namespace is reserved in v0.1), the sensitiv
 
 ### How do I follow or contribute?
 
-The repo is [Agent-Control-Standard/ACS](https://github.com/Agent-Control-Standard/ACS). Working-group calls and contribution guidance are in [CONTRIBUTING.md](https://github.com/Agent-Control-Standard/ACS/blob/main/CONTRIBUTING.md). Issues are open across all three pillars.
+The repo is [GenAI-Security-Project/agent-control-standard](https://github.com/GenAI-Security-Project/agent-control-standard). Working-group calls and contribution guidance are in [CONTRIBUTING.md](https://github.com/GenAI-Security-Project/agent-control-standard/blob/main/CONTRIBUTING.md). Issues are open across all three pillars.
