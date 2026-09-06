@@ -38,6 +38,12 @@ _IN_ATTR = re.compile(r"""(?:[a-z][a-z0-9+.-]*:)?//([^\s/?#'\"),<>]+)""", re.I)
 # often than a protocol-relative URL, and a false positive here is the kind of noise
 # that gets a guard switched off.
 _IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),<>]+)""", re.I)
+# Markup a script writes fetches like any other. Requiring an attribute name keeps
+# this from matching the // that opens a JavaScript comment.
+_IN_SCRIPT_MARKUP = re.compile(
+    r"""\b(?:src|href|data|poster|action|srcset)\s*=\s*['\"]?(?:[a-z][a-z0-9+.-]*:)?//([^\s/?#'\"),<>]+)""",
+    re.I,
+)
 # Script and style bodies are taken from the raw markup rather than from parser
 # events. HTML honors a self-closing slash only on void and foreign elements, so
 # <script/>body</script> runs in a browser, and Python's parser reports it through a
@@ -56,7 +62,6 @@ _CLOSE_RAWTEXT = {name: re.compile(rf"</{name}[^>]*>", re.I) for name in ("scrip
 # closed, unlike the HTML one, so enumerating it here is safe. Comments are stripped
 # first because a vendor licence banner carries URLs that fetch nothing, and data:
 # payloads are skipped because an inlined SVG carries an xmlns that is not a request.
-_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _CSS_FETCH = re.compile(
     r"""(?:url\(\s*|image-set\(\s*|@import\s*(?:url\(\s*)?)['"]?([^'")\s]+)""", re.I
 )
@@ -109,22 +114,61 @@ def _scan(markup: str) -> _Scanner:
     return scanner
 
 
+def _strip_css_comments(css: str) -> str:
+    """Remove CSS comments, leaving comment delimiters that sit inside strings.
+
+    The shipped theme stylesheet declares content:"/*" and content:"*/" for its
+    critic-markup rules. Treating those as a comment blanked everything between
+    them, which is where a url() could hide.
+    """
+    out: list[str] = []
+    index, quote = 0, ""
+    while index < len(css):
+        char = css[index]
+        if quote:
+            out.append(char)
+            if char == "\\" and index + 1 < len(css):
+                out.append(css[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+        elif char in "\"'":
+            quote = char
+            out.append(char)
+            index += 1
+        elif css.startswith("/*", index):
+            end = css.find("*/", index + 2)
+            out.append(" ")
+            index = len(css) if end == -1 else end + 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
 def _tag_end(markup: str, start: int) -> int:
     """Return the offset past the tag opening at start, respecting quoted values.
 
-    A comment delimiter inside an attribute value is text. Walking tags without
-    honoring quotes let one blank every script and style body that followed it.
+    Quote state begins only where a quote opens a value, after an equals sign. An
+    apostrophe inside an unquoted value, as in data-x=it's, is a character rather
+    than a delimiter, and treating it as one consumed the rest of the document.
     """
-    quote = ""
-    for i in range(start + 1, len(markup)):
-        char = markup[i]
+    quote, expecting_value = "", False
+    for index in range(start + 1, len(markup)):
+        char = markup[index]
         if quote:
             if char == quote:
                 quote = ""
-        elif char in "\"'":
-            quote = char
+        elif char == "=":
+            expecting_value = True
+        elif char in "\"'" and expecting_value:
+            quote, expecting_value = char, False
         elif char == ">":
-            return i + 1
+            return index + 1
+        elif not char.isspace():
+            expecting_value = False
     return len(markup)
 
 
@@ -190,7 +234,9 @@ def third_party_hosts(markup: str, self_hosts: set[str]) -> set[str]:
             # url() an inline style carries.
             hosts |= stylesheet_hosts(body, self_hosts)
         else:
-            hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(_NOISE.sub("", body))}
+            text = _NOISE.sub("", body)
+            hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(text)}
+            hosts |= {m.group(1).lower() for m in _IN_SCRIPT_MARKUP.finditer(text)}
     return hosts - {host.lower() for host in self_hosts}
 
 
@@ -202,7 +248,7 @@ def external_bases(markup: str) -> list[str]:
 def stylesheet_hosts(css: str, self_hosts: set[str]) -> set[str]:
     """Return every third-party host a stylesheet would fetch from."""
     hosts: set[str] = set()
-    for match in _CSS_FETCH.finditer(_CSS_COMMENT.sub(" ", css)):
+    for match in _CSS_FETCH.finditer(_strip_css_comments(css)):
         value = match.group(1)
         if value.lower().startswith("data:"):
             continue

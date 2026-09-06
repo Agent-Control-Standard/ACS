@@ -65,6 +65,17 @@ MUST_CATCH = {
         '<a title="<!--">x</a><script>fetch("https://evil.tld/g")</script>',
     "comment closed with a bang":
         '<!-- x --!><script>fetch("https://evil.tld/h")</script>',
+    # The shipped theme stylesheet declares content:"/*" and content:"*/". Reading
+    # those as a comment blanked the span between them, where a url() could hide.
+    "url between comment delimiters held in css strings":
+        '<style>a{content:"/*"}b{background:url(//evil.tld/i.png)}c{content:"*/"}</style>',
+    # An apostrophe in an unquoted attribute value is a character, not a delimiter.
+    # Treating it as one consumed the rest of the document.
+    "stray apostrophe in an unquoted attribute":
+        '<div data-x=it\'s></div><style>a{background:url(//evil.tld/j.png)}</style>',
+    # Markup a script writes fetches like any other markup.
+    "markup written by a script":
+        '<script>document.write(\'<img src="//evil.tld/k.png">\')</script>',
 }
 
 MUST_IGNORE = {
@@ -85,6 +96,11 @@ MUST_IGNORE = {
     "inline style that is self-hosted":
         '<style>a{background:url(//genai-security-project.github.io/a.png)}</style>',
     "inline style that is relative": '<style>a{background:url(../img/a.png)}</style>',
+    "url inside a real css comment":
+        '<style>/* url(//evil.tld/x.png) */a{color:red}</style>',
+    "division that is not a url": '<script>var r = a//b\nvar q = c/d</script>',
+    "markup a script writes to our own host":
+        '<script>document.write(\'<img src="//genai-security-project.github.io/a.png">\')</script>',
     # An unterminated comment consumes the rest of the document, so nothing after
     # it runs and nothing after it should be scanned.
     "script inside an unterminated comment":
