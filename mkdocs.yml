@@ -51,6 +51,11 @@ extra:
       link: https://github.com/GenAI-Security-Project/agent-control-standard/discussions
 
 nav:
+  # The landing page links into the docs, so the docs need the return path. The URL is
+  # absolute rather than derived from site_url because site_url names the /docs/ subpath,
+  # which cannot address its own parent. It survives the agentcontrolstandard.org
+  # cutover, when the custom domain makes this URL redirect rather than break.
+  - ACS home: https://genai-security-project.github.io/agent-control-standard/
   - Trustworthy Agents: README.md
   - ACS: acs.md
   - Topics:
