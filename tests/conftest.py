@@ -7,6 +7,7 @@ enumerates the positions that do not fetch instead. Anything else carrying an ab
 URL counts as a fetch, which makes an unanticipated construct a failure rather than a
 silent pass.
 """
+import hashlib
 import html.parser
 import json
 import re
@@ -48,9 +49,7 @@ _IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),<>]+)""", re.I)
 # <!-- opens no comment there and a browser runs whatever follows, while outside one
 # a comment hides everything to its terminator. Four earlier attempts scanned for
 # comments and elements with separate patterns, and every pairing hid something real.
-_OPEN_RAWTEXT = re.compile(r"<(script|style)\b[^>]*>", re.I)
-# A browser closes on </script/> and </script data-x="y">, discarding what it finds
-# before the bracket, so the end tag accepts anything up to it.
+_TAG_NAME = re.compile(r"<([a-zA-Z][^\s/>]*)")
 _CLOSE_RAWTEXT = {name: re.compile(rf"</{name}[^>]*>", re.I) for name in ("script", "style")}
 
 # CSS reaches the network only through url(), image-set(), and @import. That set is
@@ -110,27 +109,65 @@ def _scan(markup: str) -> _Scanner:
     return scanner
 
 
-def _element_bodies(markup: str) -> list[str]:
-    """Return the body of every script and style element a browser would run."""
-    bodies: list[str] = []
-    pos = 0
-    while pos < len(markup):
-        comment = markup.find("<!--", pos)
-        opening = _OPEN_RAWTEXT.search(markup, pos)
-        if opening is None and comment == -1:
+def _tag_end(markup: str, start: int) -> int:
+    """Return the offset past the tag opening at start, respecting quoted values.
+
+    A comment delimiter inside an attribute value is text. Walking tags without
+    honoring quotes let one blank every script and style body that followed it.
+    """
+    quote = ""
+    for i in range(start + 1, len(markup)):
+        char = markup[i]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == ">":
+            return i + 1
+    return len(markup)
+
+
+def _comment_end(markup: str, start: int) -> int:
+    """Return the offset past a comment terminator. A browser accepts --> and --!>."""
+    plain = markup.find("-->", start)
+    bang = markup.find("--!>", start)
+    if plain == -1 and bang == -1:
+        return len(markup)
+    if bang == -1 or (plain != -1 and plain < bang):
+        return plain + 3
+    return bang + 4
+
+
+def _element_bodies(markup: str) -> list[tuple[str, str]]:
+    """Return the tag and body of every script and style element a browser would run.
+
+    One left-to-right pass, because HTML tokenization is context sensitive. Inside
+    these elements the text is raw, so a comment delimiter opens nothing there.
+    Outside one, a comment hides everything to its terminator.
+    """
+    bodies: list[tuple[str, str]] = []
+    position = 0
+    while position < len(markup):
+        opening = markup.find("<", position)
+        if opening == -1:
             break
-        if comment != -1 and (opening is None or comment < opening.start()):
-            end = markup.find("-->", comment + 4)
-            # An unterminated comment consumes the rest of the document.
-            pos = len(markup) if end == -1 else end + 3
+        if markup.startswith("<!--", opening):
+            position = _comment_end(markup, opening + 4)
             continue
-        closing = _CLOSE_RAWTEXT[opening.group(1).lower()].search(markup, opening.end())
-        if closing is None:
-            # No end tag, so the element owns the rest of the document and runs.
-            bodies.append(markup[opening.end():])
-            break
-        bodies.append(markup[opening.end():closing.start()])
-        pos = closing.end()
+        named = _TAG_NAME.match(markup, opening)
+        after = _tag_end(markup, opening)
+        if named and named.group(1).lower() in ("script", "style"):
+            tag = named.group(1).lower()
+            closing = _CLOSE_RAWTEXT[tag].search(markup, after)
+            if closing is None:
+                # No end tag, so the element owns the rest of the document and runs.
+                bodies.append((tag, markup[after:]))
+                break
+            bodies.append((tag, markup[after:closing.start()]))
+            position = closing.end()
+            continue
+        position = after
     return bodies
 
 
@@ -146,8 +183,14 @@ def third_party_hosts(markup: str, self_hosts: set[str]) -> set[str]:
     hosts: set[str] = set()
     for value in scanner.attr_values + scanner.bases:
         hosts |= {m.group(1).lower() for m in _IN_ATTR.finditer(_NOISE.sub("", value))}
-    for body in _element_bodies(markup):
-        hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(_NOISE.sub("", body))}
+    for tag, body in _element_bodies(markup):
+        if tag == "style":
+            # CSS in the markup is still CSS. Feeding it to the script matcher, which
+            # requires an explicit scheme, silently dropped every protocol-relative
+            # url() an inline style carries.
+            hosts |= stylesheet_hosts(body, self_hosts)
+        else:
+            hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(_NOISE.sub("", body))}
     return hosts - {host.lower() for host in self_hosts}
 
 
@@ -169,25 +212,26 @@ def stylesheet_hosts(css: str, self_hosts: set[str]) -> set[str]:
     return hosts - {host.lower() for host in self_hosts}
 
 
-def theme_script_names() -> set[str]:
-    """Return every script the installed theme ships, relative to its assets root.
+def theme_script_digests() -> set[str]:
+    """Return a digest of every script the installed theme ships.
 
-    A path check cannot tell a first-party file dropped into the theme's own output
-    directory from the theme's own code, because mkdocs copies docs/assets/ there
-    verbatim. Comparing against what the package installs can.
+    Names are not enough. A path check cannot tell our own file from the theme's,
+    and a name check cannot tell the theme's file from one edited in place.
     """
     import material
 
     root = Path(material.__file__).parent / "templates" / "assets" / "javascripts"
-    return {path.relative_to(root).as_posix() for path in root.rglob("*.js")}
+    return {hashlib.sha256(path.read_bytes()).hexdigest() for path in root.rglob("*.js")}
 
 
 def stray_scripts(built_site: Path) -> list[str]:
-    """Return every built script the pinned theme does not ship."""
-    vendored = theme_script_names()
+    """Return every built script the pinned theme does not ship, byte for byte."""
+    digests = theme_script_digests()
     stray: list[str] = []
     for path in built_site.rglob("*.js"):
         rel = path.relative_to(built_site).as_posix()
-        if not rel.startswith(VENDORED_PREFIX) or rel[len(VENDORED_PREFIX):] not in vendored:
+        if not rel.startswith(VENDORED_PREFIX):
+            stray.append(rel)
+        elif hashlib.sha256(path.read_bytes()).hexdigest() not in digests:
             stray.append(rel)
     return stray
