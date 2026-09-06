@@ -32,11 +32,18 @@ SPECULATIVE_REL = frozenset({
 # across one still fetches. Strip them before matching rather than after.
 _NOISE = re.compile(r"[\t\r\n]")
 # In an attribute, a protocol-relative value is a fetch.
-_IN_ATTR = re.compile(r"""(?:[a-z][a-z0-9+.-]*:)?//([^\s/?#'\"),]+)""", re.I)
+_IN_ATTR = re.compile(r"""(?:[a-z][a-z0-9+.-]*:)?//([^\s/?#'\"),<>]+)""", re.I)
 # In script text, require a scheme. A bare // opens a JavaScript comment far more
 # often than a protocol-relative URL, and a false positive here is the kind of noise
 # that gets a guard switched off.
-_IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),]+)""", re.I)
+_IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),<>]+)""", re.I)
+# Script and style bodies are taken from the raw markup rather than from parser
+# events. HTML honors a self-closing slash only on void and foreign elements, so
+# <script/>body</script> runs in a browser, and Python's parser reports it through a
+# handler that never enters raw-text mode. Tracking capture across events therefore
+# either misses the body or sweeps whatever follows until some later closing tag.
+# Matching the element outright has neither failure.
+_ELEMENT_BODY = re.compile(r"<(script|style)\b[^>]*>(.*?)</\1\s*>", re.I | re.S)
 
 # CSS reaches the network only through url(), image-set(), and @import. That set is
 # closed, unlike the HTML one, so enumerating it here is safe. Comments are stripped
@@ -67,9 +74,7 @@ class _Scanner(html.parser.HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.attr_values: list[str] = []
-        self.text_values: list[str] = []
         self.bases: list[str] = []
-        self._capturing: str | None = None
 
     def _collect(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         seen = dict(attrs)
@@ -87,25 +92,8 @@ class _Scanner(html.parser.HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._collect(tag, attrs)
-        if tag in ("script", "style"):
-            self._capturing = tag
 
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # HTML honors a self-closing slash only on void and foreign elements, so a
-        # browser ignores it on script and style and executes the body that follows.
-        # Python's parser reports those through this handler instead, so capturing
-        # has to start here too. Skipping it hid a body the browser would run.
-        self._collect(tag, attrs)
-        if tag in ("script", "style"):
-            self._capturing = tag
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == self._capturing:
-            self._capturing = None
-
-    def handle_data(self, data: str) -> None:
-        if self._capturing:
-            self.text_values.append(data)
+    handle_startendtag = handle_starttag
 
 
 def _scan(markup: str) -> _Scanner:
@@ -126,8 +114,9 @@ def third_party_hosts(markup: str, self_hosts: set[str]) -> set[str]:
     hosts: set[str] = set()
     for value in scanner.attr_values + scanner.bases:
         hosts |= {m.group(1).lower() for m in _IN_ATTR.finditer(_NOISE.sub("", value))}
-    for value in scanner.text_values:
-        hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(_NOISE.sub("", value))}
+    for match in _ELEMENT_BODY.finditer(markup):
+        body = _NOISE.sub("", match.group(2))
+        hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(body)}
     return hosts - {host.lower() for host in self_hosts}
 
 
