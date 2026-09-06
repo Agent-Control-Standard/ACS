@@ -1,0 +1,56 @@
+# Code owners for the Agent Control Standard.
+#
+# Owners listed here are required reviewers on the paths they own, enforced by
+# the ruleset on main. GitHub requires write access for an entry to take
+# effect, and fails the entry silently when the handle lacks it.
+#
+# Keep this file in sync with repository collaborator roles and with the
+# leadership roster in GOVERNANCE.md.
+#
+# Invited to write access and pending acceptance: @evabenn @RbBuiltWrong
+# @aruneeshsalhotra. An invitation grants nothing until the invitee accepts,
+# so these three entries are inert until then. The other owners on their lines
+# still apply, so review coverage holds meanwhile.
+
+# Default owners for anything not matched below.
+*                       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
+
+/CLAUDE.md       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/.gitignore     @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/STYLE.md        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/CONTRIBUTING.md @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/design/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+
+# The specification is the highest-blast-radius surface in the repository.
+# A schema change propagates to every downstream implementer.
+/specification/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
+/docs/spec/             @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp @afogel @stefanoamorelli @almogbhl @bar-capsule @evabenn @RbBuiltWrong @aruneeshsalhotra
+
+# These generate and publish the public site, or feed the build that does. A change
+# here alters what the front door says, which is the same class of privilege the
+# /.github/ rule below protects. mkdocs.yml in particular accepts a hooks: key that
+# executes Python inside the build job. The overrides directory holds theme templates
+# the build renders into every page, which carries the same reach.
+# The docs stylesheet and asset directories render into every documentation page and
+# can reach a third party through url(), @font-face, or @import with no script at all.
+/tools/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/landing/       @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/GOVERNANCE.md  @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/mkdocs.yml     @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/pyproject.toml @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/uv.lock        @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/tests/         @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/overrides/     @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/docs/stylesheets/ @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/docs/assets/      @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+
+# CI runs with write access to the repository. Changes here are a
+# privilege-escalation surface and warrant admin review.
+/.github/               @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+
+# Licensing and security policy changes are governance decisions.
+/LICENSE                @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/LICENSE-DOCS           @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/LICENSING.md           @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/NOTICE                 @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
+/SECURITY.md            @rocklambros @fewdisc @GangGreenTemperTatum @mamicidal @sclintonowasp
