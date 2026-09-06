@@ -43,11 +43,15 @@ _IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),<>]+)""", re.I)
 # handler that never enters raw-text mode. Tracking capture across events therefore
 # either misses the body or sweeps whatever follows until some later closing tag.
 # Matching the element outright has neither failure.
-# The end tag accepts anything up to its bracket. A browser closes on </script/>
-# and on </script data-x="y">, tokenizing and discarding what it finds. Matching
-# only whitespace there loses the whole body when either form appears.
-_ELEMENT_BODY = re.compile(r"<(script|style)\b[^>]*>(.*?)</\1[^>]*>", re.I | re.S)
-_COMMENT = re.compile(r"<!--.*?-->", re.S)
+# Script and style bodies come from one left-to-right pass over the raw markup.
+# HTML tokenization is context sensitive: inside these elements the text is raw, so
+# <!-- opens no comment there and a browser runs whatever follows, while outside one
+# a comment hides everything to its terminator. Four earlier attempts scanned for
+# comments and elements with separate patterns, and every pairing hid something real.
+_OPEN_RAWTEXT = re.compile(r"<(script|style)\b[^>]*>", re.I)
+# A browser closes on </script/> and </script data-x="y">, discarding what it finds
+# before the bracket, so the end tag accepts anything up to it.
+_CLOSE_RAWTEXT = {name: re.compile(rf"</{name}[^>]*>", re.I) for name in ("script", "style")}
 
 # CSS reaches the network only through url(), image-set(), and @import. That set is
 # closed, unlike the HTML one, so enumerating it here is safe. Comments are stripped
@@ -55,7 +59,7 @@ _COMMENT = re.compile(r"<!--.*?-->", re.S)
 # payloads are skipped because an inlined SVG carries an xmlns that is not a request.
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _CSS_FETCH = re.compile(
-    r"""(?:url\(\s*|image-set\(\s*|@import\s+(?:url\(\s*)?)['"]?([^'")\s]+)""", re.I
+    r"""(?:url\(\s*|image-set\(\s*|@import\s*(?:url\(\s*)?)['"]?([^'")\s]+)""", re.I
 )
 _CSS_HOST = re.compile(r"""^(?:[a-z][a-z0-9+.-]*:)?//([^/?#]+)""", re.I)
 
@@ -107,20 +111,26 @@ def _scan(markup: str) -> _Scanner:
 
 
 def _element_bodies(markup: str) -> list[str]:
-    """Return the body of every script and style element a browser would run.
-
-    Comments are located first and an element opening inside one is skipped, because
-    commented-out markup never executes and flagging it is the kind of noise that
-    gets a guard switched off. The comment scan runs over the raw markup, so a
-    comment sequence inside a script body can produce a span that matches nothing,
-    which is harmless: the span is only ever used to test where an element starts.
-    """
-    comments = [(m.start(), m.end()) for m in _COMMENT.finditer(markup)]
+    """Return the body of every script and style element a browser would run."""
     bodies: list[str] = []
-    for match in _ELEMENT_BODY.finditer(markup):
-        if any(start <= match.start() < end for start, end in comments):
+    pos = 0
+    while pos < len(markup):
+        comment = markup.find("<!--", pos)
+        opening = _OPEN_RAWTEXT.search(markup, pos)
+        if opening is None and comment == -1:
+            break
+        if comment != -1 and (opening is None or comment < opening.start()):
+            end = markup.find("-->", comment + 4)
+            # An unterminated comment consumes the rest of the document.
+            pos = len(markup) if end == -1 else end + 3
             continue
-        bodies.append(match.group(2))
+        closing = _CLOSE_RAWTEXT[opening.group(1).lower()].search(markup, opening.end())
+        if closing is None:
+            # No end tag, so the element owns the rest of the document and runs.
+            bodies.append(markup[opening.end():])
+            break
+        bodies.append(markup[opening.end():closing.start()])
+        pos = closing.end()
     return bodies
 
 
