@@ -30,7 +30,7 @@ uv run mkdocs serve          # preview docs at http://localhost:8000
 uv run mkdocs build          # build static docs
 ```
 
-For prose contributions, follow the [editorial style guide](./STYLE.md). For schema contributions, validate `specification/ACS/acs_schema.json` against the JSON Schema spec before submitting.
+For prose contributions, follow the [editorial style guide](./STYLE.md). For schema contributions, validate `specification/v0.1.0/acs_schema.json` against the JSON Schema spec before submitting.
 
 All submissions go through GitHub pull request review. See [GitHub's PR guide](https://docs.github.com/en/pull-requests) if you're new to the workflow.
 

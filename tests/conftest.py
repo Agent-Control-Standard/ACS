@@ -3,7 +3,9 @@
 The two guards were duplicated regexes in separate files. One definition means they
 cannot drift, and the drift is what would let one of them quietly stop matching.
 """
+import json
 import re
+from pathlib import Path
 
 # Anchor links are prose and fetch nothing. Only these constructs reach a third party.
 RESOURCE_TAG = re.compile(
@@ -23,3 +25,12 @@ def third_party_hosts(text: str, self_hosts: set[str]) -> set[str]:
     hosts |= {m.group(1) for m in IMPORT_RULE.finditer(text)}
     hosts |= {m.group(1) for m in URL_FUNC.finditer(text)}
     return hosts - self_hosts
+
+
+def write_schema(root: Path, rel: str, sid: str, body: dict | None = None) -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"$id": sid}
+    doc.update(body or {})
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
