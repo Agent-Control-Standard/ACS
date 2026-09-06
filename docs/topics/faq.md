@@ -100,7 +100,9 @@ No. ACS defines the contract for asking the policy and honoring its answer. The 
 
 ### Is ACS just observability?
 
-No. Observability records what happened. ACS also gates what is about to happen, through hooks that fire **before** the action executes and dispositions the agent honors (`allow`, `deny`, `modify`, `ask`, `defer`). Observability is one of three pillars here: Trace records, Instrument controls, Inspect inventories. A deployment can run Trace alone and get a strong audit stream, but the enforcement property comes from Instrument.
+No. ACS grew out of an earlier effort called **AOS (Agent Observability Standard)**, which covered event emission alone. Runtime enforcement became the working group's central concern as the spec matured, so it gained hooks that fire **before** an action executes, dispositions the agent honors (`allow`, `deny`, `modify`, `ask`, `defer`), and the runtime behavior that goes with them. The rename to ACS reflects that wider scope.
+
+Observability is now one of three pillars. Trace records what happened, Instrument gates what is about to happen, and Inspect inventories what the agent is made of. A deployment can run Trace alone and get a strong audit stream, though the enforcement property comes from Instrument.
 
 ### Does ACS prevent prompt injection?
 
