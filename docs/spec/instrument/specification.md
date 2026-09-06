@@ -109,7 +109,7 @@ Inspect-pillar methods (`agbom/*`): `agbom/snapshot` and `agbom/changed` (see [I
 |---|---|---|
 | `ALLOW` | Proceed | none (`reasoning` RECOMMENDED when user-visible audit trails are expected) |
 | `DENY` | Block | `reasoning` |
-| `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`; composition rules in [§6.3](#63-modify-composition-normative)) | `reasoning`, `modifications` |
+| `MODIFY` | Proceed with changes (covers redaction via `modifications.redactions`; composition rules in [§6.3](#63-modify-composition-normative); substituted with `DENY` for MODIFY-incapable clients, see [§6.5](#65-modify-incapable-clients-normative)) | `reasoning`, `modifications` |
 | `ASK` | Pause and request approval (substituted with `DEFER` or `DENY` for approver-incapable clients; see [§9.2](#92-approver-incapable-clients-normative)) | `reasoning`, `ask_details` |
 | `DEFER` | Verdict not yet reachable | `reasoning`, `defer_details` |
 
@@ -143,7 +143,7 @@ These fields support the v0.1 paradigm targets (FIDES, CaMeL, AARM-style cumulat
 - **Wholesale replacement.** `modified_content` replaces the entire payload. It is exclusive: a MODIFY that carries `modified_content` MUST NOT also carry `redactions` or `parameter_overrides`, because path-addressed edits have nothing to address inside an opaque replacement string.
 - **Structured edits.** `redactions` and `parameter_overrides` MAY appear together, but their targets MUST be disjoint: no `redactions` path may address the same field as a `parameter_overrides` key, nor an ancestor or descendant of it. Disjoint edits commute, so the effective payload is well-defined with no apply-order rule.
 
-A Guardian MUST NOT emit a `modifications` object that violates either rule. An Observed Agent that receives one cannot determine the Guardian's intent and MUST fail closed, treating the decision as `DENY`, and SHOULD record an audit event.
+A Guardian MUST NOT emit a `modifications` object that violates either rule. An Observed Agent that receives one cannot determine the Guardian's intent and MUST fail closed, treating the decision as `DENY`, and MUST record an audit event so the enforcement gap is visible.
 
 The disjoint-target rule is deliberately narrower than a precedence rule. A fixed apply-order would force every overlap to silently pick a winner, and either order has a failure mode: applying overrides last can re-expose a field a redaction just removed, and applying redactions last lets arbitrary replacement text overwrite a value an override deliberately sanitized. Requiring disjoint targets removes the conflict rather than resolving it by an order the Guardian cannot observe.
 
@@ -156,6 +156,16 @@ A hook is a control point only if the Observed Agent waits for the verdict and a
 A step suffers a **decision failure** when no usable decision arrives within the negotiated timeout: the Guardian stays silent, the transport fails (connection refused, TLS failure, malformed response), or the Guardian returns an error instead of a decision. All three resolve the same way: the Observed Agent applies the deployment's failure posture, declared as `on_decision_failure` in the handshake (§4) and defaulting to `proceed` (fail-open) so that a slow, erroring, or unreachable Guardian does not halt production. A deployment MAY set `on_decision_failure: deny` (fail-closed). The negotiated timeout bounds every failure mode: an error from the §17.1 registry carries a recovery action the agent MAY attempt within the remaining budget, and an unambiguous failure (a refused connection) MAY resolve immediately rather than waiting out the clock.
 
 Every step that proceeds without a decision MUST be recorded as an audit event, so the bypass is visible rather than silent. When a decision does arrive within the timeout, the agent MUST honor it regardless of the posture. Fail-open trades enforcement for availability under disruption: an adversary who can disrupt the channel converts control into audit. Deployments for which that trade is unacceptable set `on_decision_failure: deny`.
+
+### 6.5 MODIFY-incapable clients (normative)
+
+Some Observed Agents cannot apply a `MODIFY` disposition. This covers both framework constraints (shell-hook integrations whose hook API returns allow/deny only, IDE plugins without a mid-flight argument-mutation surface) and deployment preferences (organizations that disable MODIFY for auditability, so the executed action always equals the requested action). The Guardian determines client MODIFY-handling capability by deployment-defined means such as agent identity bound at handshake, policy keyed on `agent_id`, organizational configuration, or any other out-of-band signal the deployment trusts. ACS does not put this declaration on the wire in v0.1; it is part of the Guardian's policy bundle, mirroring the ASK precedent in [§9.2](#92-approver-incapable-clients-normative).
+
+When the Guardian determines that the client cannot apply `MODIFY`, the Guardian MUST NOT return `MODIFY`. The Guardian MUST instead substitute `DENY` with `reason_codes: ["modify_unsupported"]` and `reasoning` that names the intended modification, and MUST record the substitution as an audit event so the enforcement gap is visible.
+
+If a client receives a `MODIFY` it cannot apply — from a Guardian that misjudged capability, or a Guardian that did not consult the declaration — the client MUST treat the decision as `DENY` and MUST record an audit event with `reason_codes: ["modify_unsupported"]`. Proceeding with the original payload is non-conformant: a Guardian that intended to redact a secret out of a tool argument would otherwise get the unredacted secret shipped while the audit log recorded a modification that never happened.
+
+This rule preserves the security guarantee (actions that would have been rewritten by the Guardian are not silently allowed with the unmodified payload) while letting clients whose framework cannot mutate requests, or deployments that choose strict allow/deny for auditability, participate in ACS sessions as fully conformant ACS-Core deployments.
 
 ## 7. Provenance
 
@@ -278,6 +288,8 @@ When the Guardian determines that the client cannot resolve `ASK`, the Guardian 
 
 1. `DEFER` with `timeout_decision: "deny"`: when the underlying issue might resolve through retry, an out-of-band escalation, or a later state change. The deferred verdict still counts toward cascading-deferral limits (§6).
 2. `DENY` with `reason_codes: ["approver_unavailable"]` and `reasoning` that names the missing capability: when no recovery path exists.
+
+In either case, the Guardian MUST record the substitution as an audit event so the enforcement gap is visible. Without a recorded substitution the substitution rate is only reachable by grepping log prose, which defeats the one metric that catches a client misdeclaring its capability.
 
 The choice is policy-driven: deployments SHOULD prefer `DEFER` when the request is potentially recoverable through a different surface, and `DENY` when the action is unconditionally outside the client's reachable authority.
 
