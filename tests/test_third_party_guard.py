@@ -40,6 +40,17 @@ MUST_CATCH = {
     "closing tag carrying an attribute":
         '<script>fetch("https://evil.tld/a")</script data-x="y"><p>after</p>',
     "closing tag with a slash": '<script>fetch("https://evil.tld/b")</script/><p>after</p>',
+    # A comment delimiter inside a script body is text, not a comment. Scanning for
+    # comments separately from elements let this one span swallow the next script.
+    "comment delimiter inside a script body":
+        '<script>var x = "<!--"</script><script>fetch("https://evil.tld/c")</script>'
+        '<p>trailing --></p>',
+    # No closing tag, so the element owns the rest of the document and runs.
+    "unclosed script at end of input": '<p>x</p><script>fetch("https://evil.tld/d")',
+    "closing tag with no bracket": '<script>fetch("https://evil.tld/e")</script',
+    # The legacy idiom for hiding script from very old parsers. It still executes.
+    "script wrapped in comment delimiters":
+        '<script><!--\nfetch("https://evil.tld/f")\n//--></script>',
 }
 
 MUST_IGNORE = {
@@ -57,6 +68,10 @@ MUST_IGNORE = {
         '<!-- <script>fetch("https://evil.tld/x")</script> --><p>hi</p>',
     "style inside an html comment":
         '<!-- <style>@import "https://evil.tld/i.css";</style> -->',
+    # An unterminated comment consumes the rest of the document, so nothing after
+    # it runs and nothing after it should be scanned.
+    "script inside an unterminated comment":
+        '<!-- <script>fetch("https://evil.tld/x")</script>',
     "html comment": "<!-- https://evil.tld/x --><p>ok</p>",
 }
 
@@ -65,6 +80,8 @@ CSS_CATCH = {
     "url protocol-relative": "a{background:url(//evil.tld/x.png)}",
     "import string": '@import "https://evil.tld/s.css";',
     "import url": "@import url(//evil.tld/s.css);",
+    # CSS tokenizes the at-keyword without needing whitespace after it.
+    "import with no space": '@import"https://evil.tld/t.css";',
     "image-set": 'a{background:image-set("https://evil.tld/a.png" 1x)}',
     "font-face src": "@font-face{src:url(https://evil.tld/f.woff2)}",
 }
@@ -113,6 +130,17 @@ def test_a_self_closed_script_owns_everything_up_to_the_closing_tag():
     reads the parser next.
     """
     markup = '<script src="/a.js"/><p>https://third.example.com</p><div></script></div>'
+    assert third_party_hosts(markup, SELF) == {"third.example.com"}
+
+
+def test_an_unclosed_script_owns_the_rest_of_the_document():
+    """Reads as a false positive, is not one, and is the other half of the case above.
+
+    With no end tag the element runs to the end of input, so the markup after it is
+    script text a browser executes rather than prose it renders. An earlier attempt
+    dropped the body entirely when no end tag was present, which hid a real fetch.
+    """
+    markup = '<script src="/a.js"/><p>https://third.example.com</p>'
     assert third_party_hosts(markup, SELF) == {"third.example.com"}
 
 
