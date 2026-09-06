@@ -12,3 +12,6 @@ __pycache__/
 # Subagent-driven development scratch. Never committed.
 .superpowers/
 _site/
+
+# Browser session logs. Never committed.
+.playwright-mcp/

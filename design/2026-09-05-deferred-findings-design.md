@@ -369,3 +369,17 @@ because the guard's own history is of each version sounding more complete than i
 with an administrative bypass and no recorded review. Combined with finding 29, nothing
 mechanical currently gates a merge to a branch that deploys on merge. Recorded because two
 premortems found it, not because this change addresses it.
+
+## Tracked follow-up: specification/schema.lock
+
+Deferred three times now. Published schemas are mutable in place with no hash record, so a
+constraint loosened under a released spec version reaches every consumer resolving that
+`$id` with no way to detect the change against a copy fetched earlier.
+
+The work is a manifest of every published path and its hash, written at build time and
+checked at deploy time. It carries release-process implications this change does not, which
+is why it stays out of scope rather than being folded in.
+
+This record replaces the public tracking issue an earlier plan specified. Opening one is
+the project lead's decision to make separately, and `SECURITY.md` routes tooling flaws to
+private reporting.

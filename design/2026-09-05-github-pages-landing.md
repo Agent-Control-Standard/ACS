@@ -255,6 +255,11 @@ Both are available to anyone with write access. The scheduled monitor in
 still serve their own `$id`, so a silent regression surfaces within that window rather
 than waiting for a consumer to report it.
 
+A failed verification step is not a failed deploy. `actions/deploy-pages` runs before the
+check, so a red run with a green deploy job means the site is live and the check could not
+confirm it inside its retry window. Read the step log before reverting anything. Reverting
+a good deploy because a check was unlucky costs more than waiting for the next run.
+
 ## Status
 
 The site went live on 2026-09-05. The first deploy succeeded, and all 44 schema URIs were

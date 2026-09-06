@@ -53,6 +53,17 @@ def test_target_for_rejects_unsafe_publish_paths(tail):
         target_for({"$id": BASE + tail}, Path("evil.json"), Path("."))
 
 
+def test_a_percent_encoded_id_is_named_as_such(tmp_path):
+    """SAFE_TAIL alone would reject this, with a message about the pattern.
+
+    The percent-decode check exists to label the attempt, so a build log tells an
+    operator someone tried something rather than that someone made a typo. Assert
+    the specific message, or the check can be deleted with no test noticing.
+    """
+    with pytest.raises(SchemaError, match="must not be percent-encoded"):
+        target_for({"$id": BASE + "v0.1.0/%2e%2e/x.json"}, Path("a.json"), Path("."))
+
+
 def test_publish_refuses_an_id_that_escapes_the_output_root(tmp_path):
     from conftest import write_schema
 

@@ -5,6 +5,7 @@ but the injected sections are not.
 """
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -199,6 +200,19 @@ def test_the_sidebar_shows_the_same_mark_as_the_documentation(page):
     """The two surfaces drew the same file differently, text here and an image there."""
     assert 'src="assets/icon.svg"' in page
     assert '<img src="assets/icon.svg" alt=""' in page
+
+
+def test_the_starburst_sets_its_font_on_the_root_element():
+    """On the root, not merely present once.
+
+    A declaration on the wrong element satisfies a count while leaving labels
+    without a fallback stack.
+    """
+    starburst = (LANDING / "assets" / "starburst.svg").read_text(encoding="utf-8")
+    root = ET.fromstring(starburst)
+    assert "font-family" in root.attrib
+    assert "sans-serif" in root.attrib["font-family"], "needs a fallback, not Inter alone"
+    assert starburst.count("font-family") == 1, "the per-element copies should be gone"
 
 
 def test_the_specification_is_not_listed_as_an_external_resource(page):

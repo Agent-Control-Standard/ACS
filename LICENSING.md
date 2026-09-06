@@ -23,6 +23,27 @@ Full texts live in [`LICENSE`](./LICENSE) for Apache 2.0, [`LICENSE-DOCS`](./LIC
 
 Code samples inside the documentation carry the Apache 2.0 grant, not the ShareAlike obligation. Copy a JSON payload or a hook definition out of `docs/` into a proprietary agent and nothing forces you to open-source the result.
 
+## Provenance of the landing page design
+
+The design tokens in `landing/assets/acs.css`, the diagram geometry in
+`landing/assets/starburst.svg`, and the mark in `landing/assets/icon.svg`, which is
+duplicated at `docs/assets/icon.svg` because MkDocs requires a theme logo inside its own
+documentation directory, derive from agentcontrolstandard.org, which the OWASP GenAI
+Security Project operates and which is built from a separate repository. They are used
+here as the project's own work. Both copies of the mark are covered by the
+`landing/**` row above.
+
+The OWASP GenAI Security Project holds the rights to this design, confirmed by the
+project lead. No outside party has a claim on the tokens, the diagram geometry, or the
+mark, so they are covered by the rows above with no further condition.
+
+The vendored font is Inter, redistributed under the SIL Open Font License 1.1. Its
+recorded checksum is in `landing/assets/fonts/CHECKSUMS.txt`.
+
+The documentation header inlines the GitHub mark from the Simple Icons set bundled with
+Material for MkDocs, dedicated to the public domain under CC0 1.0 Universal. It is
+included at build time rather than vendored, so no copy lives in this repository.
+
 ## Why the split
 
 Documentation under CC BY-SA 4.0 stays free to copy, translate, and adapt. Adaptations carry the same license forward, so derived guidance stays open.
@@ -56,24 +77,3 @@ These licenses cover copyright. They grant no rights to the OWASP name, the OWAS
 ## License history
 
 Releases up to and including v0.1.0 were published under the MIT License. That grant stands. Anyone who obtained ACS under the MIT License keeps their rights under it. Contributions merged after the relicense are governed by the terms on this page.
-
-## Provenance of the landing page design
-
-The design tokens in `landing/assets/acs.css`, the diagram geometry in
-`landing/assets/starburst.svg`, and the mark in `landing/assets/icon.svg`, which is
-duplicated at `docs/assets/icon.svg` because MkDocs requires a theme logo inside its own
-documentation directory, derive from agentcontrolstandard.org, which the OWASP GenAI
-Security Project operates and which is built from a separate repository. They are used
-here as the project's own work. Both copies of the mark are covered by the
-`landing/**` row above.
-
-The OWASP GenAI Security Project holds the rights to this design, confirmed by the
-project lead. No outside party has a claim on the tokens, the diagram geometry, or the
-mark, so they are covered by the rows above with no further condition.
-
-The vendored font is Inter, redistributed under the SIL Open Font License 1.1. Its
-recorded checksum is in `landing/assets/fonts/CHECKSUMS.txt`.
-
-The documentation header inlines the GitHub mark from the Simple Icons set bundled with
-Material for MkDocs, dedicated to the public domain under CC0 1.0 Universal. It is
-included at build time rather than vendored, so no copy lives in this repository.

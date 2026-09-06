@@ -122,8 +122,9 @@ Routing is unchanged. Community contact is GitHub Discussions and the
 `#team-genai-asi-acs-general` channel on `owasp.slack.com`. Security reporting is GitHub
 private vulnerability reporting, which is the channel `SECURITY.md` covers. Code of
 Conduct enforcement routes to the OWASP CoC process so that a report about a maintainer
-does not land with the maintainers. The landing page links both, so publishing an
-address does not pull reports out of the processes that handle them independently.
+does not land with the maintainers. The landing page links the security reporting process and the Code of Conduct process, so
+publishing an address does not pull reports out of the processes that handle them
+independently.
 
 Example addresses in specification documents must use the RFC 2606 reserved domains
 (`example.com`, `example.net`, `example.org`). Eleven of these exist in `docs/` today
