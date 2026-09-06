@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -29,22 +28,39 @@ class SchemaError(Exception):
     """A schema has an unusable $id, an unsafe publish path, or an unresolvable $ref."""
 
 
-def load_schemas(source: Path) -> dict[Path, dict]:
-    """Parse every JSON file under source that declares an $id.
+def _read(source: Path) -> dict[Path, tuple[dict, bytes]]:
+    """Parse every JSON file under source that declares an $id, keeping its raw bytes.
+
+    The bytes travel with the parsed document so the publish step writes what it
+    validated. Re-reading at write time would leave a window that widens with every
+    file, because the whole package is validated in between.
 
     Files without an $id are skipped rather than fatal. Example payloads and fixtures
     live under specification/ too, and a contributor adding one must not stop the deploy.
     """
-    schemas: dict[Path, dict] = {}
+    root = source.resolve()
+    schemas: dict[Path, tuple[dict, bytes]] = {}
     for path in sorted(source.rglob("*.json")):
+        # A symlink's own path satisfies every check above while its target supplies
+        # the bytes, so resolve first and require the real file to sit inside source.
+        if not path.resolve().is_relative_to(root):
+            raise SchemaError(f"{path}: resolves outside {source}, refusing to read it")
+        raw = path.read_bytes()
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc = json.loads(raw.decode("utf-8"))
+        except UnicodeDecodeError as error:
+            raise SchemaError(f"{path}: not valid UTF-8: {error}") from error
         except json.JSONDecodeError as error:
             raise SchemaError(f"{path}: invalid JSON: {error}") from error
         if not isinstance(doc, dict) or "$id" not in doc:
             continue
-        schemas[path] = doc
+        schemas[path] = (doc, raw)
     return schemas
+
+
+def load_schemas(source: Path) -> dict[Path, dict]:
+    """Parse every JSON file under source that declares an $id."""
+    return {path: doc for path, (doc, _raw) in _read(source).items()}
 
 
 def target_for(doc: dict, path: Path, source: Path) -> str:
@@ -138,26 +154,41 @@ def verify_refs(docs: dict[Path, dict], by_id: dict[str, dict]) -> None:
 
 
 def publish(source: Path, out: Path) -> list[str]:
-    """Copy every schema to its $id-declared path. Return sorted relative paths."""
-    docs = load_schemas(source)
-    if not docs:
+    """Write every schema to its $id-declared path. Return sorted relative paths.
+
+    Nothing is written until every schema validates and every $ref resolves, so a
+    failed build leaves no output directory rather than a partial one. The bytes
+    written are the bytes parsed, so no second read can substitute content that
+    nothing checked.
+    """
+    parsed = _read(source)
+    if not parsed:
         raise SchemaError(f"no schemas found under {source}")
 
-    out.mkdir(parents=True, exist_ok=True)
     out_root = out.resolve()
     by_id: dict[str, dict] = {}
     seen: dict[str, Path] = {}
-    published: list[str] = []
+    claimed: dict[str, str] = {}
+    planned: list[tuple[Path, str, bytes]] = []
 
-    for path, doc in docs.items():
+    for path, (doc, raw) in parsed.items():
         rel = target_for(doc, path, source)
         sid = doc["$id"]
-        # Belt and braces. target_for's identity check already makes two files sharing
-        # one $id unreachable through publish, since both would have to sit at the
-        # same path. Kept because target_for is not publish's only possible caller.
+        # Belt and braces. The identity check makes two files sharing one $id
+        # unreachable through this function, but target_for has other callers.
         if sid in seen:
             raise SchemaError(f"{path}: duplicate $id {sid}, already declared by {seen[sid]}")
         seen[sid] = path
+
+        # A case-insensitive filesystem collapses two of these into one file, so the
+        # tree a maintainer checks out is not the tree the Linux runner publishes.
+        folded = rel.casefold()
+        if folded in claimed:
+            raise SchemaError(
+                f"{path}: publishes to {rel!r}, which differs from {claimed[folded]!r} "
+                "only by case, so the two collide on a case-insensitive filesystem"
+            )
+        claimed[folded] = rel
 
         destination = (out / rel).resolve()
         # Belt and braces. SAFE_TAIL should make this unreachable. If it ever is
@@ -165,13 +196,15 @@ def publish(source: Path, out: Path) -> list[str]:
         if not destination.is_relative_to(out_root):
             raise SchemaError(f"{path}: $id escapes the output root: {sid}")
 
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, destination)
+        planned.append((destination, rel, raw))
         by_id[sid] = doc
-        published.append(rel)
 
-    verify_refs(docs, by_id)
-    return sorted(published)
+    verify_refs({path: doc for path, (doc, _raw) in parsed.items()}, by_id)
+
+    for destination, _rel, payload in planned:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+    return sorted(rel for _destination, rel, _payload in planned)
 
 
 def main(argv: list[str]) -> int:
