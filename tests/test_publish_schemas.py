@@ -288,6 +288,28 @@ def test_a_symlink_out_of_the_source_tree_is_refused(tmp_path):
         publish(src, tmp_path / "out")
 
 
+def test_a_symlinked_directory_does_not_leak_its_contents(tmp_path):
+    """rglob does not descend into a symlinked directory, so nothing under one is
+    enumerated. That is behavior we depend on rather than check, so assert it here.
+    If discovery ever moves to os.walk(followlinks=True), this fails instead of
+    quietly publishing whatever the link points at.
+    """
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "leak.json").write_text(
+        json.dumps({"$id": BASE + "v0.1.0/leak.json", "secret": "x"}), encoding="utf-8"
+    )
+    (src / "v0.1.0" / "sub").symlink_to(outside, target_is_directory=True)
+
+    published = publish(src, tmp_path / "out")
+    assert published == ["v0.1.0/a.json"]
+    assert not (tmp_path / "out" / "v0.1.0" / "leak.json").exists()
+
+
 def test_two_paths_differing_only_by_case_are_refused(tmp_path):
     """A case-insensitive filesystem collapses these into one file.
 
