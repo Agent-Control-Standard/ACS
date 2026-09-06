@@ -59,16 +59,16 @@ nav:
   - Concepts:
     - Overview: concepts/README.md
     - Agents: concepts/agents.md
-    - Identity: concepts/identity.md
+    - Identity:
+      - Overview: concepts/identity.md
+      - Identity for Agents: identity/overview.md
+      - Standards: identity/standards.md
     - Session Lifecycle: concepts/session-lifecycle.md
     - Intent: concepts/intent.md
     - Capability: concepts/capability.md
     - Skill: concepts/skill.md
     - Provenance: concepts/provenance.md
     - Trust Basis: concepts/trust.md
-  - Identity:
-    - Overview: identity/overview.md
-    - Standards: identity/standards.md
   - Specification:
     - Conformance Profiles: spec/conformance.md
     - Instrument:
