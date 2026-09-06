@@ -3,7 +3,7 @@
 Version: 3.1
 Owner: ACS project lead
 Date: 2026-09-05
-Status: approved design, not yet implemented
+Status: implemented on branch fix/deferred-findings
 
 Three adversarial premortem rounds have run against this work. The first refuted version
 1.0, which had closed a finding as "already correct" while a draft schema in a directory
@@ -184,8 +184,10 @@ a shape nobody reviewed.
 
 ## C4: invert the guard
 
-The no-third-party guard has been found incomplete five times. Every previous fix, this
-design's version 2.0 included, added names to an enumeration of things that fetch. The
+The no-third-party guard had been found incomplete five times before this work, and was
+corrected five more times during it, each round prompted by a review reproducing a defect
+the previous round introduced or missed. Every fix before the rewrite added names to an
+enumeration of things that fetch. The
 enumeration is the defect. Nine payloads defeat the version 2.0 pattern, each reproduced:
 
 | Construct | Why the enumeration cannot see it |
@@ -204,7 +206,8 @@ markup with `html.parser`, walks every attribute on every element, and treats ea
 fetch unless the pair sits on a short exempt list: anchor and area `href`, the four `cite`
 attributes, form and button `action` and `formaction`, and any `xmlns`. Inline `<script>`
 and `<style>` bodies are scanned for absolute URLs. Tab and newline are stripped before
-matching. A `<base>` element carrying an href is refused outright.
+matching. A `<base>` element's href is folded into the same result, so a base pointing off
+site is reported like any other fetch and one pointing at our own host is not.
 
 An attribute nobody anticipated is now a failure rather than a silent pass. That is the
 property every previous version lacked.
@@ -228,9 +231,10 @@ Base handling folds into `third_party_hosts` rather than sitting beside it. Cove
 call site has to opt into is how this guard reached five incomplete versions.
 
 Measured against the real built site: 38 pages, zero third-party hosts, zero `<base>`
-elements, and 36 vendored scripts with none stray. Against the payload set: 20 constructs
-caught and 10 non-fetching cases quiet, including a `<blockquote cite>`, a JavaScript line
-comment, an HTML comment, and prose following a self-closed `<script/>`.
+elements, and 36 vendored scripts with none stray. The payload set ends at 33 markup
+constructs caught and 14 non-fetching cases quiet, plus 7 stylesheet fetches caught and 4
+ignored. Markup following an unclosed or self-closed `<script>` is not among the quiet
+cases. It belongs to that script and a browser runs it, so two tests pin it as caught.
 
 **What this cannot do.** The script scan matches literal URLs. A URL assembled at runtime,
 from `atob()`, from concatenation, or read back out of an exempted attribute, is invisible
@@ -243,9 +247,10 @@ The `xmlns` exemption is load-bearing for a real reason. The built site carries 
 no browser resolves it. Verified that the exemption cannot smuggle a fetch, because a
 `<use href>` on the same element is still caught.
 
-**`VENDORED_SEGMENT` becomes a prefix test.** The substring form accepted any path
-containing `assets/javascripts/` anywhere, so `docs/assets/javascripts/tracker.js` counted
-as vendored theme code. The check now anchors to the paths the theme installs to.
+**The script check compares digests.** The substring form accepted any path containing
+`assets/javascripts/`. A prefix fixed that and still could not tell the theme's own file
+from one edited in place, because mkdocs copies `docs/assets/` into the same directory. It
+now hashes every script in the built site against the installed package's own files.
 
 ## C3: the publish pipeline
 
@@ -331,7 +336,7 @@ an `$id`. The previous test could only ever confirm the names already in the lis
 
 **The guard is verified by watching it fail.** Inject a third-party host through each of
 the nine constructs the enumeration missed, confirm each fails, then revert and confirm the
-suite returns to green. A guard found incomplete five times is not verified by reading it.
+suite returns to green. A guard with this history is not verified by reading it.
 
 **Two rewritten tests are checked against the pre-fix code.** A test that passes before the
 fix it is named for is worse than no test, because it reports coverage that does not exist.
