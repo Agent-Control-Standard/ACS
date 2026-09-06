@@ -43,7 +43,11 @@ _IN_TEXT = re.compile(r"""\bhttps?://([^\s/?#'\"),<>]+)""", re.I)
 # handler that never enters raw-text mode. Tracking capture across events therefore
 # either misses the body or sweeps whatever follows until some later closing tag.
 # Matching the element outright has neither failure.
-_ELEMENT_BODY = re.compile(r"<(script|style)\b[^>]*>(.*?)</\1\s*>", re.I | re.S)
+# The end tag accepts anything up to its bracket. A browser closes on </script/>
+# and on </script data-x="y">, tokenizing and discarding what it finds. Matching
+# only whitespace there loses the whole body when either form appears.
+_ELEMENT_BODY = re.compile(r"<(script|style)\b[^>]*>(.*?)</\1[^>]*>", re.I | re.S)
+_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 # CSS reaches the network only through url(), image-set(), and @import. That set is
 # closed, unlike the HTML one, so enumerating it here is safe. Comments are stripped
@@ -102,6 +106,24 @@ def _scan(markup: str) -> _Scanner:
     return scanner
 
 
+def _element_bodies(markup: str) -> list[str]:
+    """Return the body of every script and style element a browser would run.
+
+    Comments are located first and an element opening inside one is skipped, because
+    commented-out markup never executes and flagging it is the kind of noise that
+    gets a guard switched off. The comment scan runs over the raw markup, so a
+    comment sequence inside a script body can produce a span that matches nothing,
+    which is harmless: the span is only ever used to test where an element starts.
+    """
+    comments = [(m.start(), m.end()) for m in _COMMENT.finditer(markup)]
+    bodies: list[str] = []
+    for match in _ELEMENT_BODY.finditer(markup):
+        if any(start <= match.start() < end for start, end in comments):
+            continue
+        bodies.append(match.group(2))
+    return bodies
+
+
 def third_party_hosts(markup: str, self_hosts: set[str]) -> set[str]:
     """Return every third-party host the markup would fetch from.
 
@@ -114,9 +136,8 @@ def third_party_hosts(markup: str, self_hosts: set[str]) -> set[str]:
     hosts: set[str] = set()
     for value in scanner.attr_values + scanner.bases:
         hosts |= {m.group(1).lower() for m in _IN_ATTR.finditer(_NOISE.sub("", value))}
-    for match in _ELEMENT_BODY.finditer(markup):
-        body = _NOISE.sub("", match.group(2))
-        hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(body)}
+    for body in _element_bodies(markup):
+        hosts |= {m.group(1).lower() for m in _IN_TEXT.finditer(_NOISE.sub("", body))}
     return hosts - {host.lower() for host in self_hosts}
 
 
