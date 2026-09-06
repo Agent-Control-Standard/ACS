@@ -47,7 +47,7 @@ In `tests/test_publish_schemas.py`, add `, Path(".")` as the third argument to e
 - `test_target_for_strips_the_namespace_base` (line 31)
 - `test_target_for_rejects_a_missing_id` (line 36)
 - `test_target_for_rejects_an_out_of_namespace_id` (line 41)
-- `test_target_for_rejects_unsafe_publish_paths` (line 60, nine parametrizations)
+- `test_target_for_rejects_unsafe_publish_paths` (line 60, eight parametrizations)
 
 `Path(".")` works because each of these passes a bare relative path such as `Path("a")`, and `Path("a").relative_to(Path("."))` returns `a`. The first test's `$id` tail is `v0.1.0/acs_schema.json` while its path is `a`, so it now needs a matching pair:
 
@@ -951,7 +951,20 @@ def stylesheet_hosts(css: str, self_hosts: set[str]) -> set[str]:
 
 - [ ] **Step 4: Update the two consumers**
 
-`tests/test_site_config.py:59-63` scans built assets. Import `stylesheet_hosts` alongside `third_party_hosts` and route each asset by suffix: `.css` to `stylesheet_hosts`, everything else to `third_party_hosts`. Passing minified CSS to the HTML scanner reports `fontawesome.com` and `www.w3.org` from a licence banner and an inlined `data:` SVG, neither of which is a request.
+`tests/test_site_config.py:59-65` scans built assets. Passing minified CSS to the HTML scanner reports `fontawesome.com` and `www.w3.org`, from a licence banner and an inlined `data:` SVG, neither of which is a request. Replace the body:
+
+```python
+    from conftest import stylesheet_hosts, third_party_hosts
+
+    offenders: dict[str, str] = {}
+    for asset in built_site.rglob("*.html"):
+        for host in third_party_hosts(asset.read_text(encoding="utf-8"), SELF_HOSTS):
+            offenders.setdefault(host, asset.name)
+    for asset in built_site.rglob("*.css"):
+        for host in stylesheet_hosts(asset.read_text(encoding="utf-8"), SELF_HOSTS):
+            offenders.setdefault(host, asset.name)
+    assert not offenders, f"third-party resource loads: {offenders}"
+```
 
 `tests/test_landing_page.py:51-54` does the same thing inline. Line 54 passes `acs.css` to `third_party_hosts` and must call `stylesheet_hosts` instead.
 
@@ -986,9 +999,9 @@ Expected: PASS.
 A guard found incomplete five times is verified by watching it fail, not by reading it.
 
 ```bash
-printf '\n<img src="https://cdn.evil.tld/p.png">\n' >> docs/index.md
+printf '\n<img src="https://cdn.evil.tld/p.png">\n' >> docs/README.md
 uv run pytest -q ; echo "^ must FAIL"
-git checkout docs/index.md
+git checkout docs/README.md
 printf '\nbody{background-image:image-set("https://evil.tld/x.png" 1x)}\n' >> docs/stylesheets/extra.css
 uv run pytest -q ; echo "^ must FAIL"
 git checkout docs/stylesheets/extra.css
@@ -1111,7 +1124,7 @@ def test_paths_come_from_the_schema_tree(tmp_path):
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_verify_published.py -q`
-Expected: four failures. The non-object case raises `AttributeError` on `.get`, the decode case is not caught by the retry clause, and `paths_from` does not exist.
+Expected: three failures. The non-object case raises `AttributeError` on `.get`, the decode case is not caught by the retry clause, and `paths_from` does not exist. `test_a_wrong_id_reports_what_was_served` passes already, because a dict reports correctly on the old path too. It is a drift test guarding a message, and it stays.
 
 - [ ] **Step 3: Fix the checker and derive the path list**
 
