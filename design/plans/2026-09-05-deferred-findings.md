@@ -664,11 +664,12 @@ The count now belongs to the version printed beside it. Counting every schema in
 the repository while naming one version says something false about that version,
 and it goes live the day a second version ships.
 
-Two tests are rewritten because they passed for the wrong reason. The copy
-failure test used a fixture missing four required placeholders, so render raised
-before reaching the copy and the test passed against the unfixed code. The
-version test used a single-version fixture, which cannot tell a numeric
-comparison from a lexicographic one.
+Two new tests cover behavior nothing covered. There was no copy-failure test at
+all, so widening the error boundary had none. The version test that exists uses
+a single-version fixture, which cannot tell a numeric comparison from a
+lexicographic one, so a deliberately broken comparison passes it. The new
+fixture holds two versions and makes both counts differ from the total, or an
+assertion cannot tell counting within a version from counting everything.
 MSG
 ```
 
