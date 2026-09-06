@@ -1,19 +1,24 @@
 # Closing the deferred findings from the Pages branch
 
-Version: 3.0
+Version: 3.1
 Owner: ACS project lead
 Date: 2026-09-05
 Status: approved design, not yet implemented
 
-Two adversarial premortems have run against this work. The first refuted version 1.0,
-which had closed a finding as "already correct" while a draft schema in a directory named
-`Proposals` published to the live normative namespace. The second ran against the
-implementation plan version 2.0 produced, and refuted the two fixes that plan led with.
+Three adversarial premortem rounds have run against this work. The first refuted version
+1.0, which had closed a finding as "already correct" while a draft schema in a directory
+named `Proposals` published to the live normative namespace. The second refuted the two
+fixes the next plan led with: a six-name denylist and a regex widened by two attributes.
+Six perspectives reproduced bypasses of both, by execution rather than argument, so this
+design replaced them with checks that fail closed on constructs nobody enumerated.
 
-Both of those fixes were instance fixes in the shape of class fixes. Version 2.0 widened a
-six-name denylist and widened a regex by two attributes. Six independent perspectives
-reproduced bypasses of both, by execution rather than by argument. This revision replaces
-both with checks that fail closed on constructs nobody enumerated.
+The third round attacked those replacements. The identity check held against every
+directory-name attack, and the inverted guard held against all twenty markup constructs it
+was built for. Three defects survived elsewhere: a symlink under `specification/` published
+any file on the runner, two paths differing only by case diverged between a Mac and the CI
+runner, and the new exempt list let a form and a speculative anchor through. Version 3.1
+closes those and corrects two claims version 3.0 made about the deploy workflow and the
+size of its own payload set.
 
 ## Goal
 
@@ -116,6 +121,12 @@ No published URI changes. One source file moves.
 | 30 | Three self-assessments overstate their own completeness | **New.** Fix |
 | 31 | Rollback docs do not separate a failed verify from a failed deploy | **New.** Fix |
 | 32 | The monitor has no alerting path | **New.** Record, see out of scope |
+| 33 | A symlink under `specification/` publishes any file on the runner | **Round 2.** Fix |
+| 34 | Two paths differing only by case collapse on a case-insensitive filesystem | **Round 2.** Fix |
+| 35 | The exempt list lets `form action` and a speculative `rel` through | **Round 2.** Fix |
+| 36 | `paths_from` tails do not carry the `schema/` segment the workflows expect | **Round 2.** Fix |
+| 37 | Neither verification job sets a timeout | **Round 2.** Fix |
+| 38 | Static scanning cannot see a URL computed at runtime | **Round 2.** Record, see out of scope |
 
 ## One finding still closes
 
@@ -152,6 +163,25 @@ both. The claim becomes true rather than aspirational. This matters less for the
 race than for the record. A design document asserting a property its code lacks is how
 version 1.0's false claims survived four reviews.
 
+Round 2 found two more ways the read betrays the path checks above it.
+
+**A symlink.** `specification/v0.1.0/config.json` can be a symlink to any file on the
+runner. Every path check passes, because they all examine the symlink's own name, and the
+read follows it. Reproduced: a self-consistent JSON file elsewhere in the checkout was
+copied verbatim into the published output. The diff under `specification/` looks like an
+ordinary three-line schema addition, distinguished only by a file mode a reviewer has to
+notice. Paths now resolve before they are read, and a resolved path outside the source tree
+is refused. This defect predates the restructure, and the module docstring has claimed
+"every path derived from it is validated and contained" the whole time. The read was not
+contained.
+
+**A case collision.** Two schemas whose publish paths differ only by case are two files on
+the Linux runner and one file on a maintainer's Mac. Both publish in CI while the local
+checkout that a human verifies shows one. That defeats the byte-level diff this design
+leans on, by making the local side of the comparison quietly wrong. Publishing now refuses
+a pair that collides under case folding, so an ambiguous tree fails rather than deploying
+a shape nobody reviewed.
+
 ## C4: invert the guard
 
 The no-third-party guard has been found incomplete five times. Every previous fix, this
@@ -179,9 +209,34 @@ matching. A `<base>` element carrying an href is refused outright.
 An attribute nobody anticipated is now a failure rather than a silent pass. That is the
 property every previous version lacked.
 
+Round 2 attacked the exempt list, which is where inverting the guard moves the trust
+boundary. Two entries were wrong. `form action` was exempted on the theory that submission
+needs a click, and a script calling `submit()` fires the request on load with no URL in the
+script text. An anchor `href` was exempted unconditionally, and `rel="prefetch"` or
+`rel="preconnect"` makes one fetch without a click. Both are now handled: form action is
+off the list, and an anchor loses its exemption when it carries a speculative `rel`. The
+site's own anchors carry only `noopener` and `edit`, and no form on the site declares an
+`action`, so neither correction costs a false positive.
+
+Stylesheets get their own scanner rather than sharing the attribute pattern. Run over
+minified theme CSS, the attribute pattern reported `fontawesome.com` from a licence banner
+and `www.w3.org` from an inlined `data:` SVG, neither of which is a request. CSS reaches
+the network only through `url()`, `image-set()`, and `@import`, so that set can be
+enumerated safely, unlike the HTML one. Comments are stripped and `data:` values skipped.
+
+Base handling folds into `third_party_hosts` rather than sitting beside it. Coverage a
+call site has to opt into is how this guard reached five incomplete versions.
+
 Measured against the real built site: 38 pages, zero third-party hosts, zero `<base>`
-elements. Against the payload set: 14 caught, and 5 prose cases stay quiet, including a
-`<blockquote cite>` and a JavaScript line comment.
+elements, and 36 vendored scripts with none stray. Against the payload set: 20 constructs
+caught and 10 non-fetching cases quiet, including a `<blockquote cite>`, a JavaScript line
+comment, an HTML comment, and prose following a self-closed `<script/>`.
+
+**What this cannot do.** The script scan matches literal URLs. A URL assembled at runtime,
+from `atob()`, from concatenation, or read back out of an exempted attribute, is invisible
+to it. No static scanner closes that, and saying so here is better than implying the scan
+proves more than it does. Closing it needs a content security policy, which is a hosting
+change rather than a test.
 
 The `xmlns` exemption is load-bearing for a real reason. The built site carries 407
 `xmlns="http://www.w3.org/2000/svg"` declarations. A namespace URI names a vocabulary and
@@ -218,9 +273,19 @@ a Pages 404 serves HTML, which raises `JSONDecodeError` and is retried. The guar
 right, because a parsed non-object cannot be fixed by waiting, but the scenario given for
 it was not the real one.
 
-**`deploy-pages.yml`.** The branch condition is computed once and referenced, rather than
-copied onto two steps. A typo in one copy of a compound condition does not fail a step, it
-skips it, which uploads no artifact while reporting green.
+**`deploy-pages.yml`.** Configure Pages and the artifact upload gain the branch half of the
+condition the `deploy` job already carries, so a dispatch from a feature branch stops
+building an artifact that was never publishable.
+
+A correction to the reasoning version 3.0 gave for this. It described a compound condition
+copied onto two steps and framed the change as deduplication. The two build steps carry
+only `github.event_name != 'pull_request'`, and the compound form appears once, on the
+deploy job. So this is a deliberate behavior change rather than a cleanup, which is what
+finding 8 asked for in the first place. The framing was wrong, not the work.
+
+Both verification jobs also gain a timeout. Checking 44 URIs at six attempts and ten
+seconds apiece can run past half an hour during a real outage, and neither job sets a limit
+today, so a failing run holds a runner against a six-hour default.
 
 ## C5: documents, ownership, and tracking
 
@@ -293,6 +358,12 @@ constraint under a released spec version reaches consumers silently.
 else. The earlier claim that a regression "surfaces within that window" is true only in the
 sense that a computer knows. Routing that to a human is a notification-settings decision
 for the project lead.
+
+**A URL the page computes at runtime.** The script scan matches literal URLs, so a fetch
+assembled from `atob()`, from string concatenation, or from a value read back out of an
+exempted attribute passes it. No static scanner closes that class. A content security policy
+would, and that is a hosting change with its own design. Recorded rather than implied away,
+because the guard's own history is of each version sounding more complete than it was.
 
 **The review process itself.** Three audited pull requests touching restricted paths merged
 with an administrative bypass and no recorded review. Combined with finding 29, nothing
