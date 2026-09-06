@@ -113,10 +113,6 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
-    # 44 checks at six attempts of ten seconds apiece can run well over half an hour
-    # during a real outage. Without a limit, a failing run holds the runner against
-    # GitHub's six-hour default.
-    timeout-minutes: 20
     permissions:
       contents: read
       pages: write
@@ -133,6 +129,10 @@ jobs:
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
       - name: Verify the published schemas
+        # 44 checks at six attempts of ten seconds apiece can run well over half an
+        # hour during a real outage. The cap sits on this step rather than the job so
+        # it cannot cancel the deploy action above it, which has already published.
+        timeout-minutes: 20
         # Through env, never interpolated into the shell. sync_version.yml documents why.
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}

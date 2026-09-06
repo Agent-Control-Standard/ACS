@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close 38 findings on a live site, replacing two guards that keep proving incomplete with checks that fail closed.
+**Goal:** Close 34 findings on a live site, and record 4 more, replacing two guards that keep proving incomplete with checks that fail closed.
 
 **Architecture:** Six commits, each one coherent idea with its own tests. Two of them replace a guard rather than widening it, because widening is what three review rounds refuted.
 
 **Tech Stack:** Python 3.13, uv, pytest, MkDocs Material, GitHub Actions.
 
-**Spec:** `design/2026-09-05-deferred-findings-design.md` (version 3.0)
+**Spec:** `design/2026-09-05-deferred-findings-design.md` (version 3.1)
 
 ## Global Constraints
 
@@ -664,8 +664,8 @@ The count now belongs to the version printed beside it. Counting every schema in
 the repository while naming one version says something false about that version,
 and it goes live the day a second version ships.
 
-Two new tests cover behavior nothing covered. There was no copy-failure test at
-all, so widening the error boundary had none. The version test that exists uses
+Two new tests cover behavior nothing covered. The repository had no copy-failure
+test at all, so widening the error boundary had none. The version test that exists uses
 a single-version fixture, which cannot tell a numeric comparison from a
 lexicographic one, so a deliberately broken comparison passes it. The new
 fixture holds two versions and makes both counts differ from the total, or an
