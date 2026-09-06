@@ -375,6 +375,37 @@ with an administrative bypass and no recorded review. Combined with finding 29, 
 mechanical currently gates a merge to a branch that deploys on merge. Recorded because two
 premortems found it, not because this change addresses it.
 
+## Residual gaps in the third-party guard
+
+Recorded because the guard's history is of each version sounding more complete than it was.
+None of these is reachable on the site as it stands, measured across all 38 built artifacts.
+
+**Backslash protocol-relative forms.** The URL parser treats `src="/\evil.tld/x"` and
+`src="\\evil.tld/x"` as protocol relative for special schemes. The attribute pattern matches
+only two forward slashes.
+
+**A bare protocol-relative URL in script text.** `fetch("//evil.tld/x")` is missed on
+purpose, because two slashes open a JavaScript comment far more often than a URL, and a
+false positive here is what gets a guard switched off. Markup a script writes is covered,
+because an attribute name disambiguates it.
+
+**A URL the page computes at runtime.** `atob()`, string concatenation, or a value read back
+out of an exempted attribute defeats any static scan. Closing this needs a content security
+policy, which is a hosting change with its own design.
+
+**`<svg:style>` in HTML.** Handled differently from `<style>`, and a browser does not apply
+it as CSS in an HTML document, so it is a divergence rather than exposure.
+
+**One claim in this document cannot be verified from history.** The guard shipped in a
+squashed commit, so "found incomplete five times before this work" rests on the docstring
+that recorded it rather than on five separate commits. The five corrections made during
+this work are each their own commit and are verifiable.
+
+**Scaffolding that invites the mistake the identity rule rejects.** `specification/AG-BOM/`
+and `specification/Observability/` hold no schemas. A file added there fails the build
+loudly and early, which is the designed behavior, but `CONTRIBUTING.md` does not warn a
+contributor before they structure work there.
+
 ## Tracked follow-up: specification/schema.lock
 
 Deferred three times now. Published schemas are mutable in place with no hash record, so a
