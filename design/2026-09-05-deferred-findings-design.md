@@ -1,198 +1,300 @@
 # Closing the deferred findings from the Pages branch
 
-Version: 2.0
+Version: 3.0
 Owner: ACS project lead
 Date: 2026-09-05
 Status: approved design, not yet implemented
 
-Version 1.0 went through a six-perspective adversarial premortem and did not survive. Its central judgment was wrong: it closed one finding as "already correct" when the code is defective, and a draft schema in a directory named `Proposals` publishes to the live normative namespace. Two further claims in it were factually false. This revision reopens that finding, corrects the false claims, and widens the scope the premortem showed was too narrow.
+Two adversarial premortems have run against this work. The first refuted version 1.0,
+which had closed a finding as "already correct" while a draft schema in a directory named
+`Proposals` published to the live normative namespace. The second ran against the
+implementation plan version 2.0 produced, and refuted the two fixes that plan led with.
+
+Both of those fixes were instance fixes in the shape of class fixes. Version 2.0 widened a
+six-name denylist and widened a regex by two attributes. Six independent perspectives
+reproduced bypasses of both, by execution rather than by argument. This revision replaces
+both with checks that fail closed on constructs nobody enumerated.
 
 ## Goal
 
-Close the findings carried from the Pages branch reviews, plus the findings the premortem of version 1.0 raised against the plan to close them.
+Close the findings carried from the Pages branch reviews, plus the findings both
+premortems raised against the plans to close them.
 
-The site is live and serving 44 schemas that external tools fetch. Nothing here changes what it publishes. Every change either removes a way the tooling can fail silently, widens a guard that has now been found incomplete four times, or corrects a document that is false.
+The site is live and serving 44 schemas that external tools fetch. Nothing here changes
+what it publishes. Every change either removes a way the tooling can fail silently,
+replaces a guard that keeps proving incomplete, or corrects a document that is false.
 
-## What changed from version 1.0
+## What changed from version 2.0
 
 | Was | Now |
 |---|---|
-| Finding 2 closed as already correct | **Reopened as a real defect.** `NON_NORMATIVE` is exact-match and case-sensitive |
-| Finding 3 closed because "no single layer is load-bearing" | Still closed, but for the correct reason. The old reasoning was false |
-| "A dangling `$ref` leaves a partially populated directory" | False. It writes every file. Partial output comes from `$id` validation failures |
-| C1 framed as removing a live-site failure window | Reframed. The window was already inert. The real benefit is bounding what a fork pull request leaves on a runner |
-| C3 widened the guard to `srcset` and unquoted values | Widened to the **class**: every built asset, and every fetch-triggering attribute |
-| Two closures "gain a comment" | Now an explicit step in a named commit, because version 1.0 promised it and specified no work |
+| `NON_NORMATIVE` widened to six case-folded names | **Replaced.** A schema's `$id` must match its location. No name list |
+| The guard widened by two attributes and a tag list | **Inverted.** Every attribute is a fetch unless it sits on a short exempt list |
+| "Writing the bytes read during validation closes the window" | **False as written.** `load_schemas` read text, the loop read bytes again |
+| Finding 18 tabled as Fix, delivered as tracking | **Fixed.** Verification derives its URI list from the tree |
+| Finding 20 tracked by a public GitHub issue | **Recorded in-repo.** A plan is the wrong place for a disclosure decision |
+| Three self-assessments claiming completeness | **Corrected.** Each overstated what it had done |
 
-## The defect version 1.0 missed
+## The defect that reopened, and why widening did not close it
 
-`target_for` refuses the normative namespace to any file under a directory named `proposals`:
+Version 2.0 case-folded the comparison, which closes `Proposals`, `PROPOSALS`, `proposal`,
+and `drafts`. Measured against the widened check, all of these still publish a draft to
+the normative namespace:
+
+| Directory | Result under version 2.0 |
+|---|---|
+| `sandbox/`, `staging/`, `rc/`, `unreleased/`, `incubator/` | publishes |
+| `_drafts/`, `draft-v2/`, `drafty/` | publishes |
+| `ｐｒｏｐｏｓａｌｓ/` (fullwidth) | publishes |
+| `dra‍ft/` (zero-width joiner) | publishes |
+| `prоposаls/` (Cyrillic homoglyphs) | publishes |
+
+The last three matter more than the synonyms. They render identically to a blocked name in
+a diff, so the human review that might catch `sandbox/` cannot catch them at all.
+`str.casefold` folds case. It applies no compatibility normalization and has no concept of
+a confusable. A check normalized on one axis is not a normalized check.
+
+Three perspectives reached this independently. Version 1.0 argued about match depth,
+version 2.0 argued about the name list, and both were the wrong axis. The right axis is
+that a denylist cannot enumerate its own complement.
+
+### The replacement
+
+Exactly one schema in the tree has an `$id` tail that differs from its path under
+`specification/`. Moving `specification/ACS/acs_schema.json` to `specification/v0.1.0/`
+makes the two identical for all 44, which turns the question into an identity test:
 
 ```python
-NON_NORMATIVE = ("proposals",)
-if any(part in NON_NORMATIVE for part in path.parts):
+if tail != path.relative_to(source).as_posix():
+    raise SchemaError(f"{path}: $id declares {tail!r} but the file sits at {on_disk!r}")
 ```
 
-That is exact string equality against one lowercase literal. Measured against the real code:
+A draft cannot claim the normative namespace under any directory name, because it would
+have to declare an `$id` naming that directory, and `SAFE_TAIL` already requires a
+`v<digits>` first segment. A draft declaring its own honest location is refused by
+`SAFE_TAIL`. A draft lying about its location is refused by the identity check. The
+directory name stops being load-bearing, so no list exists to forget to extend.
 
-| Directory | Outcome |
-|---|---|
-| `proposals/` | refused |
-| `Proposals/` | **publishes to the normative namespace** |
-| `PROPOSALS/` | **publishes** |
-| `proposal/` | **publishes** |
-| `drafts/` | **publishes** |
+Measured: 44 schemas publish unchanged, and 26 draft-directory names are refused,
+including every Unicode variant above.
 
-A draft schema reaching `/schema/v0.1.0/` is fetched by every external tool resolving that `$id`, and nothing detects it: the post-deploy check inspects two of the 44 published paths.
-
-Version 1.0 declined a reviewer's recommendation to tighten this to a top-level match, arguing the loose match "fails safe." Both that recommendation and that objection argued about **depth**. The defect is **string equality**. The disagreement was on the wrong axis.
+No published URI changes. One source file moves.
 
 ## Findings and disposition
 
 | # | Where | Disposition |
 |---|---|---|
 | 1 | `publish_schemas.py` partial output | Fix, with the rationale corrected. See C1 |
-| 2 | `NON_NORMATIVE` matching | **Fix.** Reopened, see above |
+| 2 | `NON_NORMATIVE` matching | **Fix as a class.** Identity check, see above |
 | 3 | percent-decode redundancy | Close, with corrected reasoning and a drift test |
 | 4 | `render_landing.py` error boundary | Fix |
 | 5 | `render_landing.py` double load | Fix, with a shared version helper mandated |
 | 6 | `verify_published.py` exception handling | Fix |
 | 7 | `verify_published.py` final sleep | Fix |
-| 8 | workflow artifact on dispatch | Fix, with its limits stated |
+| 8 | workflow artifact on dispatch | Fix, from one source rather than two copies |
 | 9 | `javascript:` test strength | Fix |
-| 10 | guard attribute and file coverage | Fix, as a class |
+| 10 | guard attribute and file coverage | **Fix as a class.** Inverted, see C4 |
 | 11 | offender diagnostics | Fix |
 | 12 | starburst font fallback | Fix |
 | 13 | `CLAUDE.md` ambiguous sentence | Fix |
 | 14 | `LICENSING.md` section placement | Fix |
 | 15 | `SECURITY.md` duplicate row | Fix |
-| 16 | `SECURITY.md` says "once Pages is enabled" on a live site | **New.** Fix |
-| 17 | `CLAUDE.md` absent from the restricted CODEOWNERS tier | **New.** Fix |
-| 18 | Post-deploy verification covers 2 of 44 URIs, duplicated across two workflows | **New.** Fix |
-| 19 | `verify_published.py` has no test file at all | **New.** Fix |
-| 20 | `schema.lock` deferred twice with no durable tracking | **New.** Track, do not implement |
+| 16 | `SECURITY.md` says "once Pages is enabled" on a live site | Fix |
+| 17 | `CLAUDE.md` absent from the restricted CODEOWNERS tier | Fix |
+| 18 | Post-deploy verification covers 2 of 44 URIs | **Fix.** Derived from the tree |
+| 19 | `verify_published.py` has no test file at all | Fix |
+| 20 | `schema.lock` deferred twice with no durable tracking | Record in-repo |
+| 21 | Guard misses `<base>`, inline script, SVG, meta refresh, `image-set`, tab-in-scheme | **New.** Fix as a class |
+| 22 | `VENDORED_SEGMENT` is a substring test, not a prefix test | **New.** Fix |
+| 23 | Validation reads text, the write reads bytes again | **New.** Fix |
+| 24 | `test_main_reports_a_copy_failure` never reaches the copy | **New.** Fix |
+| 25 | Version-selection test uses a single-version fixture | **New.** Fix |
+| 26 | `_schema_facts` names one version and counts every version | **New.** Fix |
+| 27 | `_schema_facts` duplicates the body of `_versions` | **New.** Fix |
+| 28 | `design/` falls to the wide CODEOWNERS default | **New.** Fix |
+| 29 | `main` has no required status checks | **New.** Fix, outside the code |
+| 30 | Three self-assessments overstate their own completeness | **New.** Fix |
+| 31 | Rollback docs do not separate a failed verify from a failed deploy | **New.** Fix |
+| 32 | The monitor has no alerting path | **New.** Record, see out of scope |
 
 ## One finding still closes
 
-**Finding 3, the percent-decode check.** `SAFE_TAIL` admits `%` in no character class, so any percent-encoded input is rejected by the pattern regardless of the decode comparison. Version 1.0 defended keeping the check by claiming "no single layer is load-bearing." That is false: for this input class exactly one layer is load-bearing, and it is `SAFE_TAIL`.
+**Finding 3, the percent-decode check.** `SAFE_TAIL` admits `%` in no character class, so
+any percent-encoded input is rejected by the pattern regardless of the decode comparison.
+Version 1.0 defended keeping the check by claiming "no single layer is load-bearing." That
+is false: for this input class exactly one layer is load-bearing, and it is `SAFE_TAIL`.
 
-The check stays for a different and correct reason. It turns a percent-encoded traversal attempt into a distinctly labelled error, `$id must not be percent-encoded`, rather than a generic pattern failure. That distinction is what tells an operator reading a CI log that someone tried something, rather than that someone made a typo. Intent signal in a build log is worth three lines of code.
+The check stays for a different and correct reason. It turns a percent-encoded traversal
+attempt into a distinctly labelled error, `$id must not be percent-encoded`, rather than a
+generic pattern failure. That distinction tells an operator reading a CI log that someone
+tried something, rather than that someone made a typo. Intent signal in a build log is
+worth three lines of code.
 
-The redundancy is a fact about today's `SAFE_TAIL`, not an enforced invariant. A test asserts both checks reject the same input set, so loosening `SAFE_TAIL` later fails loudly instead of silently promoting the decode check to load-bearing.
+## C1: validate everything, then write
 
-No claim in this document attributes reasoning to an unnamed reviewer. Version 1.0 did, and the attribution could not be verified from the repository, which makes it an appeal to authority rather than an argument.
+`publish()` runs in three phases:
 
-## Design
-
-Five commits, each one coherent idea with its own tests.
-
-### C1: validate everything, then write validated bytes
-
-Two defects, one restructure.
-
-**The stated cause in version 1.0 was wrong.** Measured: a dangling `$ref` writes all 44 files before raising, because `verify_refs` runs after the loop. A partially populated directory comes from a `target_for` failure, which raises mid-loop, and produces 43 of 44.
-
-**The stated benefit was also wrong.** The build job runs `publish_schemas.py` before `upload-pages-artifact`, with no `continue-on-error`. A failure stops the job, the artifact never uploads, and Pages keeps serving the last good deployment. The partial directory never reached the live site under either ordering.
-
-The real benefit is narrower and worth stating accurately: the module's own docstring records that "a fork pull request reaches this code on the runner before human review." Verifying before writing bounds what a hostile pull request's build step leaves on disk. That is the threat model this serves.
-
-Restructure `publish()` into three phases:
-
-1. For every schema, resolve `rel`, `sid`, and the contained destination. Detect duplicate `$id`. Read the file's bytes. Build the `$id` map.
+1. For every schema, resolve `rel`, `sid`, and the contained destination. Detect duplicate
+   `$id`. Build the `$id` map.
 2. Run `verify_refs`.
-3. Create directories and write the bytes read in phase 1.
+3. Create directories and write the bytes validation read.
 
-Phase 3 writes the bytes phase 1 validated, rather than re-reading the source. Version 1.0 specified `shutil.copyfile`, which re-reads at copy time and opens a window between validation and write that the restructure makes wider, since all of phases 1 and 2 now sit between reading a file and writing it. Holding the bytes closes it.
+No `mkdir` happens before phase 3. On failure the output directory does not exist at all,
+so the test asserts absence rather than emptiness.
 
-No `mkdir` happens before phase 3. On failure the output directory does not exist at all, so the test asserts absence rather than emptiness. Version 1.0 said "empty," which a reasonable implementation satisfies while leaving empty directories behind.
+**The correction.** Version 2.0's commit message claimed phase 3 "writes the bytes phase 1
+validated." It did not. `load_schemas` called `read_text` to parse, discarded the text, and
+the phase 1 loop called `read_bytes` separately. A mutation harness confirmed the gap by
+writing content to the output that no validation had seen.
 
-### C2: normalize the non-normative check
+`load_schemas` now returns the raw bytes alongside each parsed document, so one read serves
+both. The claim becomes true rather than aspirational. This matters less for the narrow
+race than for the record. A design document asserting a property its code lacks is how
+version 1.0's false claims survived four reviews.
 
-Replace exact matching with a normalized comparison, and treat the directory name as a prefix family rather than one literal:
+## C4: invert the guard
 
-```python
-# Draft schemas must never claim a normative URI. The comparison is case-folded
-# because a directory named Proposals is the same intent as proposals, and a
-# path-based safety check that is not normalized is incomplete rather than strict.
-NON_NORMATIVE = ("proposals", "proposal", "drafts", "draft", "wip", "experimental")
-...
-if any(part.casefold() in NON_NORMATIVE for part in path.parts):
-```
+The no-third-party guard has been found incomplete five times. Every previous fix, this
+design's version 2.0 included, added names to an enumeration of things that fetch. The
+enumeration is the defect. Nine payloads defeat the version 2.0 pattern, each reproduced:
 
-The name list is the part a future contributor will forget to extend, so the failure has to be loud where it matters. A test asserts every name in the list is refused at top level and nested, in three casings.
+| Construct | Why the enumeration cannot see it |
+|---|---|
+| `<base href>` | Rewrites resolution for the whole page, so every other URL carries no host |
+| Inline `<script>` body | The scan reads attributes. A script body is text |
+| `<use href>`, `<image href>` | SVG tags absent from the tag list |
+| `<meta http-equiv="refresh">` | Navigates with no interaction, and lives in `content` |
+| `image-set("https://…")` | Not `url(`, so the stylesheet pattern misses it |
+| `src="ht<TAB>tps://…"` | The URL parser strips tab and newline before resolving. The regex does not |
+| Second fetch attribute on one tag | `finditer` is non-overlapping, so the tag anchor is already consumed |
+| `<a ping>` | Never enumerated |
 
-This does not make the check complete. A contributor inventing a seventh convention still bypasses it. The durable fix is inverting the rule so that only files under a versioned directory may claim the namespace, which `SAFE_TAIL` already half-enforces on the `$id` side. Record that as the follow-up rather than pretending the name list closes the class.
+So the guard stops enumerating what fetches and enumerates what does not. It parses the
+markup with `html.parser`, walks every attribute on every element, and treats each as a
+fetch unless the pair sits on a short exempt list: anchor and area `href`, the four `cite`
+attributes, form and button `action` and `formaction`, and any `xmlns`. Inline `<script>`
+and `<style>` bodies are scanned for absolute URLs. Tab and newline are stripped before
+matching. A `<base>` element carrying an href is refused outright.
 
-### C3: the publish pipeline
+An attribute nobody anticipated is now a failure rather than a silent pass. That is the
+property every previous version lacked.
 
-**`render_landing.py`.** Move `shutil.copytree` inside the existing `try`. Verified: `shutil.Error` subclasses `OSError`, so the existing clause catches it. Give the copy its own `except` with a message naming a copy failure, because reusing "cannot read a landing page source" points a reader at the wrong half of the operation. Move `out.mkdir` and the `index.html` write inside the same boundary, so the whole output phase is covered rather than one statement of it.
+Measured against the real built site: 38 pages, zero third-party hosts, zero `<base>`
+elements. Against the payload set: 14 caught, and 5 prose cases stay quiet, including a
+`<blockquote cite>` and a JavaScript line comment.
 
-Add `_version_key(version)` as a shared pure function, and have both `_versions`-derived selection and `_schema_facts` call it. Version 1.0 specified `_schema_facts` without requiring the algorithm be shared, which forces the numeric-tuple comparison to exist twice. That comparison exists specifically to stop `v0.10.0` sorting below `v0.2.0`, and a divergence between two copies would ship a wrong version string to the live page with no test to catch it, because the only multi-version test calls `spec_version` directly and never goes through `render`.
+The `xmlns` exemption is load-bearing for a real reason. The built site carries 407
+`xmlns="http://www.w3.org/2000/svg"` declarations. A namespace URI names a vocabulary and
+no browser resolves it. Verified that the exemption cannot smuggle a fetch, because a
+`<use href>` on the same element is still caught.
 
-**`verify_published.py`.** Widen the retry clause to `UnicodeDecodeError`. Guard that the parsed body is a mapping before reading `$id`. Skip the sleep after the final attempt. Distinguish the diagnostics: a body that parses but is wrong reports what was served, rather than "never became available," which sends an operator looking at DNS during an encoding problem.
+**`VENDORED_SEGMENT` becomes a prefix test.** The substring form accepted any path
+containing `assets/javascripts/` anywhere, so `docs/assets/javascripts/tracker.js` counted
+as vendored theme code. The check now anchors to the paths the theme installs to.
 
-**`deploy-pages.yml`.** Gate `configure-pages` and `upload-pages-artifact` on `github.ref == 'refs/heads/main'` as well as the event.
+## C3: the publish pipeline
 
-State the limit plainly in the commit message: this closes a wasted upload on a dispatch from a branch. It does not reduce fork pull request exposure, because `Publish the schemas` carries no condition and runs on every pull request by design, which is what makes the pre-merge build a gate at all.
+**`render_landing.py`.** Move `out.mkdir`, the `index.html` write, and `shutil.copytree`
+inside the error boundary. `_schema_facts` calls `_versions` rather than restating its
+body, and both share `_version_key`. The schema count is taken within the version being
+reported, because naming `v0.2.0` while counting every schema in the repository states a
+number that is wrong about the version printed beside it.
 
-### C4: fix the guard's class, not its fourth instance
+Two tests are rewritten because they pass for the wrong reason. The copy-failure test's
+fixture omitted four required placeholders, so `render` raised before reaching the copy at
+all, and the test passed identically against the pre-fix code. The version-selection test
+used a single-version fixture, so a deliberately broken comparison still passed it.
 
-The no-third-party guard has now been found incomplete four times. Each previous fix corrected the instance: allowlisting hosts, then one file of two, then HTML but not stylesheets. Each left the same structural gap, which is that the guard's scope is a hardcoded list rather than the build output.
+**`verify_published.py`.** Widen the retry clause to `UnicodeDecodeError`. Guard that the
+parsed body is a mapping before reading `$id`. Skip the sleep after the final attempt.
 
-Two dimensions widen together.
+**Verification covers all 44 URIs.** Both workflows check out the repository, so both can
+derive the expected URI list from `specification/` using the code that already computes it.
+Two hardcoded paths in two files becomes one derivation with nothing to drift.
 
-**File coverage.** Measured before specifying: a bare `*.js` scan is not viable. The build emits roughly twenty vendored files under `assets/javascripts/`, and every lunr language pack carries attribution URLs for `snowball.tartarus.org`, `mozilla.org`, and `github.com`. An exception list naming twenty files is noise rather than a control.
+A correction to version 2.0's reasoning here. It justified the non-object guard by
+imagining an edge serving an error page during propagation. Measured against the live site,
+a Pages 404 serves HTML, which raises `JSONDecodeError` and is retried. The guard is still
+right, because a parsed non-object cannot be fixed by waiting, but the scenario given for
+it was not the real one.
 
-The measurement showed the property actually worth guarding. This project ships **no first-party JavaScript file**. The landing page's only script is inline and already covered by the HTML scan, and every `.js` under the built site comes from the installed theme, pinned by `uv.lock`.
+**`deploy-pages.yml`.** The branch condition is computed once and referenced, rather than
+copied onto two steps. A typo in one copy of a compound condition does not fail a step, it
+skips it, which uploads no artifact while reporting green.
 
-So the guard asserts that fact rather than scanning bundles it cannot meaningfully audit: every `.js` in the built site must live under a known vendored prefix. Adding `docs/js/custom.js` fails the guard and gets a human decision, which is the moment third-party code could enter. Strict content scanning stays on the files the build generates from our own content, which is the HTML and the first-party stylesheets.
+## C5: documents, ownership, and tracking
 
-That is narrower than "scan everything," and it is honest about what it does. Scanning a minified vendor bundle for hostnames produces findings nobody can action.
+**`SECURITY.md`.** Merge the two overlapping in-scope rows, and remove "once Pages is
+enabled" from the row describing a live site. The plan carries the exact replacement row,
+because a prose instruction to "merge two rows" admits several readings and no test in the
+suite distinguishes them.
 
-**Attribute coverage.** Add the fetch-triggering attributes the pattern misses regardless of quoting: `poster`, `background`, `formaction`, `cite`, `longdesc`, `manifest`, and `srcset`, plus unquoted values. Measured: `<video poster="//evil.example/beacon.jpg">` passes the current guard undetected. The recurring failure category is attribute-name coverage, so a mutation test that only injects `srcset` would miss the fifth instance the same way.
+**`CLAUDE.md`.** Give "The landing page links both" an explicit subject. Record the moved
+schema path and the identity rule.
 
-**`test_docs_theme.py`** also globs `*.html` and gets the same treatment, so the two do not drift.
+**`.github/CODEOWNERS`.** Add `/CLAUDE.md`, `/STYLE.md`, and `/design/` to the restricted
+tier. Version 2.0's commit message claimed `CLAUDE.md` "was the one root document absent
+from the restricted owner list." Seven others are equally absent, `STYLE.md` among them,
+which `CLAUDE.md` itself makes binding on every text edit in the repository. The design
+directory holds the documents arguing the threat model for a live publishing pipeline and
+currently needs no restricted-tier review at all.
 
-### C5: documents, ownership, and tracking
+**`LICENSING.md`.** Move the provenance section after the scope table it explains.
 
-**`SECURITY.md`.** Merge the two overlapping in-scope rows. Separately, remove "once Pages is enabled" from the row describing the published site. The site went live today, so a researcher currently reads a conditional about a live property, and a defensive reading could argue it was out of scope.
+**`landing/assets/starburst.svg`.** Declare `font-family` once on the root element and
+remove the fifteen per-element declarations.
 
-**`CLAUDE.md`.** Give "The landing page links both" an explicit subject naming the security reporting process and the Code of Conduct process. Version 1.0 specified the fix without showing the resulting text, which left an implementer free to resolve the ambiguity differently than intended.
+**Record the `schema.lock` follow-up here.** Version 2.0 specified `gh issue create` inside
+a plan meant for unattended execution, gated by one sentence of prose. Two perspectives
+objected on the same grounds, and `SECURITY.md` routes tooling flaws to private reporting
+rather than public issues. The record belongs somewhere reviewed, reversible, and inside
+the repository. Opening an issue stays the project lead's call to make separately.
 
-**`.github/CODEOWNERS`.** Add `/CLAUDE.md` to the restricted tier. Every other root governance document the branch touched is there. `CLAUDE.md` is not, so it falls to the twelve-handle default, three of whom are recorded as inert pending acceptance. The file instructs AI coding agents operating in this repository, which makes it a control surface of the same class as the workflows.
-
-**`LICENSING.md`.** Move the provenance section to sit after the scope table it explains.
-
-**`landing/assets/starburst.svg`.** Declare `font-family` once on the root element with the same stack `--acs-font` uses, and remove the fifteen per-element declarations. Verified in a real browser engine that a `<text>` inside a `<g>` inherits it.
-
-**Add the closure comments.** Version 1.0 promised both closed findings would gain a comment recording why they stand, then specified no commit containing that work. The comment on the percent-decode check lands here, carrying the corrected reasoning.
-
-**Open a tracking issue for `specification/schema.lock`.** It has now been deferred twice, and the record lives only in prose inside two dated design files. Zero issues reference it. Published schemas remain mutable in place with no hash record, so a loosened constraint under a released spec version reaches consumers silently. Implementation stays out of scope. The tracking does not.
+**Required status checks on `main`.** The `protect-main` ruleset requires one approval and
+code-owner review, and requires no passing check. A pull request can merge with `test` and
+`build` red onto the branch that deploys to the live site with no human in the loop. This
+is a repository settings change rather than a code change, approved separately by the
+project lead.
 
 ## Testing
 
-Every code change in C1 through C4 gets a test that fails before the fix. Three carry more weight than the rest.
+Every code change gets a test that fails before the fix. Four carry more weight.
 
-**The non-normative test is a matrix, not a case.** Every name in `NON_NORMATIVE`, at top level and nested, in lower, title, and upper casing. The defect this closes was invisible precisely because the one existing test used a single name at a single depth in a single casing.
+**The identity check is tested by its complement.** Not the six names a list would have
+held, but 26 directory names including Unicode variants, plus both ways a draft can declare
+an `$id`. The previous test could only ever confirm the names already in the list.
 
-**The guard gets a mutation check across both dimensions.** Inject a third-party host through `poster`, through `srcset`, through an unquoted `src`, and through a `url()` in a stylesheet, and confirm each fails. Then revert. This guard has been incomplete four times, so it is verified by watching it fail rather than by reading the regex.
+**The guard is verified by watching it fail.** Inject a third-party host through each of
+the nine constructs the enumeration missed, confirm each fails, then revert and confirm the
+suite returns to green. A guard found incomplete five times is not verified by reading it.
 
-**`tests/test_verify_published.py` is a new file.** The module has no test coverage at all today, so version 1.0's claim that every change gets a test was unmeetable for three of its own changes. The retry loop is tested with a stubbed fetch rather than a live server, so it runs in milliseconds.
+**Two rewritten tests are checked against the pre-fix code.** A test that passes before the
+fix it is named for is worse than no test, because it reports coverage that does not exist.
+Both run against the old implementation to confirm they fail there.
 
-Two weaker assertions from version 1.0 are strengthened. The C1 test asserts the output directory does not exist, not that it is empty. The starburst test asserts `font-family` appears on the root `<svg>` element specifically, not that it appears once, because a single declaration on the wrong element satisfies a count.
+**`tests/test_verify_published.py` is a new file.** The module has no coverage today.
 
 ## Verification
 
-The full suite, a clean rebuild of all three surfaces, and a re-run of the live schema check against the published site to confirm nothing regressed for consumers already fetching those URIs.
+The full suite, a clean rebuild of all three surfaces, a byte-level diff of the published
+schema tree before and after, and a live re-check of the published site to confirm nothing
+regressed for consumers already fetching those URIs.
+
+The published tree diff is the one that matters. Everything else here can be wrong and
+recoverable. A change to what 44 live URIs serve is not.
 
 ## Out of scope, with reasons
 
-**`specification/schema.lock`.** Implementation is a separate change with release-process implications this one does not carry. A tracking issue is in scope, because two deferrals with no durable record is how a highest-value item disappears.
+**`specification/schema.lock`.** Implementation is a separate change with release-process
+implications. Published schemas stay mutable in place with no hash record, so a loosened
+constraint under a released spec version reaches consumers silently.
 
-**Inverting the non-normative rule to an allowlist.** C2 makes the current check correct for the names it knows. Making it complete means requiring every publishable schema to live under a versioned source directory, which changes the repository layout contract and deserves its own design.
+**Alerting on a failed monitor run.** The monitor produces a red Actions run and nothing
+else. The earlier claim that a regression "surfaces within that window" is true only in the
+sense that a computer knows. Routing that to a human is a notification-settings decision
+for the project lead.
 
-**Widening post-deploy verification beyond two URIs, and giving the two workflows one source for that path list.** Finding 18 is real: a defect in the other 42 schemas ships undetected. The fix belongs with the `schema.lock` change, because both are about detecting drift in published content, and splitting them means touching the same two workflow files twice.
-
-**Alerting on a failed monitor run.** Nothing pages anyone today. That is a repository settings and notification-routing decision rather than a code change.
-
-**The review process itself.** Three audited pull requests touching restricted paths merged with an administrative bypass and no recorded review. That is a staffing and governance decision for the project lead, recorded here because a premortem found it, not because this change addresses it.
+**The review process itself.** Three audited pull requests touching restricted paths merged
+with an administrative bypass and no recorded review. Combined with finding 29, nothing
+mechanical currently gates a merge to a branch that deploys on merge. Recorded because two
+premortems found it, not because this change addresses it.
