@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Publish JSON schemas to the paths their own $id values declare.
 
-The on-disk layout does not match the URI layout. specification/ACS/acs_schema.json
-declares an $id of .../schema/v0.1.0/acs_schema.json, so deriving the destination from
-$id avoids a hardcoded special case and lets a new spec version publish untouched.
+Every schema sits at the path its $id names, so publishing is a copy and the check
+that a draft is not claiming a normative URI is an identity test rather than a list
+of directory names to keep extending.
 
 $id is attacker-influenced input, not trusted identity. Anyone who can land a file under
 specification/ controls the string, and a fork pull request reaches this code on the
@@ -23,9 +23,6 @@ BASE = "https://genai-security-project.github.io/agent-control-standard/schema/"
 
 # A publishable tail: version directory, then nested names, ending in .json.
 SAFE_TAIL = re.compile(r"^v[0-9]+(?:\.[0-9]+)*/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.json$")
-
-# Draft schemas live here. They must never publish to a normative URI.
-NON_NORMATIVE = ("proposals",)
 
 
 class SchemaError(Exception):
@@ -50,12 +47,14 @@ def load_schemas(source: Path) -> dict[Path, dict]:
     return schemas
 
 
-def target_for(doc: dict, path: Path) -> str:
+def target_for(doc: dict, path: Path, source: Path) -> str:
     """Return the validated publish path a document's $id declares.
 
-    Rejects anything that would escape the output root or land outside the versioned
-    namespace. The check runs on the decoded string so percent-encoded traversal
-    cannot slip past it.
+    The $id must name the file's own location under source. That identity is what
+    keeps a draft out of the normative namespace. Claiming it would mean declaring
+    an $id that names the draft directory, and SAFE_TAIL refuses that for want of a
+    version segment. No directory name is involved, so nothing needs extending when
+    someone invents a new word for "not ready yet".
     """
     sid = doc.get("$id")
     if not sid:
@@ -71,10 +70,11 @@ def target_for(doc: dict, path: Path) -> str:
             f"{path}: $id tail {tail!r} is not a safe publish path. "
             "Expected v<version>/<name>.json with no traversal and no absolute prefix."
         )
-    if any(part in NON_NORMATIVE for part in path.parts):
+    on_disk = path.relative_to(source).as_posix()
+    if tail != on_disk:
         raise SchemaError(
-            f"{path}: a file under {'/'.join(NON_NORMATIVE)}/ must not claim the "
-            f"normative namespace ($id: {sid})"
+            f"{path}: $id declares {tail!r} but the file sits at {on_disk!r}. "
+            "A schema publishes at its own location, so the two must match."
         )
     return tail
 
@@ -150,8 +150,11 @@ def publish(source: Path, out: Path) -> list[str]:
     published: list[str] = []
 
     for path, doc in docs.items():
-        rel = target_for(doc, path)
+        rel = target_for(doc, path, source)
         sid = doc["$id"]
+        # Belt and braces. target_for's identity check already makes two files sharing
+        # one $id unreachable through publish, since both would have to sit at the
+        # same path. Kept because target_for is not publish's only possible caller.
         if sid in seen:
             raise SchemaError(f"{path}: duplicate $id {sid}, already declared by {seen[sid]}")
         seen[sid] = path

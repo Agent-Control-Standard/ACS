@@ -72,7 +72,7 @@ The ACS framework consists of three interconnected layers:
 - **Standards Integration**: OpenTelemetry spans, OCSF events, SBOM formats
 
 ### Important Files
-- `specification/ACS/acs_schema.json`: Complete JSON Schema for ACS protocol
+- `specification/v0.1.0/acs_schema.json`: Complete JSON Schema for ACS protocol
 - `docs/spec/instrument/specification.md`: Detailed protocol specification
 - `docs/spec/instrument/hooks.md`: Available hooks and their triggers
 - `docs/spec/trace/events.md`: Event catalog and schemas
@@ -133,6 +133,10 @@ and are correct.
 Schema `$id` values are based at `https://genai-security-project.github.io/agent-control-standard/schema/<spec-version>/`, not at any of the project domains. The namespace follows the org and repo so that schema identity survives a domain or hosting change. Do not rebase `$id` onto a marketing domain.
 
 `$id` is identity, not a fetch target. Every `$ref` in the package is relative and resolves against the enclosing `$id` base, so the whole set must share one base. Two bases means the relative refs resolve to URIs no `$id` declares, which is the defect fixed in `4fb84c1`. If you add a subschema, give it an `$id` under the same base and keep its refs relative.
+
+Every schema sits at the path its `$id` names, relative to `specification/`. That identity
+is the check that keeps a draft out of the normative namespace, so a new schema goes at the
+path its `$id` declares and nowhere else.
 
 The base is served. `.github/workflows/deploy-pages.yml` publishes every schema at the
 path its `$id` declares on each merge to `main`, and the deploy fails if any of them

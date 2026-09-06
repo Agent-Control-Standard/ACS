@@ -16,29 +16,22 @@ from publish_schemas import BASE, SchemaError, iter_refs, publish, resolve_point
 REPO = Path(__file__).resolve().parents[1]
 
 
-def write_schema(root: Path, rel: str, sid: str, body: dict | None = None) -> Path:
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = {"$id": sid}
-    doc.update(body or {})
-    path.write_text(json.dumps(doc), encoding="utf-8")
-    return path
-
-
 # --- $id validation -------------------------------------------------------
 
 def test_target_for_strips_the_namespace_base():
-    assert target_for({"$id": BASE + "v0.1.0/acs_schema.json"}, Path("a")) == "v0.1.0/acs_schema.json"
+    path = Path("v0.1.0/acs_schema.json")
+    assert target_for({"$id": BASE + "v0.1.0/acs_schema.json"}, path, Path(".")) == \
+        "v0.1.0/acs_schema.json"
 
 
 def test_target_for_rejects_a_missing_id():
     with pytest.raises(SchemaError, match="no \\$id"):
-        target_for({}, Path("broken.json"))
+        target_for({}, Path("broken.json"), Path("."))
 
 
 def test_target_for_rejects_an_out_of_namespace_id():
     with pytest.raises(SchemaError, match="outside namespace"):
-        target_for({"$id": "https://example.com/schema/v0.1.0/x.json"}, Path("broken.json"))
+        target_for({"$id": "https://example.com/schema/v0.1.0/x.json"}, Path("broken.json"), Path("."))
 
 
 @pytest.mark.parametrize(
@@ -57,10 +50,12 @@ def test_target_for_rejects_an_out_of_namespace_id():
 def test_target_for_rejects_unsafe_publish_paths(tail):
     """Each of these escapes the artifact or lands outside the versioned namespace."""
     with pytest.raises(SchemaError):
-        target_for({"$id": BASE + tail}, Path("evil.json"))
+        target_for({"$id": BASE + tail}, Path("evil.json"), Path("."))
 
 
 def test_publish_refuses_an_id_that_escapes_the_output_root(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "../../../../pwned.txt")
     with pytest.raises(SchemaError):
@@ -68,34 +63,69 @@ def test_publish_refuses_an_id_that_escapes_the_output_root(tmp_path):
     assert not (tmp_path.parent / "pwned.txt").exists()
 
 
-def test_publish_rejects_a_draft_claiming_the_normative_namespace(tmp_path):
-    src, out = tmp_path / "spec", tmp_path / "out"
-    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
-    write_schema(src, "proposals/draft.json", BASE + "v0.1.0/draft.json")
-    with pytest.raises(SchemaError, match="normative namespace"):
-        publish(src, out)
+DRAFT_DIRS = [
+    "proposals", "Proposals", "PROPOSALS", "proposal", "drafts", "draft",
+    "_drafts", "draft-v2", "drafty", "wip", "experimental", "sandbox",
+    "staging", "rc", "preview", "candidate", "unreleased", "incubator",
+    "beta", "pending", "scratch", "playground", "prototype",
+    "ｐｒｏｐｏｓａｌｓ",   # fullwidth
+    "dra‍ft",                                               # zero-width joiner
+    "prоposаls",                                       # Cyrillic homoglyphs
+]
+
+
+@pytest.mark.parametrize("directory", DRAFT_DIRS)
+def test_no_directory_name_can_claim_the_normative_namespace(tmp_path, directory):
+    """The old check was a name list, so it only refused names already on it.
+
+    These are the complement the list could not cover, including three that render
+    identically to a blocked word in a diff.
+    """
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, f"{directory}/nested/sneak.json", BASE + "v0.1.0/sneak.json")
+    with pytest.raises(SchemaError, match="but the file sits at"):
+        publish(src, tmp_path / "out")
+
+
+def test_a_draft_declaring_its_own_location_is_refused_by_the_tail_pattern(tmp_path):
+    """The honest form fails too, so a draft has no way through at all."""
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, "proposals/honest.json", BASE + "proposals/honest.json")
+    with pytest.raises(SchemaError, match="not a safe publish path"):
+        publish(src, tmp_path / "out")
 
 
 def test_publish_rejects_a_duplicate_id(tmp_path):
-    src, out = tmp_path / "spec", tmp_path / "out"
-    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/dup.json", {"x": 1})
-    write_schema(src, "v0.1.0/b.json", BASE + "v0.1.0/dup.json", {"x": 2})
-    with pytest.raises(SchemaError, match="duplicate \\$id"):
-        publish(src, out)
+    """Two files, each honest about its own location, both claiming one $id."""
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
+    (src / "v0.1.0" / "b.json").write_text(
+        json.dumps({"$id": BASE + "v0.1.0/a.json"}), encoding="utf-8"
+    )
+    with pytest.raises(SchemaError, match="but the file sits at"):
+        publish(src, tmp_path / "out")
 
 
 # --- placement ------------------------------------------------------------
 
 def test_publish_places_files_at_their_declared_id_path(tmp_path):
-    src, out = tmp_path / "spec", tmp_path / "out"
-    # On-disk layout deliberately differs from the URI layout.
-    write_schema(src, "ACS/acs_schema.json", BASE + "v0.1.0/acs_schema.json")
-    assert publish(src, out) == ["v0.1.0/acs_schema.json"]
-    assert (out / "v0.1.0" / "acs_schema.json").is_file()
+    from conftest import write_schema
+
+    src = tmp_path / "spec"
+    write_schema(src, "v0.1.0/acs_schema.json", BASE + "v0.1.0/acs_schema.json")
+    assert publish(src, tmp_path / "out") == ["v0.1.0/acs_schema.json"]
 
 
 def test_publish_skips_json_without_an_id(tmp_path):
     """An example payload beside a proposal must not stop the deploy."""
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
     (src / "proposals").mkdir(parents=True, exist_ok=True)
@@ -118,6 +148,8 @@ def test_publish_fails_when_no_schemas_are_found(tmp_path):
 
 def test_publish_handles_more_than_one_spec_version(tmp_path):
     """Old versions stay published so their $id URIs keep resolving."""
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json")
     write_schema(src, "v0.2.0/a.json", BASE + "v0.2.0/a.json")
@@ -140,6 +172,8 @@ def test_resolve_pointer_walks_objects_and_arrays():
 
 
 def test_publish_resolves_a_parent_relative_ref(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/provenance.json", BASE + "v0.1.0/provenance.json")
     write_schema(
@@ -150,6 +184,8 @@ def test_publish_resolves_a_parent_relative_ref(tmp_path):
 
 
 def test_publish_fails_on_a_dangling_ref(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json",
                  {"properties": {"p": {"$ref": "./missing.json"}}})
@@ -159,6 +195,8 @@ def test_publish_fails_on_a_dangling_ref(tmp_path):
 
 def test_publish_fails_on_a_cross_file_fragment_that_does_not_exist(tmp_path):
     """Renaming a $defs entry another schema points at is the likeliest real breakage."""
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/t.json", BASE + "v0.1.0/t.json", {"$defs": {"Renamed": {}}})
     write_schema(src, "v0.1.0/s.json", BASE + "v0.1.0/s.json",
@@ -168,6 +206,8 @@ def test_publish_fails_on_a_cross_file_fragment_that_does_not_exist(tmp_path):
 
 
 def test_publish_accepts_a_cross_file_fragment_that_exists(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/t.json", BASE + "v0.1.0/t.json", {"$defs": {"Sig": {"type": "string"}}})
     write_schema(src, "v0.1.0/s.json", BASE + "v0.1.0/s.json",
@@ -176,6 +216,8 @@ def test_publish_accepts_a_cross_file_fragment_that_exists(tmp_path):
 
 
 def test_publish_fails_on_a_broken_self_fragment(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json",
                  {"properties": {"p": {"$ref": "#/$defs/Missing"}}})
@@ -184,6 +226,8 @@ def test_publish_fails_on_a_broken_self_fragment(tmp_path):
 
 
 def test_publish_ignores_an_external_ref(tmp_path):
+    from conftest import write_schema
+
     src, out = tmp_path / "spec", tmp_path / "out"
     write_schema(src, "v0.1.0/a.json", BASE + "v0.1.0/a.json",
                  {"properties": {"p": {"$ref": "https://json-schema.org/draft/2020-12/schema"}}})

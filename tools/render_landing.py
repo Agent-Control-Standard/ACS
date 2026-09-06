@@ -42,7 +42,7 @@ class RenderError(Exception):
 def _versions(source: Path) -> set[str]:
     try:
         docs = load_schemas(source)
-        return {target_for(doc, path).split("/")[0] for path, doc in docs.items()}
+        return {target_for(doc, path, source).split("/")[0] for path, doc in docs.items()}
     except SchemaError as error:
         raise RenderError(str(error)) from error
 

@@ -69,8 +69,9 @@ def test_spec_version_returns_the_highest_of_several(tmp_path):
     root = tmp_path / "specification"
     root.mkdir()
     for version in ("v0.1.0", "v0.2.0", "v0.10.0"):
-        (root / f"{version}.json").write_text(
-            json.dumps({"$id": BASE + f"{version}/x.json"}), encoding="utf-8")
+        path = root / version / "x.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"$id": BASE + f"{version}/x.json"}), encoding="utf-8")
     assert spec_version(root) == "v0.10.0"
 
 
